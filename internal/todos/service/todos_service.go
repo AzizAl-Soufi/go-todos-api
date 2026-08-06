@@ -12,7 +12,7 @@ type todoService struct {
 	repo domain.TodosRepository
 }
 
-func NewTodosRepository(repo domain.TodosRepository) domain.TodosService {
+func NewTodosService(repo domain.TodosRepository) domain.TodosService {
 	return &todoService{repo: repo}
 }
 
@@ -23,7 +23,7 @@ func (s *todoService) CreateTodo(ctx context.Context, title string) (*domain.Tod
 	}
 
 	newTodo := &domain.Todo{
-		ID: bson.NewObjectID(),
+		ID:        bson.NewObjectID(),
 		Title:     title,
 		Completed: false,
 		CreatedAt: time.Now(),

@@ -27,7 +27,7 @@ func (app *application) initialize() http.Handler {
 	})
 
 	todosRepo := repository.NewMongoTodosRepository(app.db)
-	todosService := services.NewTodosRepository(todosRepo)
+	todosService := services.NewTodosService(todosRepo)
 	todosHandler := handler.NewTodosHandler(todosService)
 
 	r.HandleFunc("POST /todos", todosHandler.Create)
