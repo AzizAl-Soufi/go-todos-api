@@ -17,11 +17,12 @@ func NewTodosService(repo repository.TodosRepository) TodosService {
 	return &todoService{repo: repo}
 }
 
-func (s *todoService) CreateTodo(ctx context.Context, title string) (*domain.Todo, error) {
+func (s *todoService) CreateTodo(ctx context.Context, user *domain.CreateTodoDTO) (*domain.Todo, error) {
 
 	newTodo := &domain.Todo{
 		ID:        bson.NewObjectID(),
-		Title:     title,
+		UserID:    user.UserID,
+		Title:     user.Title,
 		Completed: false,
 		CreatedAt: time.Now(),
 	}
@@ -66,6 +67,18 @@ func (s *todoService) DeleteTodo(ctx context.Context, id bson.ObjectID) error {
 	return nil
 }
 
+func (s *todoService) DeleteTodoByUserID(ctx context.Context, userId bson.ObjectID, todoId bson.ObjectID) error {
+	if err := s.repo.DeleteByID(ctx, todoId); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (s *todoService) GetTodos(ctx context.Context) ([]*domain.Todo, error) {
 	return s.repo.GetAll(ctx)
+}
+
+func (s *todoService) GetTodosByUserID(ctx context.Context, userId bson.ObjectID) ([]*domain.Todo, error) {
+	return s.repo.GetByUserID(ctx, userId)
 }

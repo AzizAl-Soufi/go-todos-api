@@ -11,18 +11,25 @@ import (
 
 	"github.com/AzizAl-Soufi/todos-api/internal/common/config"
 	"github.com/AzizAl-Soufi/todos-api/internal/pkg/database/mongodb"
-	"github.com/AzizAl-Soufi/todos-api/internal/todos/handler"
-	"github.com/AzizAl-Soufi/todos-api/internal/todos/repository"
-	services "github.com/AzizAl-Soufi/todos-api/internal/todos/service"
+
+	todosHandler "github.com/AzizAl-Soufi/todos-api/internal/todos/handler"
+	todosRepository "github.com/AzizAl-Soufi/todos-api/internal/todos/repository"
+	todosService "github.com/AzizAl-Soufi/todos-api/internal/todos/service"
+
+	usersHandler "github.com/AzizAl-Soufi/todos-api/internal/users/handler"
+	usersRepository "github.com/AzizAl-Soufi/todos-api/internal/users/repository"
+	usersService "github.com/AzizAl-Soufi/todos-api/internal/users/service"
 )
 
 type application struct {
-	config *config.Config
-	repo   repository.TodosRepository
+	config    *config.Config
+	todosRepo todosRepository.TodosRepository
+	usersRepo usersRepository.UsersRepository
 }
 
 func NewApplication(ctx context.Context, cfg *config.Config) (application, func()) {
-	var todosRepo repository.TodosRepository
+	var todosRepo todosRepository.TodosRepository
+	var usersRepo usersRepository.UsersRepository
 	var cleanup func() = func() {} // Default to a no-op function
 
 	dbType := cfg.DBType
@@ -56,18 +63,21 @@ func NewApplication(ctx context.Context, cfg *config.Config) (application, func(
 			}
 		}
 
-		todosRepo = repository.NewMongoTodosRepository(db)
+		todosRepo = todosRepository.NewMongoTodosRepository(db)
+		usersRepo = usersRepository.NewMongoUsersRepository(db)
 
 	case "memory":
-		todosRepo = repository.NewInMemoryTodosRepository()
+		todosRepo = todosRepository.NewInMemoryTodosRepository()
+		usersRepo = usersRepository.NewInMemoryUsersRepository()
 
 	default:
 		log.Fatalf("unsupported DB_TYPE: %s", dbType)
 	}
 
 	app := application{
-		config: cfg,
-		repo:   todosRepo,
+		config:    cfg,
+		todosRepo: todosRepo,
+		usersRepo: usersRepo,
 	}
 
 	return app, cleanup
@@ -79,8 +89,15 @@ func (app *application) initialize() http.Handler {
 		w.Write([]byte("ok"))
 	})
 
-	todosService := services.NewTodosService(app.repo)
-	todosHandler := handler.NewTodosHandler(todosService)
+	todosService := todosService.NewTodosService(app.todosRepo)
+	todosHandler := todosHandler.NewTodosHandler(todosService)
+
+	usersService := usersService.NewUsersService(app.usersRepo, app.todosRepo)
+	usersHandler := usersHandler.NewUsersHandler(usersService)
+
+	r.HandleFunc("POST /auth", usersHandler.Auth)
+	r.HandleFunc("DELETE /user/{userId}", usersHandler.Delete)
+	r.HandleFunc("GET /overview/{userId}", usersHandler.GetOverview)
 
 	r.HandleFunc("POST /todos", todosHandler.Create)
 	r.HandleFunc("GET /todos", todosHandler.GettAll)

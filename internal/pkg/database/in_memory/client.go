@@ -2,7 +2,7 @@ package inMemory
 
 import "sync"
 
-type InMemoryClient[T any] struct {
+type InMemoryClient[K comparable, V any] struct {
 	Mu   sync.RWMutex
-	Data map[string]*T
+	Data map[K]*V
 }

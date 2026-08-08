@@ -5,32 +5,29 @@ package domain
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
-)
 
-var (
-	InvalidRequestTitleValue = errors.New("invalid title value")
-	InvalidRequestBody       = errors.New("invalid request body")
-	InvalidRequestValue      = errors.New("invalid request value")
+	"github.com/AzizAl-Soufi/todos-api/internal/common"
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 type CreateTodoDTO struct {
-	Title string `json:"title"`
+	UserID bson.ObjectID `json:"userId" bson:"userId"`
+	Title  string        `json:"title"`
 }
 
 func ValidateCreateDTO(r *http.Request) (*CreateTodoDTO, error) {
 	var dto CreateTodoDTO
 	if err := json.NewDecoder(r.Body).Decode(&dto); err != nil {
-		return nil, InvalidRequestBody
+		return nil, common.ErrInvalidRequestBody
 	}
 	defer r.Body.Close()
 
 	dto.Title = strings.TrimSpace(dto.Title)
 	if dto.Title == "" {
-		return nil, InvalidRequestTitleValue
+		return nil, common.ErrInvalidRequestTitleValue
 	}
 
 	return &dto, nil
@@ -44,35 +41,35 @@ type UpdateTodoDTO struct {
 func ValidateUpdateTodoDTO(r *http.Request) (*UpdateTodoDTO, error) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		return nil, InvalidRequestBody
+		return nil, common.ErrInvalidRequestBody
 	}
 	defer r.Body.Close()
 
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
-		return nil, InvalidRequestBody
+		return nil, common.ErrInvalidRequestBody
 	}
 
 	if len(fields) == 0 {
-		return nil, InvalidRequestBody
+		return nil, common.ErrInvalidRequestBody
 	}
 
 	if value, ok := fields["title"]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
-		return nil, InvalidRequestTitleValue
+		return nil, common.ErrInvalidRequestTitleValue
 	}
 	if value, ok := fields["completed"]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
-		return nil, InvalidRequestValue
+		return nil, common.ErrInvalidRequestValue
 	}
 
 	var dto UpdateTodoDTO
 	if err := json.Unmarshal(body, &dto); err != nil {
-		return nil, InvalidRequestBody
+		return nil, common.ErrInvalidRequestBody
 	}
 
 	if dto.Title != nil {
 		*dto.Title = strings.TrimSpace(*dto.Title)
 		if *dto.Title == "" {
-			return nil, InvalidRequestTitleValue
+			return nil, common.ErrInvalidRequestTitleValue
 		}
 	}
 

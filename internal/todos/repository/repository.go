@@ -2,14 +2,8 @@ package repository
 
 import (
 	"context"
-	"errors"
 )
 
-var (
-	ErrNotFound      = errors.New("entity not found")
-	ErrDuplicate     = errors.New("entity already exists")
-	ErrInvalidEntity = errors.New("invalid entity")
-)
 
 type ListOptions interface {
 	Validate(T any) error

@@ -4,21 +4,19 @@ import (
 	"context"
 	"time"
 
+	"github.com/AzizAl-Soufi/todos-api/internal/common"
 	inmem "github.com/AzizAl-Soufi/todos-api/internal/pkg/database/in_memory"
 	"github.com/AzizAl-Soufi/todos-api/internal/todos/domain"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 type inMemoryTodosRepo struct {
-	inmem.InMemoryClient[domain.Todo]
-
-	// Mu   sync.RWMutex
-	// data map[string]*domain.Todo
+	inmem.InMemoryClient[string, domain.Todo]
 }
 
 func NewInMemoryTodosRepository() TodosRepository {
 	return &inMemoryTodosRepo{
-		InMemoryClient: inmem.InMemoryClient[domain.Todo]{
+		InMemoryClient: inmem.InMemoryClient[string, domain.Todo]{
 			Data: make(map[string]*domain.Todo),
 		},
 	}
@@ -43,7 +41,7 @@ func (r *inMemoryTodosRepo) Update(ctx context.Context, id bson.ObjectID, todo *
 
 	exists, ok := r.Data[id.Hex()]
 	if !ok {
-		return ErrNotFound
+		return common.ErrNotFound
 	}
 
 	updated, err := todo.UpdateEntity(exists)
@@ -71,7 +69,7 @@ func (r *inMemoryTodosRepo) GetByID(ctx context.Context, id bson.ObjectID) (*dom
 
 	todo, ok := r.Data[id.Hex()]
 	if !ok {
-		return nil, ErrNotFound
+		return nil, common.ErrNotFound
 	}
 
 	return todo, nil
@@ -83,9 +81,53 @@ func (r *inMemoryTodosRepo) DeleteByID(ctx context.Context, id bson.ObjectID) er
 
 	todo, ok := r.Data[id.Hex()]
 	if !ok {
-		return ErrNotFound
+		return common.ErrNotFound
 	}
 	delete(r.Data, todo.ID.Hex())
+
+	return nil
+}
+
+func (r *inMemoryTodosRepo) GetByUserID(ctx context.Context, id bson.ObjectID) ([]*domain.Todo, error) {
+	r.Mu.RLock()
+	defer r.Mu.RUnlock()
+
+	todos := make([]*domain.Todo, 0)
+	for _, t := range r.Data {
+		if t.UserID == id {
+			todos = append(todos, t)
+		}
+	}
+	return todos, nil
+}
+
+func (r *inMemoryTodosRepo) DeleteTodoByUserID(ctx context.Context, userId bson.ObjectID, todoId bson.ObjectID) error {
+	r.Mu.Lock()
+	defer r.Mu.Unlock()
+
+	todo, ok := r.Data[todoId.Hex()]
+	if !ok {
+		return common.ErrNotFound
+	}
+
+	if todo.UserID != userId {
+		return common.ErrNotFound
+	}
+
+	delete(r.Data, todoId.Hex())
+
+	return nil
+}
+
+func (r *inMemoryTodosRepo) DeleteByUserID(ctx context.Context, userId bson.ObjectID) error {
+	r.Mu.Lock()
+	defer r.Mu.Unlock()
+
+	for key, todo := range r.Data {
+		if todo.UserID == userId {
+			delete(r.Data, key)
+		}
+	}
 
 	return nil
 }
