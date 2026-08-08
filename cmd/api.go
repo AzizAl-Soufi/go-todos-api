@@ -34,7 +34,7 @@ func NewApplication(ctx context.Context, cfg *config.Config) (application, func(
 	case "mongo":
 		uri := cfg.MongoURI
 		dbName := cfg.MongoDBN
-		if uri == ""  || dbName == "" {
+		if uri == "" || dbName == "" {
 			log.Fatal("Set your mongodb connection string in environment variables.")
 		}
 
@@ -84,7 +84,7 @@ func (app *application) initialize() http.Handler {
 
 	r.HandleFunc("POST /todos", todosHandler.Create)
 	r.HandleFunc("GET /todos", todosHandler.GettAll)
-	r.HandleFunc("GET /todos/{id}", todosHandler.Delete)
+	r.HandleFunc("GET /todos/{id}", todosHandler.Get)
 	r.HandleFunc("PUT /todos/{id}", todosHandler.Update)
 	r.HandleFunc("DELETE /todos/{id}", todosHandler.Delete)
 	return r
