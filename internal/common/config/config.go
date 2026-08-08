@@ -7,12 +7,13 @@ type Config struct {
 	Debug    bool   `mapstructure:"DEBUG"`
 	MongoURI string `mapstructure:"MONGO_URI"`
 	MongoDBN string `mapstructure:"MONGO_DBN"`
+	DBType   string `mapstructure:"DB_TYPE"`
 }
 
 func LoadConfig() (*Config, error) {
 	viper.SetConfigFile(".env")
 	viper.SetConfigType("env")
-    _ = viper.ReadInConfig()
+	_ = viper.ReadInConfig()
 
 	viper.AutomaticEnv()
 

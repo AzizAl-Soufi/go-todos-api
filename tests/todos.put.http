@@ -1,0 +1,9 @@
+PUT http://localhost:8000/todos/6a777304f1562c70449f437e
+Content-Type: application/json
+
+{"completed": true}
+
+# {"title": "Testing golang PUT Methods"}
+# {"title": "Testing golang PUT Method", "completed": true}
+# {"title": "Testing golang PUT Methods", "completed": false}
+# {"title": "Testing golang PUT Method", "completed": null}

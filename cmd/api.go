@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"log/slog"
 	"net/http"
 	"time"
 
-	"github.com/AzizAl-Soufi/todos-api/internal/core/config"
-	"github.com/AzizAl-Soufi/todos-api/internal/pkg/mongodb"
+	"github.com/AzizAl-Soufi/todos-api/internal/common/config"
+	"github.com/AzizAl-Soufi/todos-api/internal/pkg/database/mongodb"
 	"github.com/AzizAl-Soufi/todos-api/internal/todos/handler"
 	"github.com/AzizAl-Soufi/todos-api/internal/todos/repository"
 	services "github.com/AzizAl-Soufi/todos-api/internal/todos/service"
@@ -17,7 +18,59 @@ import (
 
 type application struct {
 	config *config.Config
-	db     mongodb.MongoDBClient
+	repo   repository.TodosRepository
+}
+
+func NewApplication(ctx context.Context, cfg *config.Config) (application, func()) {
+	var todosRepo repository.TodosRepository
+	var cleanup func() = func() {} // Default to a no-op function
+
+	dbType := cfg.DBType
+	if dbType == "" {
+		dbType = "memory"
+	}
+
+	switch dbType {
+	case "mongo":
+		uri := cfg.MongoURI
+		dbName := cfg.MongoDBN
+		if uri == ""  || dbName == "" {
+			log.Fatal("Set your mongodb connection string in environment variables.")
+		}
+
+		db, err := mongodb.New(ctx, cfg)
+		if err != nil {
+			log.Fatalf("Failed to connect to MongoDB: %v", err)
+		}
+
+		if err := db.Ping(ctx); err != nil {
+			log.Fatalf("Failed to ping MongoDB: %v", err)
+		}
+
+		cleanup = func() {
+			slog.Info("Closing MongoDB connection...")
+			disconnectCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := db.Close(disconnectCtx); err != nil {
+				slog.Error("Error disconnecting from MongoDB", "error", err)
+			}
+		}
+
+		todosRepo = repository.NewMongoTodosRepository(db)
+
+	case "memory":
+		todosRepo = repository.NewInMemoryTodosRepository()
+
+	default:
+		log.Fatalf("unsupported DB_TYPE: %s", dbType)
+	}
+
+	app := application{
+		config: cfg,
+		repo:   todosRepo,
+	}
+
+	return app, cleanup
 }
 
 func (app *application) initialize() http.Handler {
@@ -26,12 +79,14 @@ func (app *application) initialize() http.Handler {
 		w.Write([]byte("ok"))
 	})
 
-	todosRepo := repository.NewMongoTodosRepository(app.db)
-	todosService := services.NewTodosService(todosRepo)
+	todosService := services.NewTodosService(app.repo)
 	todosHandler := handler.NewTodosHandler(todosService)
 
 	r.HandleFunc("POST /todos", todosHandler.Create)
 	r.HandleFunc("GET /todos", todosHandler.GettAll)
+	r.HandleFunc("GET /todos/{id}", todosHandler.Delete)
+	r.HandleFunc("PUT /todos/{id}", todosHandler.Update)
+	r.HandleFunc("DELETE /todos/{id}", todosHandler.Delete)
 	return r
 }
 

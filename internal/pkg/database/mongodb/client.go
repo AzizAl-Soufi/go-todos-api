@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/AzizAl-Soufi/todos-api/internal/core/config"
+	"github.com/AzizAl-Soufi/todos-api/internal/common/config"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
@@ -13,19 +13,12 @@ import (
 type MongoDBClient interface {
 	Ping(ctx context.Context) error
 	Database() *mongo.Database
-	Collections() *Collections
 	Close(ctx context.Context) error
 }
 
-type Collections struct {
-	Users *mongo.Collection
-	Todos *mongo.Collection
-}
-
 type MongoDB struct {
-	client      *mongo.Client
-	database    *mongo.Database
-	collections *Collections
+	client   *mongo.Client
+	database *mongo.Database
 }
 
 var _ MongoDBClient = (*MongoDB)(nil)
@@ -35,7 +28,6 @@ func New(ctx context.Context, config *config.Config) (MongoDBClient, error) {
 	if err := db.connect(ctx, config.MongoURI, config.MongoDBN); err != nil {
 		return nil, err
 	}
-	db.initializeCollections()
 	return db, nil
 }
 
@@ -53,10 +45,6 @@ func (m *MongoDB) Database() *mongo.Database {
 	return m.database
 }
 
-func (m *MongoDB) Collections() *Collections {
-	return m.collections
-}
-
 func (m *MongoDB) Ping(ctx context.Context) error {
 	if m.client == nil {
 		return fmt.Errorf("client not connected")
@@ -71,11 +59,4 @@ func (m *MongoDB) Close(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	return m.client.Disconnect(ctx)
-}
-
-func (m *MongoDB) initializeCollections() {
-	m.collections = &Collections{
-		Users: m.database.Collection("users"),
-		Todos: m.database.Collection("todos"),
-	}
 }

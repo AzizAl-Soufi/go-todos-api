@@ -1,4 +1,4 @@
-POST http://localhost:8000/todos
+POST http://localhost:8000/todos HTTP/1.1
 Content-Type: application/json
 
 {"title": "Testing golang repository pattern architecture."}

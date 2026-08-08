@@ -2,14 +2,12 @@ package main
 
 import (
 	"context"
-	"log"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"github.com/AzizAl-Soufi/todos-api/internal/core/config"
-	"github.com/AzizAl-Soufi/todos-api/internal/pkg/mongodb"
+	"github.com/AzizAl-Soufi/todos-api/internal/common/config"
 )
 
 func main() {
@@ -20,32 +18,14 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	uri := cfg.MongoURI
-	if uri == "" {
-		log.Fatal("Set your mongodb connection string in environment variables.")
-	}
 
-	db, err := mongodb.New(ctx, cfg)
-	if err != nil {
-		log.Fatalf("Failed to connect to MongoDB: %v", err)
-	}
+	api, cleanup := NewApplication(ctx, cfg)
 
-	defer func() {
-		if err := db.Close(ctx); err != nil {
-			log.Printf("Error disconnecting from MongoDB: %v", err)
-		}
-	}()
+	defer cleanup()
 
-	if err := db.Ping(ctx); err != nil {
-		log.Fatalf("Failed to ping MongoDB: %v", err)
-	}
+	handler := api.initialize()
 
-	api := application{
-		config: cfg,
-		db:     db,
-	}
-
-	if err := api.run(ctx, api.initialize()); err != nil {
+	if err := api.run(ctx, handler); err != nil {
 		slog.Error("Server has failed to start", "error", err.Error())
 
 		os.Exit(1)
