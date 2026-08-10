@@ -23,7 +23,7 @@ type MongoDB struct {
 
 var _ MongoDBClient = (*MongoDB)(nil)
 
-func New(ctx context.Context, config *config.Config) (MongoDBClient, error) {
+func New(ctx context.Context, config *config.DatabaseConfig) (MongoDBClient, error) {
 	db := &MongoDB{}
 	if err := db.connect(ctx, config.MongoURI, config.MongoDBN); err != nil {
 		return nil, err

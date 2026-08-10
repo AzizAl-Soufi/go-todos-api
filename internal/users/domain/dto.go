@@ -2,10 +2,12 @@ package domain
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/mail"
 	"strings"
+
+	apperrors "github.com/AzizAl-Soufi/todos-api/internal/common/errors"
+	"github.com/AzizAl-Soufi/todos-api/internal/common/middleware"
 )
 
 type UserDTO struct {
@@ -15,19 +17,48 @@ type UserDTO struct {
 
 func ValidateUserDTO(r *http.Request) (*UserDTO, error) {
 	var dto UserDTO
-	_ = json.NewDecoder(r.Body).Decode(&dto)
+	err := json.NewDecoder(r.Body).Decode(&dto)
+
+	if err != nil {
+		return nil, apperrors.ErrInvalidRequestBody
+	}
 
 	if strings.TrimSpace(dto.Name) == "" {
-		return nil, errors.New("name is required")
+		return nil, apperrors.Validation("INVALID_NAME", "name is required")
 	}
 
 	if strings.TrimSpace(dto.Email) == "" {
-		return nil, errors.New("email is required")
+		return nil, apperrors.Validation("INVALID_EMAIL", "email is required")
 	}
 
 	address, err := mail.ParseAddress(dto.Email)
 	if err != nil || address.Address != dto.Email {
-		return nil, errors.New("invalid email")
+		return nil, apperrors.Validation("INVALID_EMAIL", "invalid email")
+	}
+
+	return &dto, nil
+}
+
+type RegisterUserData struct {
+	User     *User     `json:"user"`
+	Overview *Overview `json:"overview"`
+}
+
+type RegisterUserResponse struct {
+	User          *RegisterUserData     `json:"user"`
+	Authorization *middleware.TokenPair `json:"authorization"`
+}
+
+type RefreshRequest struct {
+	RefreshToken string `json:"refresh_token"`
+}
+
+func ValidateRefreshRequestDTO(r *http.Request) (*RefreshRequest, error) {
+	var dto RefreshRequest
+	_ = json.NewDecoder(r.Body).Decode(&dto)
+
+	if strings.TrimSpace(dto.RefreshToken) == "" {
+		return nil, apperrors.Validation("INVALID_VALUE", "Refresh token is required")
 	}
 
 	return &dto, nil

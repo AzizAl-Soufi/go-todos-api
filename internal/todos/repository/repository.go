@@ -4,7 +4,6 @@ import (
 	"context"
 )
 
-
 type ListOptions interface {
 	Validate(T any) error
 }

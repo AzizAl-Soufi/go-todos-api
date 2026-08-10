@@ -3,9 +3,10 @@ package service
 import (
 	"context"
 	"errors"
-	"time"
+	"fmt"
 
-	"github.com/AzizAl-Soufi/todos-api/internal/common"
+	apperrors "github.com/AzizAl-Soufi/todos-api/internal/common/errors"
+	"github.com/AzizAl-Soufi/todos-api/internal/common/middleware"
 	"github.com/AzizAl-Soufi/todos-api/internal/users/domain"
 	"github.com/AzizAl-Soufi/todos-api/internal/users/repository"
 
@@ -17,20 +18,19 @@ import (
 type usersService struct {
 	repo      repository.UsersRepository
 	todosRepo todos_repo.TodosRepository
+	jwt       *middleware.JWTMiddleware
 }
 
-func NewUsersService(repo repository.UsersRepository, todosRepo todos_repo.TodosRepository) UsersService {
-	return &usersService{repo: repo, todosRepo: todosRepo}
+func NewUsersService(
+	repo repository.UsersRepository,
+	todosRepo todos_repo.TodosRepository,
+	jwt *middleware.JWTMiddleware,
+) UsersService {
+	return &usersService{repo: repo, todosRepo: todosRepo, jwt: jwt}
 }
 
-func (s *usersService) Auth(ctx context.Context, user *domain.UserDTO) (*domain.Overview, error) {
-
-	userObject, err := s.repo.Auth(ctx, &domain.User{
-		ID:        bson.NewObjectID(),
-		Name:      user.Name,
-		Email:     user.Email,
-		CreatedAt: time.Now(),
-	})
+func (s *usersService) Register(ctx context.Context, user *domain.UserDTO) (*domain.RegisterUserResponse, error) {
+	userObject, err := s.repo.Register(ctx, user)
 	if err != nil {
 		return nil, err
 	}
@@ -39,9 +39,71 @@ func (s *usersService) Auth(ctx context.Context, user *domain.UserDTO) (*domain.
 	if userObject.IsNew == true {
 		todos = make([]*todos_domain.Todo, 0)
 	} else {
-		todos, err = s.todosRepo.GetByUserID(ctx, userObject.ID)
+		todos, err = s.todosRepo.GetAll(ctx, userObject.ID)
 		if err != nil {
-			if !errors.Is(err, common.ErrNotFound) {
+			if !errors.Is(err, apperrors.ErrNotFound) {
+				return nil, err
+			}
+			todos = []*todos_domain.Todo{}
+		}
+	}
+
+	tokens, err := s.jwt.GenerateTokenPair(
+		middleware.NewAuthorization(userObject.ID, userObject.Name, userObject.Email),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to generate tokens: %v", err.Error())
+	}
+
+	overview := &domain.Overview{
+		ID:    userObject.ID,
+		Name:  userObject.Name,
+		Email: user.Email,
+		Todos: todos,
+	}
+
+	return &domain.RegisterUserResponse{
+		Authorization: tokens,
+		User:          &domain.RegisterUserData{User: userObject, Overview: overview},
+	}, nil
+}
+
+func (s *usersService) RefreshToken(ctx context.Context, params *domain.RefreshRequest) (*middleware.TokenPair, error) {
+
+	claims, err := s.jwt.ValidateRefreshToken(params.RefreshToken)
+	if err != nil {
+		return nil, err
+	}
+
+	userObject, err := s.repo.Auth(ctx, claims.CustomerInfo.Email)
+	if err != nil {
+		return nil, err
+	}
+
+	tokens, err := s.jwt.GenerateTokenPair(
+		middleware.NewAuthorization(userObject.ID, userObject.Name, userObject.Email),
+	)
+	if err != nil {
+		return nil, apperrors.Unauthorizedf("UNKNOWN_ERROR", "Failed to generate tokens: %v", err.Error())
+	}
+
+	return tokens, nil
+}
+
+func (s *usersService) Auth(ctx context.Context, auth *middleware.Authorization) (*domain.Overview, error) {
+
+	userObject, err := s.repo.GetOverview(ctx, auth.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	var todos []*todos_domain.Todo
+	if userObject.IsNew == true {
+		todos = make([]*todos_domain.Todo, 0)
+	} else {
+		todos, err = s.todosRepo.GetAll(ctx, userObject.ID)
+		if err != nil {
+			if !errors.Is(err, apperrors.ErrNotFound) {
 				return nil, err
 
 			}
@@ -49,14 +111,14 @@ func (s *usersService) Auth(ctx context.Context, user *domain.UserDTO) (*domain.
 		}
 	}
 
-	overview := domain.Overview{
+	overview := &domain.Overview{
 		ID:    userObject.ID,
 		Name:  userObject.Name,
-		Email: user.Email,
+		Email: userObject.Email,
 		Todos: todos,
 	}
 
-	return &overview, nil
+	return overview, nil
 }
 
 func (s *usersService) GetOverview(ctx context.Context, id bson.ObjectID) (*domain.Overview, error) {
@@ -65,9 +127,9 @@ func (s *usersService) GetOverview(ctx context.Context, id bson.ObjectID) (*doma
 		return nil, err
 	}
 
-	todos, err := s.todosRepo.GetByUserID(ctx, user.ID)
+	todos, err := s.todosRepo.GetAll(ctx, user.ID)
 	if err != nil {
-		if !errors.Is(err, common.ErrNotFound) {
+		if !errors.Is(err, apperrors.ErrNotFound) {
 			return nil, err
 
 		}
@@ -85,7 +147,7 @@ func (s *usersService) GetOverview(ctx context.Context, id bson.ObjectID) (*doma
 
 func (s *usersService) DeleteAccount(ctx context.Context, id bson.ObjectID) error {
 	if err := s.todosRepo.DeleteByUserID(ctx, id); err != nil {
-		if !errors.Is(err, common.ErrNotFound) {
+		if !errors.Is(err, apperrors.ErrNotFound) {
 			return err
 		}
 	}

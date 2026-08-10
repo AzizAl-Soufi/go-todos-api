@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/AzizAl-Soufi/todos-api/internal/common"
 	"github.com/AzizAl-Soufi/todos-api/internal/common/config"
+	"github.com/AzizAl-Soufi/todos-api/internal/common/middleware"
 	"github.com/AzizAl-Soufi/todos-api/internal/pkg/database/mongodb"
 
 	todosHandler "github.com/AzizAl-Soufi/todos-api/internal/todos/handler"
@@ -23,6 +25,7 @@ import (
 
 type application struct {
 	config    *config.Config
+	jwt       *middleware.JWTMiddleware
 	todosRepo todosRepository.TodosRepository
 	usersRepo usersRepository.UsersRepository
 }
@@ -32,20 +35,21 @@ func NewApplication(ctx context.Context, cfg *config.Config) (application, func(
 	var usersRepo usersRepository.UsersRepository
 	var cleanup func() = func() {} // Default to a no-op function
 
-	dbType := cfg.DBType
+	dbCfg := cfg.DB
+	dbType := dbCfg.DBType
 	if dbType == "" {
 		dbType = "memory"
 	}
 
 	switch dbType {
 	case "mongo":
-		uri := cfg.MongoURI
-		dbName := cfg.MongoDBN
+		uri := dbCfg.MongoURI
+		dbName := dbCfg.MongoDBN
 		if uri == "" || dbName == "" {
 			log.Fatal("Set your mongodb connection string in environment variables.")
 		}
 
-		db, err := mongodb.New(ctx, cfg)
+		db, err := mongodb.New(ctx, &dbCfg)
 		if err != nil {
 			log.Fatalf("Failed to connect to MongoDB: %v", err)
 		}
@@ -74,10 +78,16 @@ func NewApplication(ctx context.Context, cfg *config.Config) (application, func(
 		log.Fatalf("unsupported DB_TYPE: %s", dbType)
 	}
 
+	jwt, err := middleware.NewJWTMiddleware(&cfg.JWT)
+	if err != nil {
+		log.Fatalf("Failed to Initialize JWT: %v", err)
+	}
+
 	app := application{
 		config:    cfg,
 		todosRepo: todosRepo,
 		usersRepo: usersRepo,
+		jwt:       jwt,
 	}
 
 	return app, cleanup
@@ -92,23 +102,29 @@ func (app *application) initialize() http.Handler {
 	todosService := todosService.NewTodosService(app.todosRepo)
 	todosHandler := todosHandler.NewTodosHandler(todosService)
 
-	usersService := usersService.NewUsersService(app.usersRepo, app.todosRepo)
+	usersService := usersService.NewUsersService(app.usersRepo, app.todosRepo, app.jwt)
 	usersHandler := usersHandler.NewUsersHandler(usersService)
 
-	r.HandleFunc("POST /auth", usersHandler.Auth)
-	r.HandleFunc("DELETE /user/{userId}", usersHandler.Delete)
-	r.HandleFunc("GET /overview/{userId}", usersHandler.GetOverview)
+	r.HandleFunc("POST /register", usersHandler.Register)
+	r.HandleFunc("POST /refresh-token", usersHandler.RefreshToken)
 
-	r.HandleFunc("POST /todos", todosHandler.Create)
-	r.HandleFunc("GET /todos", todosHandler.GettAll)
-	r.HandleFunc("GET /todos/{id}", todosHandler.Get)
-	r.HandleFunc("PUT /todos/{id}", todosHandler.Update)
-	r.HandleFunc("DELETE /todos/{id}", todosHandler.Delete)
-	return r
+	protectedRouter := http.NewServeMux()
+
+	protectedRouter.HandleFunc("POST /auth", usersHandler.Auth)
+	protectedRouter.HandleFunc("DELETE /user", usersHandler.Delete)
+	protectedRouter.HandleFunc("GET /overview", usersHandler.GetOverview)
+	protectedRouter.HandleFunc("POST /todos", todosHandler.Create)
+	protectedRouter.HandleFunc("GET /todos", todosHandler.GettAll)
+	protectedRouter.HandleFunc("GET /todos/{id}", todosHandler.Get)
+	protectedRouter.HandleFunc("PUT /todos/{id}", todosHandler.Update)
+	protectedRouter.HandleFunc("DELETE /todos/{id}", todosHandler.Delete)
+
+	r.Handle("/", app.jwt.RequireAuth(protectedRouter))
+	return common.Recovery(r)
 }
 
 func (app *application) run(ctx context.Context, h http.Handler) error {
-	port := fmt.Sprintf(":%v", app.config.Port)
+	port := fmt.Sprintf(":%v", app.config.App.Port)
 	server := &http.Server{
 		Addr:         port,
 		Handler:      h,

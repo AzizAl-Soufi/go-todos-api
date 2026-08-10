@@ -13,12 +13,12 @@ type User struct {
 	Email     string        `json:"email" bson:"email"`
 	CreatedAt time.Time     `json:"createdAt" bson:"createdAt,omitempty"`
 
-	IsNew bool
+	IsNew bool `json:"-" bson:"-"`
 }
 
 type Overview struct {
-	ID    bson.ObjectID `json:"id"`
-	Name  string        `json:"name"`
-	Email string        `json:"email"`
+	ID    bson.ObjectID  `json:"id"`
+	Name  string         `json:"name"`
+	Email string         `json:"email"`
 	Todos []*domain.Todo `json:"todos"`
 }

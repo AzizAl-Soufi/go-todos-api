@@ -2,15 +2,14 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"time"
 
-	"github.com/AzizAl-Soufi/todos-api/internal/common"
+	apperrors "github.com/AzizAl-Soufi/todos-api/internal/common/errors"
 	inmem "github.com/AzizAl-Soufi/todos-api/internal/pkg/database/in_memory"
 	"github.com/AzizAl-Soufi/todos-api/internal/users/domain"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
-
-// Ensure ErrNotFound is defined in this package, e.g., var ErrNotFound = errors.New("not found")
 
 type inMemoryUsersRepo struct {
 	inmem.InMemoryClient[string, domain.User]
@@ -24,21 +23,40 @@ func NewInMemoryUsersRepository() UsersRepository {
 	}
 }
 
-func (r *inMemoryUsersRepo) Auth(ctx context.Context, user *domain.User) (*domain.User, error) {
+func (r *inMemoryUsersRepo) Register(ctx context.Context, user *domain.UserDTO) (*domain.User, error) {
+	var userData *domain.User
 	r.Mu.Lock()
 	defer r.Mu.Unlock()
 
-	if user.ID == (bson.ObjectID{}) {
-		user.ID = bson.NewObjectID()
+	existsUser, err := r.Auth(ctx, user.Email)
+	if err != nil {
+		if errors.Is(err, apperrors.ErrNotFound) {
+			newUser := &domain.User{
+				ID:        bson.NewObjectID(),
+				Name:      existsUser.Name,
+				Email:     user.Email,
+				CreatedAt: time.Now().UTC(),
+				IsNew:     true,
+			}
+			userData = newUser
+			return userData, nil
+		} else {
+			return nil, err
+		}
 	}
-	if user.CreatedAt.IsZero() {
-		user.CreatedAt = time.Now()
-	}
+	userData = existsUser
+	userData.IsNew = false
 
-	userData, ok := r.Data[user.Email]
-	if ok {
-		r.Data[user.Email] = user
-		return user, nil
+	return userData, nil
+}
+
+func (r *inMemoryUsersRepo) Auth(ctx context.Context, email string) (*domain.User, error) {
+	r.Mu.RLock()
+	defer r.Mu.RUnlock()
+
+	userData, ok := r.Data[email]
+	if !ok {
+		return nil, apperrors.ErrNotFound
 	}
 
 	return userData, nil
@@ -50,7 +68,7 @@ func (r *inMemoryUsersRepo) GetOverview(ctx context.Context, id bson.ObjectID) (
 
 	user, ok := r.Data[id.Hex()]
 	if !ok {
-		return nil, common.ErrNotFound
+		return nil, apperrors.ErrNotFound
 	}
 
 	return user, nil
@@ -62,7 +80,7 @@ func (r *inMemoryUsersRepo) Delete(ctx context.Context, id bson.ObjectID) error 
 
 	// Just check if it exists using the ID passed into the function
 	if _, ok := r.Data[id.Hex()]; !ok {
-		return common.ErrNotFound
+		return apperrors.ErrNotFound
 	}
 
 	// Delete using the hex string directly

@@ -8,12 +8,12 @@ import (
 )
 
 type TodosRepository interface {
-	Create(ctx context.Context, todo *domain.Todo) error
-	Update(ctx context.Context, id bson.ObjectID, todo *domain.UpdateTodoDTO) error
-	DeleteByID(ctx context.Context, id bson.ObjectID) error
-	DeleteTodoByUserID(ctx context.Context, userId bson.ObjectID, todoId bson.ObjectID) error
+	Create(ctx context.Context, userId bson.ObjectID, todo *domain.Todo) error
+	Update(ctx context.Context, id bson.ObjectID, userId bson.ObjectID, todo *domain.UpdateTodoDTO) error
+	DeleteTodo(ctx context.Context, id bson.ObjectID, userId bson.ObjectID) error
 	DeleteByUserID(ctx context.Context, userId bson.ObjectID) error
+	
+	Get(ctx context.Context, id bson.ObjectID, userId bson.ObjectID) (*domain.Todo, error)
 	GetByID(ctx context.Context, id bson.ObjectID) (*domain.Todo, error)
-	GetByUserID(ctx context.Context, id bson.ObjectID) ([]*domain.Todo, error)
-	GetAll(ctx context.Context) ([]*domain.Todo, error)
+	GetAll(ctx context.Context, userId bson.ObjectID) ([]*domain.Todo, error)
 }

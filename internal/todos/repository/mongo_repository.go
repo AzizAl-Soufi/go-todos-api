@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/AzizAl-Soufi/todos-api/internal/common"
+	apperrors "github.com/AzizAl-Soufi/todos-api/internal/common/errors"
 	"github.com/AzizAl-Soufi/todos-api/internal/pkg/database/mongodb"
 	"github.com/AzizAl-Soufi/todos-api/internal/todos/domain"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -22,7 +22,7 @@ func NewMongoTodosRepository(db mongodb.MongoDBClient) TodosRepository {
 	}
 }
 
-func (r *mongoTodoRepo) Create(ctx context.Context, todo *domain.Todo) error {
+func (r *mongoTodoRepo) Create(ctx context.Context, userId bson.ObjectID, todo *domain.Todo) error {
 	if todo.ID == (bson.ObjectID{}) {
 		todo.ID = bson.NewObjectID()
 	}
@@ -31,7 +31,7 @@ func (r *mongoTodoRepo) Create(ctx context.Context, todo *domain.Todo) error {
 	return err
 }
 
-func (r *mongoTodoRepo) Update(ctx context.Context, id bson.ObjectID, dto *domain.UpdateTodoDTO) error {
+func (r *mongoTodoRepo) Update(ctx context.Context, id bson.ObjectID, userId bson.ObjectID, dto *domain.UpdateTodoDTO) error {
 	updateFields := bson.M{}
 
 	if dto.Title != nil {
@@ -48,13 +48,13 @@ func (r *mongoTodoRepo) Update(ctx context.Context, id bson.ObjectID, dto *domai
 
 	_, err := r.coll.UpdateOne(
 		ctx,
-		bson.M{"_id": id},
+		bson.M{"_id": id, "userId": userId},
 		bson.M{"$set": updateFields},
 	)
 
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
-			return common.ErrNotFound
+			return apperrors.ErrNotFound
 		}
 
 		return err
@@ -63,8 +63,8 @@ func (r *mongoTodoRepo) Update(ctx context.Context, id bson.ObjectID, dto *domai
 	return nil
 }
 
-func (r *mongoTodoRepo) GetAll(ctx context.Context) ([]*domain.Todo, error) {
-	cursor, err := r.coll.Find(ctx, bson.M{})
+func (r *mongoTodoRepo) GetAll(ctx context.Context, userId bson.ObjectID) ([]*domain.Todo, error) {
+	cursor, err := r.coll.Find(ctx, bson.M{"userId": userId})
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +107,7 @@ func (r *mongoTodoRepo) GetByID(ctx context.Context, id bson.ObjectID) (*domain.
 	err := r.coll.FindOne(ctx, bson.M{"_id": id}).Decode(&todo)
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, common.ErrNotFound
+			return nil, apperrors.ErrNotFound
 		}
 		return nil, err
 	}
@@ -115,40 +115,54 @@ func (r *mongoTodoRepo) GetByID(ctx context.Context, id bson.ObjectID) (*domain.
 	return &todo, nil
 }
 
-func (r *mongoTodoRepo) DeleteByID(ctx context.Context, id bson.ObjectID) error {
+func (r *mongoTodoRepo) Get(ctx context.Context, id bson.ObjectID, userId bson.ObjectID) (*domain.Todo, error) {
+	var todo domain.Todo
+
+	err := r.coll.FindOne(ctx, bson.M{"_id": id, "userId": userId}).Decode(&todo)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, apperrors.ErrNotFound
+		}
+		return nil, err
+	}
+
+	return &todo, nil
+}
+
+func (r *mongoTodoRepo) DeleteByID(ctx context.Context, id bson.ObjectID, userId bson.ObjectID) error {
 	result, err := r.coll.DeleteOne(ctx, bson.M{"_id": id})
 	if err != nil {
 		return err
 	}
 
 	if result.DeletedCount == 0 {
-		return common.ErrNotFound
+		return apperrors.ErrNotFound
 	}
 
 	return nil
 }
 
-func (r *mongoTodoRepo) DeleteTodoByUserID(ctx context.Context, userId bson.ObjectID, todoId bson.ObjectID) error {
-	result, err := r.coll.DeleteOne(ctx, bson.M{"$and": bson.A{bson.M{"_id": todoId}, bson.M{"userId": userId}}})
+func (r *mongoTodoRepo) DeleteTodo(ctx context.Context, todoId bson.ObjectID, userId bson.ObjectID) error {
+	result, err := r.coll.DeleteOne(ctx, bson.M{"_id": todoId, "userId": userId})
 	if err != nil {
 		return err
 	}
 
 	if result.DeletedCount == 0 {
-		return common.ErrNotFound
+		return apperrors.ErrNotFound
 	}
 
 	return nil
 }
 
 func (r *mongoTodoRepo) DeleteByUserID(ctx context.Context, userId bson.ObjectID) error {
-	result, err := r.coll.DeleteOne(ctx, bson.M{"userId": userId})
+	result, err := r.coll.DeleteMany(ctx, bson.M{"userId": userId})
 	if err != nil {
 		return err
 	}
 
 	if result.DeletedCount == 0 {
-		return common.ErrNotFound
+		return apperrors.ErrNotFound
 	}
 
 	return nil

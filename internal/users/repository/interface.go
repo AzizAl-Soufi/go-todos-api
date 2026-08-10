@@ -8,7 +8,8 @@ import (
 )
 
 type UsersRepository interface {
-	Auth(ctx context.Context, user *domain.User) (*domain.User, error)
+	Register(ctx context.Context, user *domain.UserDTO) (*domain.User, error)
+	Auth(ctx context.Context, email string) (*domain.User, error)
 	GetOverview(ctx context.Context, id bson.ObjectID) (*domain.User, error)
 	Delete(ctx context.Context, id bson.ObjectID) error
 }

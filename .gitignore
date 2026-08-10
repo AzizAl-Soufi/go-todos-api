@@ -32,4 +32,5 @@ go.work.sum
 # .vscode/
 
 # other files
+secrets
 m.md

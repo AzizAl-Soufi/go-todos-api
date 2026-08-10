@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/AzizAl-Soufi/todos-api/internal/common"
+	apperrors "github.com/AzizAl-Soufi/todos-api/internal/common/errors"
 	inmem "github.com/AzizAl-Soufi/todos-api/internal/pkg/database/in_memory"
 	"github.com/AzizAl-Soufi/todos-api/internal/todos/domain"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -22,9 +22,10 @@ func NewInMemoryTodosRepository() TodosRepository {
 	}
 }
 
-func (r *inMemoryTodosRepo) Create(ctx context.Context, todo *domain.Todo) error {
+func (r *inMemoryTodosRepo) Create(ctx context.Context, userID bson.ObjectID, todo *domain.Todo) error {
 	r.Mu.Lock()
 	defer r.Mu.Unlock()
+	todo.UserID = userID
 	if todo.ID == (bson.ObjectID{}) {
 		todo.ID = bson.NewObjectID()
 	}
@@ -35,13 +36,13 @@ func (r *inMemoryTodosRepo) Create(ctx context.Context, todo *domain.Todo) error
 	return nil
 }
 
-func (r *inMemoryTodosRepo) Update(ctx context.Context, id bson.ObjectID, todo *domain.UpdateTodoDTO) error {
+func (r *inMemoryTodosRepo) Update(ctx context.Context, id bson.ObjectID, userID bson.ObjectID, todo *domain.UpdateTodoDTO) error {
 	r.Mu.Lock()
 	defer r.Mu.Unlock()
 
 	exists, ok := r.Data[id.Hex()]
-	if !ok {
-		return common.ErrNotFound
+	if !ok || exists.UserID != userID {
+		return apperrors.ErrNotFound
 	}
 
 	updated, err := todo.UpdateEntity(exists)
@@ -53,12 +54,14 @@ func (r *inMemoryTodosRepo) Update(ctx context.Context, id bson.ObjectID, todo *
 	return nil
 }
 
-func (r *inMemoryTodosRepo) GetAll(ctx context.Context) ([]*domain.Todo, error) {
+func (r *inMemoryTodosRepo) GetAll(ctx context.Context, userID bson.ObjectID) ([]*domain.Todo, error) {
 	r.Mu.RLock()
 	defer r.Mu.RUnlock()
 	todos := make([]*domain.Todo, 0, len(r.Data))
 	for _, t := range r.Data {
-		todos = append(todos, t)
+		if t.UserID == userID {
+			todos = append(todos, t)
+		}
 	}
 	return todos, nil
 }
@@ -69,7 +72,19 @@ func (r *inMemoryTodosRepo) GetByID(ctx context.Context, id bson.ObjectID) (*dom
 
 	todo, ok := r.Data[id.Hex()]
 	if !ok {
-		return nil, common.ErrNotFound
+		return nil, apperrors.ErrNotFound
+	}
+
+	return todo, nil
+}
+
+func (r *inMemoryTodosRepo) Get(ctx context.Context, id bson.ObjectID, userID bson.ObjectID) (*domain.Todo, error) {
+	r.Mu.RLock()
+	defer r.Mu.RUnlock()
+
+	todo, ok := r.Data[id.Hex()]
+	if !ok || todo.UserID != userID {
+		return nil, apperrors.ErrNotFound
 	}
 
 	return todo, nil
@@ -81,7 +96,7 @@ func (r *inMemoryTodosRepo) DeleteByID(ctx context.Context, id bson.ObjectID) er
 
 	todo, ok := r.Data[id.Hex()]
 	if !ok {
-		return common.ErrNotFound
+		return apperrors.ErrNotFound
 	}
 	delete(r.Data, todo.ID.Hex())
 
@@ -101,17 +116,17 @@ func (r *inMemoryTodosRepo) GetByUserID(ctx context.Context, id bson.ObjectID) (
 	return todos, nil
 }
 
-func (r *inMemoryTodosRepo) DeleteTodoByUserID(ctx context.Context, userId bson.ObjectID, todoId bson.ObjectID) error {
+func (r *inMemoryTodosRepo) DeleteTodo(ctx context.Context, todoId bson.ObjectID, userId bson.ObjectID) error {
 	r.Mu.Lock()
 	defer r.Mu.Unlock()
 
 	todo, ok := r.Data[todoId.Hex()]
 	if !ok {
-		return common.ErrNotFound
+		return apperrors.ErrNotFound
 	}
 
 	if todo.UserID != userId {
-		return common.ErrNotFound
+		return apperrors.ErrNotFound
 	}
 
 	delete(r.Data, todoId.Hex())

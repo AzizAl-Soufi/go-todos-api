@@ -9,25 +9,31 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/AzizAl-Soufi/todos-api/internal/common"
-	"go.mongodb.org/mongo-driver/v2/bson"
+	apperrors "github.com/AzizAl-Soufi/todos-api/internal/common/errors"
 )
 
 type CreateTodoDTO struct {
-	UserID bson.ObjectID `json:"userId" bson:"userId"`
-	Title  string        `json:"title"`
+	Title string `json:"title"`
 }
+
+var ErrInvalidRequestTitleValue apperrors.AppError = apperrors.Validation(
+	"INVALID_TITLE",
+	"invalid title value",
+)
 
 func ValidateCreateDTO(r *http.Request) (*CreateTodoDTO, error) {
 	var dto CreateTodoDTO
 	if err := json.NewDecoder(r.Body).Decode(&dto); err != nil {
-		return nil, common.ErrInvalidRequestBody
+		return nil, apperrors.ErrInvalidRequestBody
 	}
 	defer r.Body.Close()
 
 	dto.Title = strings.TrimSpace(dto.Title)
 	if dto.Title == "" {
-		return nil, common.ErrInvalidRequestTitleValue
+		return nil, apperrors.Validation(
+			"INVALID_TITLE",
+			"invalid title value",
+		)
 	}
 
 	return &dto, nil
@@ -41,35 +47,35 @@ type UpdateTodoDTO struct {
 func ValidateUpdateTodoDTO(r *http.Request) (*UpdateTodoDTO, error) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		return nil, common.ErrInvalidRequestBody
+		return nil, apperrors.ErrInvalidRequestBody
 	}
 	defer r.Body.Close()
 
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
-		return nil, common.ErrInvalidRequestBody
+		return nil, apperrors.ErrInvalidRequestBody
 	}
 
 	if len(fields) == 0 {
-		return nil, common.ErrInvalidRequestBody
+		return nil, apperrors.ErrInvalidRequestBody
 	}
 
 	if value, ok := fields["title"]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
-		return nil, common.ErrInvalidRequestTitleValue
+		return nil, ErrInvalidRequestTitleValue
 	}
 	if value, ok := fields["completed"]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
-		return nil, common.ErrInvalidRequestValue
+		return nil, apperrors.ErrInvalidRequestValue
 	}
 
 	var dto UpdateTodoDTO
 	if err := json.Unmarshal(body, &dto); err != nil {
-		return nil, common.ErrInvalidRequestBody
+		return nil, apperrors.ErrInvalidRequestBody
 	}
 
 	if dto.Title != nil {
 		*dto.Title = strings.TrimSpace(*dto.Title)
 		if *dto.Title == "" {
-			return nil, common.ErrInvalidRequestTitleValue
+			return nil, ErrInvalidRequestTitleValue
 		}
 	}
 
