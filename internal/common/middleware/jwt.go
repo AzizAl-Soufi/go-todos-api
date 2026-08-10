@@ -14,16 +14,15 @@ import (
 	"github.com/AzizAl-Soufi/go-todos-api/internal/common/config"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/golang-jwt/jwt/v5/request"
-	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 type Authorization struct {
-	ID    bson.ObjectID `json:"id" bson:"id"`
-	Name  string        `json:"name" bson:"name"`
-	Email string        `json:"email" bson:"email"`
+	ID    string `json:"id" bson:"id"`
+	Name  string `json:"name" bson:"name"`
+	Email string `json:"email" bson:"email"`
 }
 
-func NewAuthorization(id bson.ObjectID, name, email string) *Authorization {
+func NewAuthorization(id string, name, email string) *Authorization {
 	return &Authorization{
 		ID:    id,
 		Name:  name,
@@ -42,8 +41,8 @@ const (
 
 type JWTCustomClaims struct {
 	jwt.RegisteredClaims
-	TokenType    string `json:"token_type"`
-	ID           string `json:"id"`
+	TokenType    string         `json:"token_type"`
+	ID           string         `json:"id"`
 	CustomerInfo *Authorization `json:"customer_info"`
 }
 
@@ -88,7 +87,7 @@ func (middlware *JWTMiddleware) GenerateTokenPair(user *Authorization) (*TokenPa
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Minute)),
 		},
 		TokenType:    TypeAuthToken,
-		ID:           user.ID.Hex(),
+		ID:           user.ID,
 		CustomerInfo: user,
 	}
 	accessToken := jwt.NewWithClaims(jwt.SigningMethodRS256, accessTokenClaims)
@@ -102,7 +101,7 @@ func (middlware *JWTMiddleware) GenerateTokenPair(user *Authorization) (*TokenPa
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour)),
 		},
 		TokenType:    TypeRefreshToken,
-		ID:           user.ID.Hex(),
+		ID:           user.ID,
 		CustomerInfo: user,
 	}
 	refreshToken := jwt.NewWithClaims(jwt.SigningMethodRS256, refreshTokenClaims)
@@ -155,6 +154,8 @@ func (m *JWTMiddleware) RequireAuth(next http.Handler) http.Handler {
 				message = ErrExpiredAccessToken.Error()
 			case errors.Is(err, jwt.ErrTokenInvalidId):
 				message = jwt.ErrTokenInvalidId.Error()
+			case errors.Is(err, jwt.ErrTokenMalformed):
+				message = jwt.ErrTokenMalformed.Error()
 			}
 			common.RespondError(w, http.StatusUnauthorized, message)
 			return

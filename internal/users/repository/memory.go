@@ -5,23 +5,23 @@ import (
 	"time"
 
 	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/common/errors"
-	inmem "github.com/AzizAl-Soufi/go-todos-api/internal/pkg/database/in_memory"
+	inmem "github.com/AzizAl-Soufi/go-todos-api/internal/pkg/database/memory"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/users/domain"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 type inMemoryUsersRepo struct {
-	inmem.InMemoryClient[bson.ObjectID, domain.User]
+	inmem.MemoryClient[string, domain.User]
 }
 
 func NewInMemoryUsersRepository() UsersRepository {
 	return &inMemoryUsersRepo{
-		InMemoryClient: inmem.InMemoryClient[bson.ObjectID, domain.User]{
-			Data: make(map[bson.ObjectID]*domain.User),
+		MemoryClient: inmem.MemoryClient[string, domain.User]{
+			Data: make(map[string]*domain.User),
 		},
 	}
 }
-func (r *inMemoryUsersRepo) getUser(id bson.ObjectID) (*domain.User, error) {
+func (r *inMemoryUsersRepo) getUser(id string) (*domain.User, error) {
 	r.Mu.RLock()
 	defer r.Mu.RUnlock()
 
@@ -44,7 +44,7 @@ func (r *inMemoryUsersRepo) Register(_ context.Context, user *domain.UserDTO) (*
 	}
 
 	newUser := &domain.User{
-		ID:        bson.NewObjectID(),
+		ID:        bson.NewObjectID().Hex(),
 		Name:      user.Name,
 		Email:     user.Email,
 		CreatedAt: time.Now().UTC(),
@@ -55,23 +55,23 @@ func (r *inMemoryUsersRepo) Register(_ context.Context, user *domain.UserDTO) (*
 	return newUser, nil
 }
 
-func (r *inMemoryUsersRepo) Auth(_ context.Context, id bson.ObjectID) (*domain.User, error) {
+func (r *inMemoryUsersRepo) Auth(_ context.Context, id string) (*domain.User, error) {
 	return r.getUser(id)
 }
 
-func (r *inMemoryUsersRepo) GetOverview(_ context.Context, id bson.ObjectID) (*domain.User, error) {
+func (r *inMemoryUsersRepo) GetOverview(_ context.Context, id string) (*domain.User, error) {
 	return r.getUser(id)
 }
 
-func (r *inMemoryUsersRepo) Delete(_ context.Context, id bson.ObjectID) error {
+func (r *inMemoryUsersRepo) Delete(_ context.Context, id string) error {
 	r.Mu.Lock()
 	defer r.Mu.Unlock()
 
-	if _, err := r.getUser(id); err != nil {
+	u, ok := r.Data[id]
+	if !ok {
 		return apperrors.ErrNotFound
 	}
 
-	delete(r.Data, id)
-
+	delete(r.Data, u.ID)
 	return nil
 }

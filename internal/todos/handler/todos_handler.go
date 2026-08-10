@@ -1,14 +1,12 @@
 package handler
 
 import (
-	"errors"
 	"net/http"
 
 	common "github.com/AzizAl-Soufi/go-todos-api/internal/common"
 	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/common/errors"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/todos/domain"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/todos/service"
-	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 type TodosHandler struct {
@@ -45,20 +43,7 @@ func (h *TodosHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 func (h *TodosHandler) Get(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
-	id, err := bson.ObjectIDFromHex(idStr)
-	if err != nil {
-		if appErr, ok := apperrors.From(err); ok {
-			common.RespondError(w, appErr.Status(), appErr.Message())
-			return
-		}
-		if errors.Is(err, bson.ErrInvalidHex) {
-			common.RespondError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		common.RespondError(w, http.StatusInternalServerError, err.Error())
-	}
-
-	todo, err := h.svc.GetTodo(r.Context(), id)
+	todo, err := h.svc.GetTodo(r.Context(), idStr)
 	if err != nil {
 		if appErr, ok := apperrors.From(err); ok {
 			common.RespondError(w, appErr.Status(), appErr.Message())
@@ -74,15 +59,6 @@ func (h *TodosHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 func (h *TodosHandler) Update(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
-	id, err := bson.ObjectIDFromHex(idStr)
-	if err != nil {
-		if errors.Is(err, bson.ErrInvalidHex) {
-			common.RespondError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		common.RespondError(w, http.StatusInternalServerError, err.Error())
-	}
-
 	params, err := domain.ValidateUpdateTodoDTO(r)
 	if err != nil {
 		if appErr, ok := apperrors.From(err); ok {
@@ -93,7 +69,7 @@ func (h *TodosHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	todo, err := h.svc.UpdateTodo(r.Context(), id, params)
+	todo, err := h.svc.UpdateTodo(r.Context(), idStr, params)
 	if err != nil {
 		if appErr, ok := apperrors.From(err); ok {
 			common.RespondError(w, appErr.Status(), appErr.Message())
@@ -108,17 +84,7 @@ func (h *TodosHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 func (h *TodosHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
-	id, err := bson.ObjectIDFromHex(idStr)
-	if err != nil {
-		if errors.Is(err, bson.ErrInvalidHex) {
-			common.RespondError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		common.RespondError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	if err := h.svc.DeleteTodo(r.Context(), id); err != nil {
+	if err := h.svc.DeleteTodo(r.Context(), idStr); err != nil {
 		if appErr, ok := apperrors.From(err); ok {
 			common.RespondError(w, appErr.Status(), appErr.Message())
 			return

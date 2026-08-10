@@ -8,9 +8,9 @@ type AppConfig struct {
 }
 
 type DatabaseConfig struct {
-	MongoURI string `mapstructure:"MONGO_URI"`
-	MongoDBN string `mapstructure:"MONGO_DBN"`
-	DBType   string `mapstructure:"DB_TYPE"`
+	DatabaseURI  string `mapstructure:"DATABASE_URI"`
+	DatabaseName string `mapstructure:"DATABASE_NAME"`
+	DBType       string `mapstructure:"DB_TYPE"`
 }
 
 type JWTConfig struct {

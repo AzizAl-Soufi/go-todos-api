@@ -13,6 +13,7 @@ import (
 	"github.com/AzizAl-Soufi/go-todos-api/internal/common/config"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/common/middleware"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/pkg/database/mongodb"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/pkg/database/postgres"
 
 	todosHandler "github.com/AzizAl-Soufi/go-todos-api/internal/todos/handler"
 	todosRepository "github.com/AzizAl-Soufi/go-todos-api/internal/todos/repository"
@@ -43,8 +44,8 @@ func NewApplication(ctx context.Context, cfg *config.Config) (application, func(
 
 	switch dbType {
 	case "mongo":
-		uri := dbCfg.MongoURI
-		dbName := dbCfg.MongoDBN
+		uri := dbCfg.DatabaseURI
+		dbName := dbCfg.DatabaseName
 		if uri == "" || dbName == "" {
 			log.Fatal("Set your mongodb connection string in environment variables.")
 		}
@@ -69,6 +70,31 @@ func NewApplication(ctx context.Context, cfg *config.Config) (application, func(
 
 		todosRepo = todosRepository.NewMongoTodosRepository(db)
 		usersRepo = usersRepository.NewMongoUsersRepository(db)
+
+	case "postgres":
+		uri := dbCfg.DatabaseURI
+		if uri == "" {
+			log.Fatal("Set your databaase connection string in environment variables.")
+		}
+
+		db, err := postgres.New(ctx, (&dbCfg).DatabaseURI)
+		if err != nil {
+			log.Fatalf("Failed to connect to PostgreSQL: %v", err)
+		}
+
+		if err := db.Ping(ctx); err != nil {
+			log.Fatalf("Failed to ping PostgreSQL: %v", err)
+		}
+
+		todosRepo = todosRepository.NewPostgresTodosRepository(db)
+		usersRepo = usersRepository.NewPostgresUsersRepository(db)
+
+		cleanup = func() {
+			slog.Info("Closing PostgreSQL connection...")
+			if err := db.Close(); err != nil {
+				slog.Error("Error disconnecting from PostgreSQL", "error", err)
+			}
+		}
 
 	case "memory":
 		todosRepo = todosRepository.NewInMemoryTodosRepository()
@@ -96,7 +122,7 @@ func NewApplication(ctx context.Context, cfg *config.Config) (application, func(
 func (app *application) initialize() http.Handler {
 	r := http.NewServeMux()
 	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		
+
 		w.Write([]byte("ok"))
 	})
 

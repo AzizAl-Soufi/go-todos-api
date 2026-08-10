@@ -10,4 +10,9 @@ var (
 		"DUPLICATE_ENTITY",
 		"entity already exists",
 	)
+	
+	ErrExistingUser = Conflict(
+		"USER_EXISTS", 
+		"user already exists",
+	)
 )
