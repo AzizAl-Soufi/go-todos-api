@@ -43,7 +43,7 @@ func (s *todoService) CreateTodo(ctx context.Context, todo *domain.CreateTodoDTO
 	}
 
 	newTodo := &domain.Todo{
-		ID:        bson.NewObjectID(),
+		ID:        bson.NewObjectID().Hex(),
 		UserID:    user.ID,
 		Title:     todo.Title,
 		Completed: false,
@@ -59,7 +59,7 @@ func (s *todoService) CreateTodo(ctx context.Context, todo *domain.CreateTodoDTO
 	return newTodo, nil
 }
 
-func (s *todoService) GetTodo(ctx context.Context, id bson.ObjectID) (*domain.Todo, error) {
+func (s *todoService) GetTodo(ctx context.Context, id string) (*domain.Todo, error) {
 	user, err := s.getAuthenticatedUser(ctx)
 	if err != nil {
 		return nil, err
@@ -73,7 +73,7 @@ func (s *todoService) GetTodo(ctx context.Context, id bson.ObjectID) (*domain.To
 	return todo, nil
 }
 
-func (s *todoService) UpdateTodo(ctx context.Context, id bson.ObjectID, params *domain.UpdateTodoDTO) (*domain.Todo, error) {
+func (s *todoService) UpdateTodo(ctx context.Context, id string, params *domain.UpdateTodoDTO) (*domain.Todo, error) {
 	user, err := s.getAuthenticatedUser(ctx)
 	if err != nil {
 		return nil, err
@@ -92,7 +92,7 @@ func (s *todoService) UpdateTodo(ctx context.Context, id bson.ObjectID, params *
 	return todo, nil
 }
 
-func (s *todoService) DeleteTodo(ctx context.Context, id bson.ObjectID) error {
+func (s *todoService) DeleteTodo(ctx context.Context, id string) error {
 	user, err := s.getAuthenticatedUser(ctx)
 	if err != nil {
 		return err

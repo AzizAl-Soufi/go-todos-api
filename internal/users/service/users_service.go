@@ -19,6 +19,10 @@ type usersService struct {
 	jwt       *middleware.JWTMiddleware
 }
 
+func authorizationForUser(user *domain.User) *middleware.Authorization {
+	return middleware.NewAuthorization(user.ID, user.Name, user.Email)
+}
+
 func NewUsersService(
 	repo repository.UsersRepository,
 	todosRepo todos_repo.TodosRepository,
@@ -46,9 +50,7 @@ func (s *usersService) Register(ctx context.Context, user *domain.UserDTO) (*dom
 		}
 	}
 
-	tokens, err := s.jwt.GenerateTokenPair(
-		middleware.NewAuthorization(userObject.ID, userObject.Name, userObject.Email),
-	)
+	tokens, err := s.jwt.GenerateTokenPair(authorizationForUser(userObject))
 	if err != nil {
 		return nil, apperrors.Unauthorizedf("UNKNOWN_ERROR", "Failed to generate tokens: %v", err.Error())
 	}
@@ -76,7 +78,7 @@ func (s *usersService) RefreshToken(ctx context.Context, params *domain.RefreshR
 	}
 
 	tokens, err := s.jwt.GenerateTokenPair(
-		middleware.NewAuthorization(userObject.ID, userObject.Name, userObject.Email),
+		authorizationForUser(userObject),
 	)
 	if err != nil {
 		return nil, apperrors.Unauthorizedf("UNKNOWN_ERROR", "Failed to generate tokens: %v", err.Error())
