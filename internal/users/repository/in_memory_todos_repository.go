@@ -21,7 +21,7 @@ func NewInMemoryUsersRepository() UsersRepository {
 		},
 	}
 }
-func (r *inMemoryUsersRepo) getUser(ctx context.Context, id bson.ObjectID) (*domain.User, error) {
+func (r *inMemoryUsersRepo) getUser(id bson.ObjectID) (*domain.User, error) {
 	r.Mu.RLock()
 	defer r.Mu.RUnlock()
 
@@ -33,7 +33,7 @@ func (r *inMemoryUsersRepo) getUser(ctx context.Context, id bson.ObjectID) (*dom
 	return userData, nil
 }
 
-func (r *inMemoryUsersRepo) Register(ctx context.Context, user *domain.UserDTO) (*domain.User, error) {
+func (r *inMemoryUsersRepo) Register(_ context.Context, user *domain.UserDTO) (*domain.User, error) {
 	r.Mu.Lock()
 	defer r.Mu.Unlock()
 	for _, existingUser := range r.Data {
@@ -55,35 +55,19 @@ func (r *inMemoryUsersRepo) Register(ctx context.Context, user *domain.UserDTO) 
 	return newUser, nil
 }
 
-func (r *inMemoryUsersRepo) Auth(ctx context.Context, id bson.ObjectID) (*domain.User, error) {
-	r.Mu.RLock()
-	defer r.Mu.RUnlock()
-
-	userData, ok := r.Data[id]
-	if !ok {
-		return nil, apperrors.ErrNotFound
-	}
-
-	return userData, nil
+func (r *inMemoryUsersRepo) Auth(_ context.Context, id bson.ObjectID) (*domain.User, error) {
+	return r.getUser(id)
 }
 
-func (r *inMemoryUsersRepo) GetOverview(ctx context.Context, id bson.ObjectID) (*domain.User, error) {
-	r.Mu.RLock()
-	defer r.Mu.RUnlock()
-
-	user, ok := r.Data[id]
-	if !ok {
-		return nil, apperrors.ErrNotFound
-	}
-
-	return user, nil
+func (r *inMemoryUsersRepo) GetOverview(_ context.Context, id bson.ObjectID) (*domain.User, error) {
+	return r.getUser(id)
 }
 
-func (r *inMemoryUsersRepo) Delete(ctx context.Context, id bson.ObjectID) error {
+func (r *inMemoryUsersRepo) Delete(_ context.Context, id bson.ObjectID) error {
 	r.Mu.Lock()
 	defer r.Mu.Unlock()
 
-	if _, ok := r.Data[id]; !ok {
+	if _, err := r.getUser(id); err != nil {
 		return apperrors.ErrNotFound
 	}
 

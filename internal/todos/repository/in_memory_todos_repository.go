@@ -22,7 +22,7 @@ func NewInMemoryTodosRepository() TodosRepository {
 	}
 }
 
-func (r *inMemoryTodosRepo) Create(ctx context.Context, userID bson.ObjectID, todo *domain.Todo) error {
+func (r *inMemoryTodosRepo) Create(_ context.Context, userID bson.ObjectID, todo *domain.Todo) error {
 	r.Mu.Lock()
 	defer r.Mu.Unlock()
 	todo.UserID = userID
@@ -59,7 +59,7 @@ func (r *inMemoryTodosRepo) Update(ctx context.Context, id bson.ObjectID, userID
 	return nil
 }
 
-func (r *inMemoryTodosRepo) GetAll(ctx context.Context, userID bson.ObjectID) ([]*domain.Todo, error) {
+func (r *inMemoryTodosRepo) GetAll(_ context.Context, userID bson.ObjectID) ([]*domain.Todo, error) {
 	r.Mu.RLock()
 	defer r.Mu.RUnlock()
 	todos := make([]*domain.Todo, 0, len(r.Data))
@@ -71,7 +71,7 @@ func (r *inMemoryTodosRepo) GetAll(ctx context.Context, userID bson.ObjectID) ([
 	return todos, nil
 }
 
-func (r *inMemoryTodosRepo) GetByID(ctx context.Context, id bson.ObjectID) (*domain.Todo, error) {
+func (r *inMemoryTodosRepo) GetByID(_ context.Context, id bson.ObjectID) (*domain.Todo, error) {
 	r.Mu.RLock()
 	defer r.Mu.RUnlock()
 
@@ -83,7 +83,7 @@ func (r *inMemoryTodosRepo) GetByID(ctx context.Context, id bson.ObjectID) (*dom
 	return todo, nil
 }
 
-func (r *inMemoryTodosRepo) Get(ctx context.Context, id bson.ObjectID, userID bson.ObjectID) (*domain.Todo, error) {
+func (r *inMemoryTodosRepo) Get(_ context.Context, id bson.ObjectID, userID bson.ObjectID) (*domain.Todo, error) {
 	r.Mu.RLock()
 	defer r.Mu.RUnlock()
 
@@ -95,7 +95,7 @@ func (r *inMemoryTodosRepo) Get(ctx context.Context, id bson.ObjectID, userID bs
 	return todo, nil
 }
 
-func (r *inMemoryTodosRepo) DeleteByID(ctx context.Context, id bson.ObjectID) error {
+func (r *inMemoryTodosRepo) DeleteByID(_ context.Context, id bson.ObjectID) error {
 	r.Mu.Lock()
 	defer r.Mu.Unlock()
 
@@ -108,7 +108,7 @@ func (r *inMemoryTodosRepo) DeleteByID(ctx context.Context, id bson.ObjectID) er
 	return nil
 }
 
-func (r *inMemoryTodosRepo) GetByUserID(ctx context.Context, id bson.ObjectID) ([]*domain.Todo, error) {
+func (r *inMemoryTodosRepo) GetByUserID(_ context.Context, id bson.ObjectID) ([]*domain.Todo, error) {
 	r.Mu.RLock()
 	defer r.Mu.RUnlock()
 
@@ -121,7 +121,7 @@ func (r *inMemoryTodosRepo) GetByUserID(ctx context.Context, id bson.ObjectID) (
 	return todos, nil
 }
 
-func (r *inMemoryTodosRepo) Delete(ctx context.Context, todoId bson.ObjectID, userId bson.ObjectID) error {
+func (r *inMemoryTodosRepo) Delete(_ context.Context, todoId bson.ObjectID, userId bson.ObjectID) error {
 	r.Mu.Lock()
 	defer r.Mu.Unlock()
 
@@ -139,7 +139,7 @@ func (r *inMemoryTodosRepo) Delete(ctx context.Context, todoId bson.ObjectID, us
 	return nil
 }
 
-func (r *inMemoryTodosRepo) DeleteByUserID(ctx context.Context, userId bson.ObjectID) error {
+func (r *inMemoryTodosRepo) DeleteByUserID(_ context.Context, userId bson.ObjectID) error {
 	r.Mu.Lock()
 	defer r.Mu.Unlock()
 

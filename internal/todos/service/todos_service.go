@@ -47,7 +47,7 @@ func (s *todoService) CreateTodo(ctx context.Context, todo *domain.CreateTodoDTO
 		UserID:    user.ID,
 		Title:     todo.Title,
 		Completed: false,
-		CreatedAt: time.Now(),
+		CreatedAt: time.Now().UTC(),
 	}
 
 	// Persist using the interface
