@@ -32,7 +32,12 @@ func (r *inMemoryTodosRepo) Create(ctx context.Context, userID bson.ObjectID, to
 	if todo.CreatedAt.IsZero() {
 		todo.CreatedAt = time.Now()
 	}
-	r.Data[todo.ID.Hex()] = todo
+	key := todo.ID.Hex()
+	if _, exists := r.Data[key]; exists {
+		return apperrors.ErrDuplicate
+	}
+
+	r.Data[key] = todo
 	return nil
 }
 

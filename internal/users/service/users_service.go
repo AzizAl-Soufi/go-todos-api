@@ -12,7 +12,6 @@ import (
 
 	todos_domain "github.com/AzizAl-Soufi/todos-api/internal/todos/domain"
 	todos_repo "github.com/AzizAl-Soufi/todos-api/internal/todos/repository"
-	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 type usersService struct {
@@ -90,9 +89,13 @@ func (s *usersService) RefreshToken(ctx context.Context, params *domain.RefreshR
 	return tokens, nil
 }
 
-func (s *usersService) Auth(ctx context.Context, auth *middleware.Authorization) (*domain.Overview, error) {
+func (s *usersService) Auth(ctx context.Context) (*domain.Overview, error) {
+	claims, ok := middleware.GetAuthorization(ctx)
+	if !ok {
+		return nil, middleware.ErrUnauthorizedContext
+	}
 
-	userObject, err := s.repo.GetOverview(ctx, auth.ID)
+	userObject, err := s.repo.GetOverview(ctx, claims.Email)
 	if err != nil {
 		return nil, err
 	}
@@ -121,8 +124,13 @@ func (s *usersService) Auth(ctx context.Context, auth *middleware.Authorization)
 	return overview, nil
 }
 
-func (s *usersService) GetOverview(ctx context.Context, id bson.ObjectID) (*domain.Overview, error) {
-	user, err := s.repo.GetOverview(ctx, id)
+func (s *usersService) GetOverview(ctx context.Context) (*domain.Overview, error) {
+	claims, ok := middleware.GetAuthorization(ctx)
+	if !ok {
+		return nil, middleware.ErrUnauthorizedContext
+	}
+
+	user, err := s.repo.GetOverview(ctx, claims.Email)
 	if err != nil {
 		return nil, err
 	}
@@ -145,14 +153,19 @@ func (s *usersService) GetOverview(ctx context.Context, id bson.ObjectID) (*doma
 	return &overview, nil
 }
 
-func (s *usersService) DeleteAccount(ctx context.Context, id bson.ObjectID) error {
-	if err := s.todosRepo.DeleteByUserID(ctx, id); err != nil {
+func (s *usersService) DeleteAccount(ctx context.Context) error {
+	claims, ok := middleware.GetAuthorization(ctx)
+	if !ok {
+		return middleware.ErrUnauthorizedContext
+	}
+
+	if err := s.todosRepo.DeleteByUserID(ctx, claims.ID); err != nil {
 		if !errors.Is(err, apperrors.ErrNotFound) {
 			return err
 		}
 	}
 
-	if err := s.repo.Delete(ctx, id); err != nil {
+	if err := s.repo.Delete(ctx, claims.Email); err != nil {
 		return err
 	}
 

@@ -5,7 +5,6 @@ import (
 
 	common "github.com/AzizAl-Soufi/todos-api/internal/common"
 	apperrors "github.com/AzizAl-Soufi/todos-api/internal/common/errors"
-	"github.com/AzizAl-Soufi/todos-api/internal/common/middleware"
 	"github.com/AzizAl-Soufi/todos-api/internal/users/domain"
 	"github.com/AzizAl-Soufi/todos-api/internal/users/service"
 )
@@ -39,7 +38,13 @@ func (h *UsersHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	common.RespondJSON(w, http.StatusCreated, authResponse)
+	var response any
+	if !authResponse.User.User.IsNew {
+		response = authResponse.User.Overview
+	} else {
+		response = authResponse.Authorization
+	}
+	common.RespondJSON(w, http.StatusCreated, response)
 }
 
 func (h *UsersHandler) RefreshToken(w http.ResponseWriter, r *http.Request) {
@@ -67,13 +72,7 @@ func (h *UsersHandler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *UsersHandler) Auth(w http.ResponseWriter, r *http.Request) {
-	auth, ok := middleware.GetAuthorization(r.Context())
-	if !ok {
-		common.RespondError(w, http.StatusForbidden, "Unauthorized: User data not found in context")
-		return
-	}
-
-	overview, err := h.svc.Auth(r.Context(), auth)
+	overview, err := h.svc.Auth(r.Context())
 	if err != nil {
 		if appErr, ok := apperrors.From(err); ok {
 			common.RespondError(w, appErr.Status(), appErr.Message())
@@ -87,13 +86,7 @@ func (h *UsersHandler) Auth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *UsersHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
-	auth, ok := middleware.GetAuthorization(r.Context())
-	if !ok {
-		common.RespondError(w, http.StatusForbidden, "Unauthorized: User data not found in context")
-		return
-	}
-
-	overview, err := h.svc.GetOverview(r.Context(), auth.ID)
+	overview, err := h.svc.GetOverview(r.Context())
 	if err != nil {
 		if appErr, ok := apperrors.From(err); ok {
 			common.RespondError(w, appErr.Status(), appErr.Message())
@@ -107,13 +100,7 @@ func (h *UsersHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *UsersHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	auth, ok := middleware.GetAuthorization(r.Context())
-	if !ok {
-		common.RespondError(w, http.StatusForbidden, "Unauthorized: User data not found in context")
-		return
-	}
-
-	if err := h.svc.DeleteAccount(r.Context(), auth.ID); err != nil {
+	if err := h.svc.DeleteAccount(r.Context()); err != nil {
 		if appErr, ok := apperrors.From(err); ok {
 			common.RespondError(w, appErr.Status(), appErr.Message())
 			return

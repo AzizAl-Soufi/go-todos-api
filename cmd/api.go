@@ -99,7 +99,7 @@ func (app *application) initialize() http.Handler {
 		w.Write([]byte("ok"))
 	})
 
-	todosService := todosService.NewTodosService(app.todosRepo)
+	todosService := todosService.NewTodosService(app.todosRepo, app.usersRepo)
 	todosHandler := todosHandler.NewTodosHandler(todosService)
 
 	usersService := usersService.NewUsersService(app.usersRepo, app.todosRepo, app.jwt)

@@ -7,6 +7,11 @@ var (
 		"EXPIRED_ACCESS_TOKEN",
 		"invalid or expired access token",
 	)
+	
+	ErrUnauthorizedContext = apperrors.Unauthorized(
+		"UNAUTHORIZED",
+		"Unauthorized: User data not found in context",
+	)
 
 	ErrExpiredRefreshToken = apperrors.Unauthorized(
 		"EXPIRED_REFRESH_TOKEN",

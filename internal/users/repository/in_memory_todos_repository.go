@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	apperrors "github.com/AzizAl-Soufi/todos-api/internal/common/errors"
@@ -24,30 +23,24 @@ func NewInMemoryUsersRepository() UsersRepository {
 }
 
 func (r *inMemoryUsersRepo) Register(ctx context.Context, user *domain.UserDTO) (*domain.User, error) {
-	var userData *domain.User
 	r.Mu.Lock()
 	defer r.Mu.Unlock()
-
-	existsUser, err := r.Auth(ctx, user.Email)
-	if err != nil {
-		if errors.Is(err, apperrors.ErrNotFound) {
-			newUser := &domain.User{
-				ID:        bson.NewObjectID(),
-				Name:      existsUser.Name,
-				Email:     user.Email,
-				CreatedAt: time.Now().UTC(),
-				IsNew:     true,
-			}
-			userData = newUser
-			return userData, nil
-		} else {
-			return nil, err
-		}
+	if existsUser, ok := r.Data[user.Email]; ok {
+		existsUser.IsNew = false
+		return existsUser, nil
 	}
-	userData = existsUser
-	userData.IsNew = false
 
-	return userData, nil
+	newUser := &domain.User{
+		ID:        bson.NewObjectID(),
+		Name:      user.Name,
+		Email:     user.Email,
+		CreatedAt: time.Now().UTC(),
+		IsNew:     true,
+	}
+	r.Data[user.Email] = newUser
+	r.Data[newUser.ID.Hex()] = newUser
+
+	return newUser, nil
 }
 
 func (r *inMemoryUsersRepo) Auth(ctx context.Context, email string) (*domain.User, error) {
@@ -62,11 +55,11 @@ func (r *inMemoryUsersRepo) Auth(ctx context.Context, email string) (*domain.Use
 	return userData, nil
 }
 
-func (r *inMemoryUsersRepo) GetOverview(ctx context.Context, id bson.ObjectID) (*domain.User, error) {
+func (r *inMemoryUsersRepo) GetOverview(ctx context.Context, email string) (*domain.User, error) {
 	r.Mu.RLock()
 	defer r.Mu.RUnlock()
 
-	user, ok := r.Data[id.Hex()]
+	user, ok := r.Data[email]
 	if !ok {
 		return nil, apperrors.ErrNotFound
 	}
@@ -74,17 +67,15 @@ func (r *inMemoryUsersRepo) GetOverview(ctx context.Context, id bson.ObjectID) (
 	return user, nil
 }
 
-func (r *inMemoryUsersRepo) Delete(ctx context.Context, id bson.ObjectID) error {
+func (r *inMemoryUsersRepo) Delete(ctx context.Context, email string) error {
 	r.Mu.Lock()
 	defer r.Mu.Unlock()
 
-	// Just check if it exists using the ID passed into the function
-	if _, ok := r.Data[id.Hex()]; !ok {
+	if _, ok := r.Data[email]; !ok {
 		return apperrors.ErrNotFound
 	}
 
-	// Delete using the hex string directly
-	delete(r.Data, id.Hex())
+	delete(r.Data, email)
 
 	return nil
 }

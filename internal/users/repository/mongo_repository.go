@@ -67,26 +67,17 @@ func (r *mongoUserRepo) Auth(ctx context.Context, email string) (*domain.User, e
 	return &userData, nil
 }
 
-func (r *mongoUserRepo) GetOverview(ctx context.Context, id bson.ObjectID) (*domain.User, error) {
-	cursor := r.coll.FindOne(ctx, bson.M{"_id": id})
-	if err := cursor.Err(); err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, apperrors.ErrNotFound
-		}
-		return nil, cursor.Err()
-	}
-
-	var user *domain.User
-	if err := cursor.Decode(&user); err != nil {
-		return nil, err
-	}
-
-	return user, nil
+func (r *mongoUserRepo) GetOverview(ctx context.Context, email string) (*domain.User, error) {
+	return r.Auth(ctx, email)
 }
 
-func (r *mongoUserRepo) Delete(ctx context.Context, id bson.ObjectID) error {
-	result, err := r.coll.DeleteOne(ctx, bson.M{"_id": id})
+func (r *mongoUserRepo) Delete(ctx context.Context, email string) error {
+	result, err := r.coll.DeleteOne(ctx, bson.M{"email": email})
 	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return apperrors.ErrNotFound
+		}
+
 		return err
 	}
 
