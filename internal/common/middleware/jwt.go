@@ -36,15 +36,15 @@ type contextKey string
 const authContextKey contextKey = "authorization"
 
 const (
-	TypeAuthToken    string = "authenticate_only"
-	TypeRefreshToken string = "refresh_only"
+	TypeAuthToken    string = "access"
+	TypeRefreshToken string = "refresh"
 )
 
 type JWTCustomClaims struct {
 	jwt.RegisteredClaims
-	TokenType    string
-	ID           string
-	CustomerInfo *Authorization
+	TokenType    string `json:"token_type"`
+	ID           string `json:"id"`
+	CustomerInfo *Authorization `json:"customer_info"`
 }
 
 type TokenPair struct {
@@ -81,26 +81,14 @@ func NewJWTMiddleware(cfg *config.JWTConfig) (*JWTMiddleware, error) {
 	return middlware, nil
 }
 
-func (middlware *JWTMiddleware) GenerateToken(user *Authorization) (string, error) {
-	t := jwt.New(jwt.GetSigningMethod("RS256"))
-
-	t.Claims = &JWTCustomClaims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Hour)),
-		},
-		TokenType:    TypeAuthToken,
-		CustomerInfo: user,
-	}
-
-	return t.SignedString(middlware.signKey)
-}
-
 func (middlware *JWTMiddleware) GenerateTokenPair(user *Authorization) (*TokenPair, error) {
 	accessTokenClaims := &JWTCustomClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Minute)),
 		},
 		TokenType:    TypeAuthToken,
+		ID:           user.ID.Hex(),
 		CustomerInfo: user,
 	}
 	accessToken := jwt.NewWithClaims(jwt.SigningMethodRS256, accessTokenClaims)
@@ -114,6 +102,7 @@ func (middlware *JWTMiddleware) GenerateTokenPair(user *Authorization) (*TokenPa
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour)),
 		},
 		TokenType:    TypeRefreshToken,
+		ID:           user.ID.Hex(),
 		CustomerInfo: user,
 	}
 	refreshToken := jwt.NewWithClaims(jwt.SigningMethodRS256, refreshTokenClaims)
@@ -139,7 +128,7 @@ func (middlware *JWTMiddleware) ValidateRefreshToken(tokenString string) (*JWTCu
 	}
 
 	if claims.TokenType != TypeRefreshToken {
-		return nil, fmt.Errorf("invalid token type: expected refresh token")
+		return nil, ErrInvalidRefreshTokenType
 	}
 
 	return claims, nil

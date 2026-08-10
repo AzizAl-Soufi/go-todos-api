@@ -11,23 +11,36 @@ import (
 )
 
 type inMemoryUsersRepo struct {
-	inmem.InMemoryClient[string, domain.User]
+	inmem.InMemoryClient[bson.ObjectID, domain.User]
 }
 
 func NewInMemoryUsersRepository() UsersRepository {
 	return &inMemoryUsersRepo{
-		InMemoryClient: inmem.InMemoryClient[string, domain.User]{
-			Data: make(map[string]*domain.User),
+		InMemoryClient: inmem.InMemoryClient[bson.ObjectID, domain.User]{
+			Data: make(map[bson.ObjectID]*domain.User),
 		},
 	}
+}
+func (r *inMemoryUsersRepo) getUser(ctx context.Context, id bson.ObjectID) (*domain.User, error) {
+	r.Mu.RLock()
+	defer r.Mu.RUnlock()
+
+	userData, ok := r.Data[id]
+	if !ok {
+		return nil, apperrors.ErrNotFound
+	}
+
+	return userData, nil
 }
 
 func (r *inMemoryUsersRepo) Register(ctx context.Context, user *domain.UserDTO) (*domain.User, error) {
 	r.Mu.Lock()
 	defer r.Mu.Unlock()
-	if existsUser, ok := r.Data[user.Email]; ok {
-		existsUser.IsNew = false
-		return existsUser, nil
+	for _, existingUser := range r.Data {
+		if existingUser.Email == user.Email {
+			existingUser.IsNew = false
+			return existingUser, nil
+		}
 	}
 
 	newUser := &domain.User{
@@ -37,17 +50,16 @@ func (r *inMemoryUsersRepo) Register(ctx context.Context, user *domain.UserDTO) 
 		CreatedAt: time.Now().UTC(),
 		IsNew:     true,
 	}
-	r.Data[user.Email] = newUser
-	r.Data[newUser.ID.Hex()] = newUser
+	r.Data[newUser.ID] = newUser
 
 	return newUser, nil
 }
 
-func (r *inMemoryUsersRepo) Auth(ctx context.Context, email string) (*domain.User, error) {
+func (r *inMemoryUsersRepo) Auth(ctx context.Context, id bson.ObjectID) (*domain.User, error) {
 	r.Mu.RLock()
 	defer r.Mu.RUnlock()
 
-	userData, ok := r.Data[email]
+	userData, ok := r.Data[id]
 	if !ok {
 		return nil, apperrors.ErrNotFound
 	}
@@ -55,11 +67,11 @@ func (r *inMemoryUsersRepo) Auth(ctx context.Context, email string) (*domain.Use
 	return userData, nil
 }
 
-func (r *inMemoryUsersRepo) GetOverview(ctx context.Context, email string) (*domain.User, error) {
+func (r *inMemoryUsersRepo) GetOverview(ctx context.Context, id bson.ObjectID) (*domain.User, error) {
 	r.Mu.RLock()
 	defer r.Mu.RUnlock()
 
-	user, ok := r.Data[email]
+	user, ok := r.Data[id]
 	if !ok {
 		return nil, apperrors.ErrNotFound
 	}
@@ -67,15 +79,15 @@ func (r *inMemoryUsersRepo) GetOverview(ctx context.Context, email string) (*dom
 	return user, nil
 }
 
-func (r *inMemoryUsersRepo) Delete(ctx context.Context, email string) error {
+func (r *inMemoryUsersRepo) Delete(ctx context.Context, id bson.ObjectID) error {
 	r.Mu.Lock()
 	defer r.Mu.Unlock()
 
-	if _, ok := r.Data[email]; !ok {
+	if _, ok := r.Data[id]; !ok {
 		return apperrors.ErrNotFound
 	}
 
-	delete(r.Data, email)
+	delete(r.Data, id)
 
 	return nil
 }

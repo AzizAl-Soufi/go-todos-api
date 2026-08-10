@@ -32,7 +32,7 @@ func New(ctx context.Context, config *config.DatabaseConfig) (MongoDBClient, err
 }
 
 func (m *MongoDB) connect(_ context.Context, uri, dbname string) error {
-	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	client, err := mongo.Connect(options.Client().ApplyURI(uri).SetConnectTimeout(5 * time.Second))
 	if err != nil {
 		return fmt.Errorf("failed to connect to mongodb: %w", err)
 	}

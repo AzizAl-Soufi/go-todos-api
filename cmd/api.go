@@ -96,6 +96,7 @@ func NewApplication(ctx context.Context, cfg *config.Config) (application, func(
 func (app *application) initialize() http.Handler {
 	r := http.NewServeMux()
 	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		
 		w.Write([]byte("ok"))
 	})
 

@@ -39,13 +39,8 @@ func ValidateUserDTO(r *http.Request) (*UserDTO, error) {
 	return &dto, nil
 }
 
-type RegisterUserData struct {
-	User     *User     `json:"user"`
-	Overview *Overview `json:"overview"`
-}
-
 type RegisterUserResponse struct {
-	User          *RegisterUserData     `json:"user"`
+	Overview *Overview `json:"overview"`
 	Authorization *middleware.TokenPair `json:"authorization"`
 }
 

@@ -27,7 +27,7 @@ func (s *todoService) getAuthenticatedUser(ctx context.Context) (*usersDomain.Us
 		return nil, middleware.ErrUnauthorizedContext
 	}
 
-	authenticatedUser, err := s.usersRepo.Auth(ctx, claims.Email)
+	authenticatedUser, err := s.usersRepo.Auth(ctx, claims.ID)
 	if err != nil {
 		return nil, middleware.ErrUnauthorized
 	}

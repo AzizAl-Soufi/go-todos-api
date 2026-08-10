@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/common/errors"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/common/middleware"
@@ -51,7 +50,7 @@ func (s *usersService) Register(ctx context.Context, user *domain.UserDTO) (*dom
 		middleware.NewAuthorization(userObject.ID, userObject.Name, userObject.Email),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to generate tokens: %v", err.Error())
+		return nil, apperrors.Unauthorizedf("UNKNOWN_ERROR", "Failed to generate tokens: %v", err.Error())
 	}
 
 	overview := &domain.Overview{
@@ -61,10 +60,7 @@ func (s *usersService) Register(ctx context.Context, user *domain.UserDTO) (*dom
 		Todos: todos,
 	}
 
-	return &domain.RegisterUserResponse{
-		Authorization: tokens,
-		User:          &domain.RegisterUserData{User: userObject, Overview: overview},
-	}, nil
+	return &domain.RegisterUserResponse{Authorization: tokens, Overview: overview}, nil
 }
 
 func (s *usersService) RefreshToken(ctx context.Context, params *domain.RefreshRequest) (*middleware.TokenPair, error) {
@@ -74,7 +70,7 @@ func (s *usersService) RefreshToken(ctx context.Context, params *domain.RefreshR
 		return nil, err
 	}
 
-	userObject, err := s.repo.Auth(ctx, claims.CustomerInfo.Email)
+	userObject, err := s.repo.Auth(ctx, claims.CustomerInfo.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +91,7 @@ func (s *usersService) Auth(ctx context.Context) (*domain.Overview, error) {
 		return nil, middleware.ErrUnauthorizedContext
 	}
 
-	userObject, err := s.repo.GetOverview(ctx, claims.Email)
+	userObject, err := s.repo.GetOverview(ctx, claims.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +126,7 @@ func (s *usersService) GetOverview(ctx context.Context) (*domain.Overview, error
 		return nil, middleware.ErrUnauthorizedContext
 	}
 
-	user, err := s.repo.GetOverview(ctx, claims.Email)
+	user, err := s.repo.GetOverview(ctx, claims.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +161,7 @@ func (s *usersService) DeleteAccount(ctx context.Context) error {
 		}
 	}
 
-	if err := s.repo.Delete(ctx, claims.Email); err != nil {
+	if err := s.repo.Delete(ctx, claims.ID); err != nil {
 		return err
 	}
 

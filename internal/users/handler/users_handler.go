@@ -38,13 +38,7 @@ func (h *UsersHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var response any
-	if !authResponse.User.User.IsNew {
-		response = authResponse.User.Overview
-	} else {
-		response = authResponse.Authorization
-	}
-	common.RespondJSON(w, http.StatusCreated, response)
+	common.RespondJSON(w, http.StatusCreated, authResponse)
 }
 
 func (h *UsersHandler) RefreshToken(w http.ResponseWriter, r *http.Request) {
