@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strings"
 
-	apperrors "github.com/AzizAl-Soufi/todos-api/internal/common/errors"
+	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/common/errors"
 )
 
 type CreateTodoDTO struct {

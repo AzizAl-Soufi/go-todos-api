@@ -3,7 +3,7 @@ package repository
 import (
 	"context"
 
-	"github.com/AzizAl-Soufi/todos-api/internal/users/domain"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/users/domain"
 )
 
 type UsersRepository interface {

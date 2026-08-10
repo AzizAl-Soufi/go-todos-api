@@ -3,7 +3,7 @@ package domain
 import (
 	"time"
 
-	"github.com/AzizAl-Soufi/todos-api/internal/todos/domain"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/todos/domain"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 

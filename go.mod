@@ -1,4 +1,4 @@
-module github.com/AzizAl-Soufi/todos-api
+module github.com/AzizAl-Soufi/go-todos-api
 
 go 1.26.5
 

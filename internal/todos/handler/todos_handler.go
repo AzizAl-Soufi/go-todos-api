@@ -4,10 +4,10 @@ import (
 	"errors"
 	"net/http"
 
-	common "github.com/AzizAl-Soufi/todos-api/internal/common"
-	"github.com/AzizAl-Soufi/todos-api/internal/common/errors"
-	"github.com/AzizAl-Soufi/todos-api/internal/todos/domain"
-	"github.com/AzizAl-Soufi/todos-api/internal/todos/service"
+	common "github.com/AzizAl-Soufi/go-todos-api/internal/common"
+	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/common/errors"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/todos/domain"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/todos/service"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -19,7 +19,7 @@ func NewTodosHandler(svc service.TodosService) *TodosHandler {
 	return &TodosHandler{svc: svc}
 }
 
-func (h *TodosHandler) Create(w http.ResponseWriter, r *http.Request) {	
+func (h *TodosHandler) Create(w http.ResponseWriter, r *http.Request) {
 	dto, err := domain.ValidateCreateDTO(r)
 	if err != nil {
 		if appErr, ok := apperrors.From(err); ok {

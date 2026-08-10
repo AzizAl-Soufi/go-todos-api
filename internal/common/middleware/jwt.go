@@ -10,8 +10,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/AzizAl-Soufi/todos-api/internal/common"
-	"github.com/AzizAl-Soufi/todos-api/internal/common/config"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/common"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/common/config"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/golang-jwt/jwt/v5/request"
 	"go.mongodb.org/mongo-driver/v2/bson"

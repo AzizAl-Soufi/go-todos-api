@@ -9,18 +9,18 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/AzizAl-Soufi/todos-api/internal/common"
-	"github.com/AzizAl-Soufi/todos-api/internal/common/config"
-	"github.com/AzizAl-Soufi/todos-api/internal/common/middleware"
-	"github.com/AzizAl-Soufi/todos-api/internal/pkg/database/mongodb"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/common"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/common/config"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/common/middleware"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/pkg/database/mongodb"
 
-	todosHandler "github.com/AzizAl-Soufi/todos-api/internal/todos/handler"
-	todosRepository "github.com/AzizAl-Soufi/todos-api/internal/todos/repository"
-	todosService "github.com/AzizAl-Soufi/todos-api/internal/todos/service"
+	todosHandler "github.com/AzizAl-Soufi/go-todos-api/internal/todos/handler"
+	todosRepository "github.com/AzizAl-Soufi/go-todos-api/internal/todos/repository"
+	todosService "github.com/AzizAl-Soufi/go-todos-api/internal/todos/service"
 
-	usersHandler "github.com/AzizAl-Soufi/todos-api/internal/users/handler"
-	usersRepository "github.com/AzizAl-Soufi/todos-api/internal/users/repository"
-	usersService "github.com/AzizAl-Soufi/todos-api/internal/users/service"
+	usersHandler "github.com/AzizAl-Soufi/go-todos-api/internal/users/handler"
+	usersRepository "github.com/AzizAl-Soufi/go-todos-api/internal/users/repository"
+	usersService "github.com/AzizAl-Soufi/go-todos-api/internal/users/service"
 )
 
 type application struct {

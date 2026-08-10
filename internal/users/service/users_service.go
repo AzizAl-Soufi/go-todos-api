@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 
-	apperrors "github.com/AzizAl-Soufi/todos-api/internal/common/errors"
-	"github.com/AzizAl-Soufi/todos-api/internal/common/middleware"
-	"github.com/AzizAl-Soufi/todos-api/internal/users/domain"
-	"github.com/AzizAl-Soufi/todos-api/internal/users/repository"
+	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/common/errors"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/common/middleware"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/users/domain"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/users/repository"
 
-	todos_domain "github.com/AzizAl-Soufi/todos-api/internal/todos/domain"
-	todos_repo "github.com/AzizAl-Soufi/todos-api/internal/todos/repository"
+	todos_domain "github.com/AzizAl-Soufi/go-todos-api/internal/todos/domain"
+	todos_repo "github.com/AzizAl-Soufi/go-todos-api/internal/todos/repository"
 )
 
 type usersService struct {

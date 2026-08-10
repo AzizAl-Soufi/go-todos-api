@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	apperrors "github.com/AzizAl-Soufi/todos-api/internal/common/errors"
-	inmem "github.com/AzizAl-Soufi/todos-api/internal/pkg/database/in_memory"
-	"github.com/AzizAl-Soufi/todos-api/internal/users/domain"
+	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/common/errors"
+	inmem "github.com/AzizAl-Soufi/go-todos-api/internal/pkg/database/in_memory"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/users/domain"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 

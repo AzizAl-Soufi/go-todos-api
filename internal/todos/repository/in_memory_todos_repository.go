@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	apperrors "github.com/AzizAl-Soufi/todos-api/internal/common/errors"
-	inmem "github.com/AzizAl-Soufi/todos-api/internal/pkg/database/in_memory"
-	"github.com/AzizAl-Soufi/todos-api/internal/todos/domain"
+	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/common/errors"
+	inmem "github.com/AzizAl-Soufi/go-todos-api/internal/pkg/database/in_memory"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/todos/domain"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -121,7 +121,7 @@ func (r *inMemoryTodosRepo) GetByUserID(ctx context.Context, id bson.ObjectID) (
 	return todos, nil
 }
 
-func (r *inMemoryTodosRepo) DeleteTodo(ctx context.Context, todoId bson.ObjectID, userId bson.ObjectID) error {
+func (r *inMemoryTodosRepo) Delete(ctx context.Context, todoId bson.ObjectID, userId bson.ObjectID) error {
 	r.Mu.Lock()
 	defer r.Mu.Unlock()
 

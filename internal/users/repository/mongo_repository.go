@@ -5,9 +5,9 @@ import (
 	"errors"
 	"time"
 
-	apperrors "github.com/AzizAl-Soufi/todos-api/internal/common/errors"
-	"github.com/AzizAl-Soufi/todos-api/internal/pkg/database/mongodb"
-	"github.com/AzizAl-Soufi/todos-api/internal/users/domain"
+	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/common/errors"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/pkg/database/mongodb"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/users/domain"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )

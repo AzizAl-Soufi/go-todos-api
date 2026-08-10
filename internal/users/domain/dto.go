@@ -6,8 +6,8 @@ import (
 	"net/mail"
 	"strings"
 
-	apperrors "github.com/AzizAl-Soufi/todos-api/internal/common/errors"
-	"github.com/AzizAl-Soufi/todos-api/internal/common/middleware"
+	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/common/errors"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/common/middleware"
 )
 
 type UserDTO struct {

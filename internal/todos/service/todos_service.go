@@ -4,10 +4,11 @@ import (
 	"context"
 	"time"
 
-	"github.com/AzizAl-Soufi/todos-api/internal/common/middleware"
-	"github.com/AzizAl-Soufi/todos-api/internal/todos/domain"
-	"github.com/AzizAl-Soufi/todos-api/internal/todos/repository"
-	usersRepository "github.com/AzizAl-Soufi/todos-api/internal/users/repository"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/common/middleware"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/todos/domain"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/todos/repository"
+	usersDomain "github.com/AzizAl-Soufi/go-todos-api/internal/users/domain"
+	usersRepository "github.com/AzizAl-Soufi/go-todos-api/internal/users/repository"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -20,7 +21,7 @@ func NewTodosService(repo repository.TodosRepository, usersRepo usersRepository.
 	return &todoService{repo: repo, usersRepo: usersRepo}
 }
 
-func (s *todoService) CreateTodo(ctx context.Context, todo *domain.CreateTodoDTO) (*domain.Todo, error) {
+func (s *todoService) getAuthenticatedUser(ctx context.Context) (*usersDomain.User, error) {
 	claims, ok := middleware.GetAuthorization(ctx)
 	if !ok {
 		return nil, middleware.ErrUnauthorizedContext
@@ -31,16 +32,26 @@ func (s *todoService) CreateTodo(ctx context.Context, todo *domain.CreateTodoDTO
 		return nil, middleware.ErrUnauthorized
 	}
 
+	return authenticatedUser, nil
+}
+
+func (s *todoService) CreateTodo(ctx context.Context, todo *domain.CreateTodoDTO) (*domain.Todo, error) {
+
+	user, err := s.getAuthenticatedUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	newTodo := &domain.Todo{
 		ID:        bson.NewObjectID(),
-		UserID:    authenticatedUser.ID,
+		UserID:    user.ID,
 		Title:     todo.Title,
 		Completed: false,
 		CreatedAt: time.Now(),
 	}
 
 	// Persist using the interface
-	err = s.repo.Create(ctx, authenticatedUser.ID, newTodo)
+	err = s.repo.Create(ctx, user.ID, newTodo)
 	if err != nil {
 		return nil, err
 	}
@@ -49,17 +60,12 @@ func (s *todoService) CreateTodo(ctx context.Context, todo *domain.CreateTodoDTO
 }
 
 func (s *todoService) GetTodo(ctx context.Context, id bson.ObjectID) (*domain.Todo, error) {
-	claims, ok := middleware.GetAuthorization(ctx)
-	if !ok {
-		return nil, middleware.ErrUnauthorizedContext
-	}
-
-	authenticatedUser, err := s.usersRepo.Auth(ctx, claims.Email)
+	user, err := s.getAuthenticatedUser(ctx)
 	if err != nil {
-		return nil, middleware.ErrUnauthorized
+		return nil, err
 	}
 
-	todo, err := s.repo.Get(ctx, id, authenticatedUser.ID)
+	todo, err := s.repo.Get(ctx, id, user.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -68,22 +74,17 @@ func (s *todoService) GetTodo(ctx context.Context, id bson.ObjectID) (*domain.To
 }
 
 func (s *todoService) UpdateTodo(ctx context.Context, id bson.ObjectID, params *domain.UpdateTodoDTO) (*domain.Todo, error) {
-	claims, ok := middleware.GetAuthorization(ctx)
-	if !ok {
-		return nil, middleware.ErrUnauthorizedContext
-	}
-
-	authenticatedUser, err := s.usersRepo.Auth(ctx, claims.Email)
-	if err != nil {
-		return nil, middleware.ErrUnauthorized
-	}
-
-	err = s.repo.Update(ctx, id, authenticatedUser.ID, params)
+	user, err := s.getAuthenticatedUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	todo, err := s.repo.Get(ctx, id, authenticatedUser.ID)
+	err = s.repo.Update(ctx, id, user.ID, params)
+	if err != nil {
+		return nil, err
+	}
+
+	todo, err := s.repo.Get(ctx, id, user.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -92,17 +93,12 @@ func (s *todoService) UpdateTodo(ctx context.Context, id bson.ObjectID, params *
 }
 
 func (s *todoService) DeleteTodo(ctx context.Context, id bson.ObjectID) error {
-	claims, ok := middleware.GetAuthorization(ctx)
-	if !ok {
-		return middleware.ErrUnauthorizedContext
-	}
-
-	authenticatedUser, err := s.usersRepo.Auth(ctx, claims.Email)
+	user, err := s.getAuthenticatedUser(ctx)
 	if err != nil {
-		return middleware.ErrUnauthorized
+		return err
 	}
 
-	if err := s.repo.DeleteTodo(ctx, id, authenticatedUser.ID); err != nil {
+	if err := s.repo.Delete(ctx, id, user.ID); err != nil {
 		return err
 	}
 
@@ -110,15 +106,10 @@ func (s *todoService) DeleteTodo(ctx context.Context, id bson.ObjectID) error {
 }
 
 func (s *todoService) GetTodos(ctx context.Context) ([]*domain.Todo, error) {
-	claims, ok := middleware.GetAuthorization(ctx)
-	if !ok {
-		return nil, middleware.ErrUnauthorizedContext
-	}
-
-	authenticatedUser, err := s.usersRepo.Auth(ctx, claims.Email)
+	user, err := s.getAuthenticatedUser(ctx)
 	if err != nil {
-		return nil, middleware.ErrUnauthorized
+		return nil, err
 	}
 
-	return s.repo.GetAll(ctx, authenticatedUser.ID)
+	return s.repo.GetAll(ctx, user.ID)
 }

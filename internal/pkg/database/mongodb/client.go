@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/AzizAl-Soufi/todos-api/internal/common/config"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/common/config"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )

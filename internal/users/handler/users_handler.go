@@ -3,10 +3,10 @@ package handler
 import (
 	"net/http"
 
-	common "github.com/AzizAl-Soufi/todos-api/internal/common"
-	apperrors "github.com/AzizAl-Soufi/todos-api/internal/common/errors"
-	"github.com/AzizAl-Soufi/todos-api/internal/users/domain"
-	"github.com/AzizAl-Soufi/todos-api/internal/users/service"
+	common "github.com/AzizAl-Soufi/go-todos-api/internal/common"
+	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/common/errors"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/users/domain"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/users/service"
 )
 
 type UsersHandler struct {

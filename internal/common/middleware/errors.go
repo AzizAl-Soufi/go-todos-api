@@ -1,13 +1,13 @@
 package middleware
 
-import apperrors "github.com/AzizAl-Soufi/todos-api/internal/common/errors"
+import apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/common/errors"
 
 var (
 	ErrExpiredAccessToken = apperrors.Unauthorized(
 		"EXPIRED_ACCESS_TOKEN",
 		"invalid or expired access token",
 	)
-	
+
 	ErrUnauthorizedContext = apperrors.Unauthorized(
 		"UNAUTHORIZED",
 		"Unauthorized: User data not found in context",
