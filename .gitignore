@@ -34,3 +34,4 @@ go.work.sum
 # other files
 secrets
 m.md
+.DS_Store

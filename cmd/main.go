@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/AzizAl-Soufi/go-todos-api/internal/common/config"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/config"
 )
 
 func main() {

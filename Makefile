@@ -9,7 +9,7 @@ ifneq (,$(wildcard ./.env))
 endif
 
 GOOSE_DRIVER ?= postgres
-GOOSE_MIGRATION_DIR ?= ./internal/pkg/database/postgres/migrations
+GOOSE_MIGRATION_DIR ?= ./internal/database/postgres/migrations
 GOOSE_DBSTRING ?= $(DATABASE_URI)
 
 .DEFAULT_GOAL := help

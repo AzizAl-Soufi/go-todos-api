@@ -27,7 +27,7 @@ DB_TYPE=mongo DATABASE_URI=mongodb://localhost:27017 DATABASE_NAME=todos make ru
 
 ## Architecture
 
-Repository pattern. Domain at center. Handlers know HTTP. Services know workflows. Repositories know storage. `internal/common` knows neither users nor todos.
+Repository pattern. Domain at center. Handlers know HTTP. Services know workflows. Repositories know storage. `internal/shared` knows neither users nor todos.
 
 `cmd/api.go` composes the app. `DB_TYPE` selects the adapter: `memory` (default), `mongo`, `postgres`.
 
@@ -36,35 +36,30 @@ Repository pattern. Domain at center. Handlers know HTTP. Services know workflow
 ├── cmd
 │   ├── api.go                       dependency wiring and HTTP routes
 │   └── main.go                      config load, signal handling, server start
+│
 ├── internal
-│   ├── common
-│   │   ├── common.go                JSON response helpers and panic recovery
-│   │   ├── config/config.go         Viper environment configuration
-│   │   ├── errors                  application error types and mappings
-│   │   ├── middleware              JWT validation and authorization context
-│   │   └── repository.go            generic repository interface
-│   ├── pkg/database
-│   │   ├── memory/client.go         map-backed client with RWMutex
-│   │   ├── mongodb/client.go        MongoDB driver v2 client wrapper
+│   ├── shared/
+│   │   ├── common.go            JSON response helpers and panic recovery
+│   │   ├── config/config.go     Viper environment configuration
+│   │   ├── errors               application error types and mappings
+│   │   ├── middleware           JWT validation and authorization context
+│   │   └── repository.go        generic repository interface
+│   │
+│   ├── database/
+│   │   ├── memory/client.go     map-backed client with RWMutex
+│   │   ├── mongodb/client.go    MongoDB driver v2 client wrapper
 │   │   └── postgres
-│   │       ├── migrations           goose SQL migrations
-│   │       ├── postgres.go           pgx/v5 pool wrapper
-│   │       └── sqlc                 generated database code
-│   ├── todos
-│   │   ├── domain                   Todo structs, DTOs, and validation
-│   │   ├── handler                  todo HTTP handlers
-│   │   ├── repository               port and memory/MongoDB/PostgreSQL adapters
-│   │   └── service                  todo workflows and ownership checks
-│   └── users
-│       ├── domain                   User structs, DTOs, and validation
-│       ├── handler                  user HTTP handlers
-│       ├── repository               port and memory/MongoDB/PostgreSQL adapters
-│       └── service                  registration, auth, and token workflows
-├── m.md                             ignored/stale workspace artifact
-├── m.test                           repository artifact, not a Go test
-├── secrets                           RSA key files loaded by JWT middleware
-├── sqlc.yml                         sqlc generation configuration
-└── tests                             manual HTTP request examples
+│   │       ├── migrations       goose SQL migrations
+│   │       ├── postgres.go      pgx/v5 pool wrapper
+│   │       └── sqlc             generated database code
+│   │
+│   ├── domain                   structs, DTOs, and validation
+│   ├── handler                  HTTP handlers
+│   ├── repository               port and memory/MongoDB/PostgreSQL adapters
+│   └── service                  workflows and ownership checks
+│
+├── sqlc.yml                     sqlc generation configuration
+└── tests                        manual HTTP request examples
 ```
 
 

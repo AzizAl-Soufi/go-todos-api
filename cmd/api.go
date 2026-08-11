@@ -9,31 +9,28 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/AzizAl-Soufi/go-todos-api/internal/common"
-	"github.com/AzizAl-Soufi/go-todos-api/internal/common/config"
-	"github.com/AzizAl-Soufi/go-todos-api/internal/common/middleware"
-	"github.com/AzizAl-Soufi/go-todos-api/internal/pkg/database/mongodb"
-	"github.com/AzizAl-Soufi/go-todos-api/internal/pkg/database/postgres"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/database/mongodb"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/database/postgres"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/config"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/shared/httpx"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/middleware"
 
-	todosHandler "github.com/AzizAl-Soufi/go-todos-api/internal/todos/handler"
-	todosRepository "github.com/AzizAl-Soufi/go-todos-api/internal/todos/repository"
-	todosService "github.com/AzizAl-Soufi/go-todos-api/internal/todos/service"
-
-	usersHandler "github.com/AzizAl-Soufi/go-todos-api/internal/users/handler"
-	usersRepository "github.com/AzizAl-Soufi/go-todos-api/internal/users/repository"
-	usersService "github.com/AzizAl-Soufi/go-todos-api/internal/users/service"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/handler/v1"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/repository/todos"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/repository/users"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/service"
 )
 
 type application struct {
 	config    *config.Config
 	jwt       *middleware.JWTMiddleware
-	todosRepo todosRepository.TodosRepository
-	usersRepo usersRepository.UsersRepository
+	todosRepo todos.TodosRepository
+	usersRepo users.UsersRepository
 }
 
 func NewApplication(ctx context.Context, cfg *config.Config) (application, func()) {
-	var todosRepo todosRepository.TodosRepository
-	var usersRepo usersRepository.UsersRepository
+	var todosRepo todos.TodosRepository
+	var usersRepo users.UsersRepository
 	var cleanup func() = func() {} // Default to a no-op function
 
 	dbCfg := cfg.DB
@@ -68,8 +65,8 @@ func NewApplication(ctx context.Context, cfg *config.Config) (application, func(
 			}
 		}
 
-		todosRepo = todosRepository.NewMongoTodosRepository(db)
-		usersRepo = usersRepository.NewMongoUsersRepository(db)
+		todosRepo = todos.NewMongoTodosRepository(db)
+		usersRepo = users.NewMongoUsersRepository(db)
 
 	case "postgres":
 		uri := dbCfg.DatabaseURI
@@ -86,8 +83,8 @@ func NewApplication(ctx context.Context, cfg *config.Config) (application, func(
 			log.Fatalf("Failed to ping PostgreSQL: %v", err)
 		}
 
-		todosRepo = todosRepository.NewPostgresTodosRepository(db)
-		usersRepo = usersRepository.NewPostgresUsersRepository(db)
+		todosRepo = todos.NewPostgresTodosRepository(db)
+		usersRepo = users.NewPostgresUsersRepository(db)
 
 		cleanup = func() {
 			slog.Info("Closing PostgreSQL connection...")
@@ -97,8 +94,8 @@ func NewApplication(ctx context.Context, cfg *config.Config) (application, func(
 		}
 
 	case "memory":
-		todosRepo = todosRepository.NewInMemoryTodosRepository()
-		usersRepo = usersRepository.NewInMemoryUsersRepository()
+		todosRepo = todos.NewInMemoryTodosRepository()
+		usersRepo = users.NewInMemoryUsersRepository()
 
 	default:
 		log.Fatalf("unsupported DB_TYPE: %s", dbType)
@@ -126,11 +123,11 @@ func (app *application) initialize() http.Handler {
 		w.Write([]byte("ok"))
 	})
 
-	todosService := todosService.NewTodosService(app.todosRepo, app.usersRepo)
-	todosHandler := todosHandler.NewTodosHandler(todosService)
+	todosService := service.NewTodosService(app.todosRepo, app.usersRepo)
+	todosHandler := v1.NewTodosHandler(todosService)
 
-	usersService := usersService.NewUsersService(app.usersRepo, app.todosRepo, app.jwt)
-	usersHandler := usersHandler.NewUsersHandler(usersService)
+	usersService := service.NewUsersService(app.usersRepo, app.todosRepo, app.jwt)
+	usersHandler := v1.NewUsersHandler(usersService)
 
 	r.HandleFunc("POST /register", usersHandler.Register)
 	r.HandleFunc("POST /refresh-token", usersHandler.RefreshToken)
@@ -147,7 +144,7 @@ func (app *application) initialize() http.Handler {
 	protectedRouter.HandleFunc("DELETE /todos/{id}", todosHandler.Delete)
 
 	r.Handle("/", app.jwt.RequireAuth(protectedRouter))
-	return common.Recovery(r)
+	return httpx.Recovery(r)
 }
 
 func (app *application) run(ctx context.Context, h http.Handler) error {
