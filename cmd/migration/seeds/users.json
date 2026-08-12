@@ -1,0 +1,10 @@
+[
+    {
+        "name": "System Admin",
+        "email": "admin@todos.local"
+    },
+    {
+        "name": "Test User",
+        "email": "test@todos.local"
+    }
+]

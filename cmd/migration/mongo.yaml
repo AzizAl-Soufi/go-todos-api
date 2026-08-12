@@ -1,0 +1,38 @@
+version: "1"
+
+mongodb:
+  gen:
+    out: "./internal/database/mongodb/migrations/generated"
+    package: "generated"
+  migrations:
+    dir: "./internal/database/mongodb/migrations/versions"
+  seeding:
+    dir: "./internal/database/mongodb/migrations/seeds"
+    files:
+      - collection: "users"
+        file: "users.json"
+      - collection: "todos"
+        file: "todos.json"
+  collections:
+    - name: "todos"
+      struct: "Todo"
+      indexes:
+        - keys:
+            - field: "userId"
+              order: 1
+      schema: # Define your fields here!
+        - name: "ID"
+          type: "bson.ObjectID"
+          bson: "_id,omitempty"
+        - name: "UserID"
+          type: "bson.ObjectID"
+          bson: "userId"
+        - name: "Title"
+          type: "string"
+          bson: "title"
+        - name: "Completed"
+          type: "bool"
+          bson: "completed"
+        - name: "CreatedAt"
+          type: "time.Time"
+          bson: "createdAt"
