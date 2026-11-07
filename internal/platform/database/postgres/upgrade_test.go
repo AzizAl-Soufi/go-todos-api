@@ -131,6 +131,9 @@ func TestUpgrade_TeamWorkspaces(t *testing.T) {
 		_ = rows.Scan(&s)
 		titles = append(titles, s)
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
 	if len(titles) != 1 || titles[0] != "kept" {
 		t.Fatalf("after rollback: %v (team records are removed)", titles)
 	}
