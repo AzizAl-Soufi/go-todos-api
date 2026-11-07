@@ -47,12 +47,16 @@ func TestUpgrade_TodosGainStatus(t *testing.T) {
 		inbox                        bool
 	}
 	var got []row
+	defer rows.Close()
 	for rows.Next() {
 		var r row
 		if err := rows.Scan(&r.title, &r.status, &r.hasCompletedAt, &r.updatedIsNew, &r.priority, &r.tags, &r.inbox); err != nil {
 			t.Fatal(err)
 		}
 		got = append(got, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
 	}
 	want := []row{
 		{"finished", "done", true, true, 0, "{}", true},
