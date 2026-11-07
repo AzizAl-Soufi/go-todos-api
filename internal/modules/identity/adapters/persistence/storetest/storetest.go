@@ -4,6 +4,7 @@
 package storetest
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"sync"
@@ -23,6 +24,8 @@ type Stores struct {
 	Sessions       application.SessionRepository
 	Verifications  application.OneTimeTokenRepository
 	PasswordResets application.OneTimeTokenRepository
+	Passkeys       application.PasskeyRepository
+	Challenges     application.PasskeyChallengeRepository
 	Tx             tx.Runner
 	// AtomicTx is true when Tx really rolls back (not tx.None).
 	AtomicTx bool
@@ -36,6 +39,8 @@ func Run(t *testing.T, newStores func(t *testing.T) Stores) {
 	t.Run("Sessions", func(t *testing.T) { testSessions(t, newStores(t)) })
 	t.Run("ConcurrentRevokeHasOneWinner", func(t *testing.T) { testConcurrentRevoke(t, newStores(t)) })
 	t.Run("OneTimeTokens", func(t *testing.T) { testOneTimeTokens(t, newStores(t)) })
+	t.Run("Passkeys", func(t *testing.T) { testPasskeys(t, newStores(t)) })
+	t.Run("PasskeyChallenges", func(t *testing.T) { testPasskeyChallenges(t, newStores(t)) })
 	t.Run("Transactions", func(t *testing.T) {
 		s := newStores(t)
 		if !s.AtomicTx {
@@ -331,5 +336,143 @@ func testTransactions(t *testing.T, s Stores) {
 	u, err := s.Users.FindByEmail(ctx, "commit@example.com")
 	if err != nil || u.TokenVersion != 1 {
 		t.Fatalf("committed transaction: %+v, %v", u, err)
+	}
+}
+
+func newPasskey(t *testing.T, s Stores, userID, name string, credentialID string, at time.Time) *domain.Passkey {
+	t.Helper()
+	p := &domain.Passkey{UserID: userID, Name: name, CredentialID: []byte(credentialID), Credential: []byte(`{"v":1}`), CreatedAt: at}
+	if err := s.Passkeys.Create(ctx, p); err != nil || p.ID == "" {
+		t.Fatalf("create passkey: %v, id %q", err, p.ID)
+	}
+	return p
+}
+
+func listPasskeys(t *testing.T, s Stores, userID string) []*domain.Passkey {
+	t.Helper()
+	ps, err := s.Passkeys.ListForUser(ctx, userID)
+	if err != nil {
+		t.Fatalf("list passkeys: %v", err)
+	}
+	return ps
+}
+
+func testPasskeys(t *testing.T, s Stores) {
+	u1 := createUser(t, s, "one@example.com")
+	u2 := createUser(t, s, "two@example.com")
+	base := now()
+	// Created out of order: the list is oldest first.
+	second := newPasskey(t, s, u1.ID, "Phone", "cred-2", base.Add(time.Minute))
+	first := newPasskey(t, s, u1.ID, "Laptop", "cred-1", base)
+	other := newPasskey(t, s, u2.ID, "Key", "cred-3", base)
+
+	dup := &domain.Passkey{UserID: u2.ID, Name: "Dup", CredentialID: []byte("cred-1"), Credential: []byte("{}"), CreatedAt: base}
+	if err := s.Passkeys.Create(ctx, dup); !errors.Is(err, domain.ErrPasskeyExists) {
+		t.Fatalf("duplicate credential id on another account: err = %v, want ErrPasskeyExists", err)
+	}
+
+	got := listPasskeys(t, s, u1.ID)
+	if len(got) != 2 || got[0].ID != first.ID || got[1].ID != second.ID {
+		t.Fatalf("list = %+v, want [%s %s]", got, first.ID, second.ID)
+	}
+	if p := got[0]; p.UserID != u1.ID || p.Name != "Laptop" || string(p.CredentialID) != "cred-1" ||
+		string(p.Credential) != `{"v":1}` || !p.CreatedAt.Equal(base) || p.LastUsedAt != nil {
+		t.Fatalf("round trip: %+v", p)
+	}
+	if ps := listPasskeys(t, s, s.MissingID); ps == nil || len(ps) != 0 {
+		t.Fatalf("no passkeys must be an empty list, got %#v", ps)
+	}
+
+	used := now().Add(time.Hour)
+	if err := s.Passkeys.RecordUse(ctx, first.ID, []byte(`{"v":2}`), used); err != nil {
+		t.Fatal(err)
+	}
+	if p := listPasskeys(t, s, u1.ID)[0]; string(p.Credential) != `{"v":2}` || p.LastUsedAt == nil || !p.LastUsedAt.Equal(used) {
+		t.Fatalf("after use: credential %s, last used %v", p.Credential, p.LastUsedAt)
+	}
+
+	notFound := map[string]error{
+		"RecordUse(missing)":             s.Passkeys.RecordUse(ctx, s.MissingID, []byte("{}"), used),
+		"Delete(missing)":                s.Passkeys.Delete(ctx, u1.ID, s.MissingID),
+		"Delete(another user's passkey)": s.Passkeys.Delete(ctx, u1.ID, other.ID),
+	}
+	for name, err := range notFound {
+		if !errors.Is(err, apperrors.ErrNotFound) {
+			t.Errorf("%s = %v, want ErrNotFound", name, err)
+		}
+	}
+
+	if err := s.Passkeys.Delete(ctx, u1.ID, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := listPasskeys(t, s, u1.ID); len(got) != 1 || got[0].ID != second.ID {
+		t.Fatalf("after delete: %+v", got)
+	}
+	// A deleted credential ID can be registered again.
+	newPasskey(t, s, u2.ID, "Again", "cred-1", base)
+
+	if err := s.Passkeys.DeleteAllForUser(ctx, u1.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(listPasskeys(t, s, u1.ID)) != 0 || len(listPasskeys(t, s, u2.ID)) != 2 {
+		t.Fatal("DeleteAllForUser must delete exactly that user's passkeys")
+	}
+}
+
+func challenge(userID, hash string, createdAt time.Time, ttl time.Duration) *domain.PasskeyChallenge {
+	return &domain.PasskeyChallenge{TokenHash: hash, UserID: userID, State: []byte("state-" + hash), ExpiresAt: createdAt.Add(ttl), CreatedAt: createdAt}
+}
+
+func testPasskeyChallenges(t *testing.T, s Stores) {
+	u := createUser(t, s, "one@example.com")
+	at := now()
+
+	for _, c := range []*domain.PasskeyChallenge{challenge(u.ID, "reg", at, time.Minute), challenge("", "login", at, time.Minute)} {
+		if err := s.Challenges.Save(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.Challenges.Consume(ctx, "reg")
+	if err != nil || got.UserID != u.ID || !bytes.Equal(got.State, []byte("state-reg")) ||
+		!got.ExpiresAt.Equal(at.Add(time.Minute)) || !got.CreatedAt.Equal(at) {
+		t.Fatalf("consume registration challenge = %+v, %v", got, err)
+	}
+	if _, err := s.Challenges.Consume(ctx, "reg"); !errors.Is(err, apperrors.ErrNotFound) {
+		t.Fatalf("a challenge must be single-use: err = %v", err)
+	}
+	if got, err := s.Challenges.Consume(ctx, "login"); err != nil || got.UserID != "" {
+		t.Fatalf("consume login challenge = %+v, %v", got, err)
+	}
+
+	// Saving prunes challenges that expired before the new one was created,
+	// and keeps the rest.
+	if err := s.Challenges.Save(ctx, challenge("", "stale", at.Add(-time.Hour), time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Challenges.Save(ctx, challenge("", "live", at.Add(-time.Hour), 2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Challenges.Save(ctx, challenge("", "new", at, time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Challenges.Consume(ctx, "stale"); !errors.Is(err, apperrors.ErrNotFound) {
+		t.Fatalf("expired challenge not pruned: err = %v", err)
+	}
+	for _, h := range []string{"live", "new"} {
+		if _, err := s.Challenges.Consume(ctx, h); err != nil {
+			t.Fatalf("challenge %s pruned too early: %v", h, err)
+		}
+	}
+
+	s.Challenges.Save(ctx, challenge(u.ID, "mine", at, time.Minute))
+	s.Challenges.Save(ctx, challenge("", "anon", at, time.Minute))
+	if err := s.Challenges.DeleteForUser(ctx, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Challenges.Consume(ctx, "mine"); !errors.Is(err, apperrors.ErrNotFound) {
+		t.Fatalf("DeleteForUser left the challenge: err = %v", err)
+	}
+	if _, err := s.Challenges.Consume(ctx, "anon"); err != nil {
+		t.Fatalf("DeleteForUser removed a sign-in challenge: %v", err)
 	}
 }

@@ -152,6 +152,21 @@ Content-Type: application/json
 
 {"current_password": "correct horse battery", "new_password": "a brand new password"}
 
+### ---- Passkeys ----
+### Passkey ceremonies need a browser (navigator.credentials); these show the
+### options. Send the browser's credential.toJSON() back with the token.
+
+### Options to add a passkey (bearer)
+POST {{base}}/me/passkeys/options
+Authorization: Bearer {{access}}
+
+### List your passkeys
+GET {{base}}/me/passkeys
+Authorization: Bearer {{access}}
+
+### Options to sign in with a passkey (no email needed)
+POST {{base}}/auth/passkeys/login/options
+
 ### ---- Teams ----
 
 ### Create a team (you become its owner)

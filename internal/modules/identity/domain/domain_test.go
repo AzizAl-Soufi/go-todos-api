@@ -84,3 +84,35 @@ func TestSessionAndVerificationExpiry(t *testing.T) {
 		t.Fatal("verification expiry boundary is wrong")
 	}
 }
+
+func TestNewPasskey(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.FixedZone("x", 3600))
+	p, err := NewPasskey("u1", "  ", []byte("id"), []byte("rec"), now)
+	if err != nil || p.Name != DefaultPasskeyName || p.CreatedAt.Location() != time.UTC || p.LastUsedAt != nil {
+		t.Fatalf("NewPasskey = %+v, %v", p, err)
+	}
+	if got, err := NormalizePasskeyName(" Laptop "); err != nil || got != "Laptop" {
+		t.Fatalf("NormalizePasskeyName = %q, %v", got, err)
+	}
+	if _, err := NormalizePasskeyName(strings.Repeat("é", MaxPasskeyNameLength)); err != nil {
+		t.Fatalf("max length counts characters: %v", err)
+	}
+	if _, err := NewPasskey("u1", strings.Repeat("x", MaxPasskeyNameLength+1), nil, nil, now); !errors.Is(err, ErrPasskeyNameTooLong) {
+		t.Fatalf("too long: err = %v", err)
+	}
+}
+
+func TestPasskeyChallenge(t *testing.T) {
+	now := time.Now()
+	reg := PasskeyChallenge{UserID: "u1", ExpiresAt: now}
+	login := PasskeyChallenge{ExpiresAt: now}
+	if !reg.ForRegistrationBy("u1") || reg.ForRegistrationBy("u2") || reg.ForLogin() {
+		t.Fatal("a registration challenge belongs to its account only")
+	}
+	if !login.ForLogin() || login.ForRegistrationBy("") {
+		t.Fatal("a sign-in challenge can't register a passkey")
+	}
+	if !reg.Expired(now) || reg.Expired(now.Add(-time.Nanosecond)) {
+		t.Fatal("challenge expiry boundary is wrong")
+	}
+}

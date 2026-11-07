@@ -4,6 +4,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -25,20 +26,26 @@ type handler struct {
 func Register(mux *http.ServeMux, cmd command.Handlers, qry query.Handlers, protect, limit httpx.Middleware) {
 	h := handler{cmd: cmd, qry: qry}
 	public := map[string]httpx.Endpoint{
-		"POST /auth/register":        h.register,
-		"POST /auth/login":           h.login,
-		"POST /auth/refresh":         h.refresh,
-		"POST /auth/logout":          h.logout,
-		"POST /auth/verify-email":    h.verifyEmail,
-		"GET /auth/verify-email":     h.verifyEmailLink,
-		"POST /auth/password/forgot": h.forgotPassword,
-		"POST /auth/password/reset":  h.resetPassword,
+		"POST /auth/register":               h.register,
+		"POST /auth/login":                  h.login,
+		"POST /auth/refresh":                h.refresh,
+		"POST /auth/logout":                 h.logout,
+		"POST /auth/verify-email":           h.verifyEmail,
+		"GET /auth/verify-email":            h.verifyEmailLink,
+		"POST /auth/password/forgot":        h.forgotPassword,
+		"POST /auth/password/reset":         h.resetPassword,
+		"POST /auth/passkeys/login/options": h.beginPasskeyLogin,
+		"POST /auth/passkeys/login":         h.finishPasskeyLogin,
 	}
 	private := map[string]httpx.Endpoint{
 		"POST /auth/logout-all":          auth.ForUser(h.logoutAll),
 		"POST /auth/verify-email/resend": auth.ForUser(h.resendVerification),
 		"GET /me":                        auth.ForUser(h.me),
 		"DELETE /me":                     auth.ForUser(h.deleteAccount),
+		"POST /me/passkeys/options":      auth.ForUser(h.beginPasskeyRegistration),
+		"POST /me/passkeys":              auth.ForUser(h.finishPasskeyRegistration),
+		"GET /me/passkeys":               auth.ForUser(h.listPasskeys),
+		"DELETE /me/passkeys/{id}":       auth.ForUser(h.deletePasskey),
 	}
 	for pattern, e := range public {
 		mux.Handle(pattern, limit(e))
@@ -127,6 +134,17 @@ type (
 	resetRequest struct {
 		Token    string `json:"token"`
 		Password string `json:"password"`
+	}
+	// credential is the PublicKeyCredential the browser returned, serialized
+	// with toJSON(); it is handed to the WebAuthn adapter as is.
+	passkeyRegistrationRequest struct {
+		Token      string          `json:"token"`
+		Name       string          `json:"name"`
+		Credential json.RawMessage `json:"credential"`
+	}
+	passkeyLoginRequest struct {
+		Token      string          `json:"token"`
+		Credential json.RawMessage `json:"credential"`
 	}
 	changePasswordRequest struct {
 		CurrentPassword string `json:"current_password"`
@@ -284,4 +302,109 @@ func (h handler) me(r *http.Request, userID string) (int, any, error) {
 
 func (h handler) deleteAccount(r *http.Request, userID string) (int, any, error) {
 	return http.StatusNoContent, nil, h.cmd.DeleteAccount.Handle(r.Context(), command.DeleteAccount{UserID: userID})
+}
+
+// ---- passkeys ----
+
+type passkeyResponse struct {
+	ID         string     `json:"id"`
+	Name       string     `json:"name"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	LastUsedAt *time.Time `json:"lastUsedAt"`
+}
+
+func toPasskey(p *domain.Passkey) passkeyResponse {
+	return passkeyResponse{ID: p.ID, Name: p.Name, CreatedAt: p.CreatedAt, LastUsedAt: p.LastUsedAt}
+}
+
+// passkeyOptionsResponse carries the options for navigator.credentials
+// ({"publicKey": {...}}) and the token to send back with the answer.
+type passkeyOptionsResponse struct {
+	Token   string          `json:"token"`
+	Options json.RawMessage `json:"options"`
+}
+
+func toPasskeyOptions(o command.PasskeyOptions) passkeyOptionsResponse {
+	return passkeyOptionsResponse{Token: o.Token, Options: o.Options}
+}
+
+func requireCredential(c json.RawMessage) error {
+	if len(c) == 0 || string(c) == "null" {
+		return apperrors.Validation("INVALID_VALUE", "credential is required")
+	}
+	return nil
+}
+
+func (h handler) beginPasskeyRegistration(r *http.Request, userID string) (int, any, error) {
+	opts, err := h.cmd.BeginPasskeyRegistration.Handle(r.Context(), command.BeginPasskeyRegistration{UserID: userID})
+	if err != nil {
+		return 0, nil, err
+	}
+	return http.StatusOK, toPasskeyOptions(opts), nil
+}
+
+func (h handler) finishPasskeyRegistration(r *http.Request, userID string) (int, any, error) {
+	req, err := decode[passkeyRegistrationRequest](r)
+	if err == nil {
+		err = requireCredential(req.Credential)
+	}
+	if err != nil {
+		return 0, nil, err
+	}
+	id, err := h.cmd.FinishPasskeyRegistration.Handle(r.Context(), command.FinishPasskeyRegistration{
+		UserID: userID, Token: req.Token, Name: req.Name, Response: req.Credential,
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	passkeys, err := h.qry.ListPasskeys.Handle(r.Context(), query.ListPasskeys{UserID: userID})
+	if err != nil {
+		return 0, nil, err
+	}
+	for _, p := range passkeys {
+		if p.ID == id {
+			return http.StatusCreated, toPasskey(p), nil
+		}
+	}
+	return 0, nil, domain.ErrPasskeyNotFound // deleted concurrently
+}
+
+func (h handler) listPasskeys(r *http.Request, userID string) (int, any, error) {
+	passkeys, err := h.qry.ListPasskeys.Handle(r.Context(), query.ListPasskeys{UserID: userID})
+	if err != nil {
+		return 0, nil, err
+	}
+	out := make([]passkeyResponse, 0, len(passkeys))
+	for _, p := range passkeys {
+		out = append(out, toPasskey(p))
+	}
+	return http.StatusOK, out, nil
+}
+
+func (h handler) deletePasskey(r *http.Request, userID string) (int, any, error) {
+	err := h.cmd.DeletePasskey.Handle(r.Context(), command.DeletePasskey{UserID: userID, PasskeyID: r.PathValue("id")})
+	return http.StatusNoContent, nil, err
+}
+
+func (h handler) beginPasskeyLogin(r *http.Request) (int, any, error) {
+	opts, err := h.cmd.BeginPasskeyLogin.Handle(r.Context(), command.BeginPasskeyLogin{})
+	if err != nil {
+		return 0, nil, err
+	}
+	return http.StatusOK, toPasskeyOptions(opts), nil
+}
+
+func (h handler) finishPasskeyLogin(r *http.Request) (int, any, error) {
+	req, err := decode[passkeyLoginRequest](r)
+	if err == nil {
+		err = requireCredential(req.Credential)
+	}
+	if err != nil {
+		return 0, nil, err
+	}
+	creds, err := h.cmd.FinishPasskeyLogin.Handle(r.Context(), command.FinishPasskeyLogin{Token: req.Token, Response: req.Credential})
+	if err != nil {
+		return 0, nil, err
+	}
+	return h.signedIn(r, http.StatusOK, creds)
 }

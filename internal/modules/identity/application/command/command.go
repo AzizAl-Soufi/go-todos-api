@@ -24,6 +24,9 @@ type Config struct {
 	RefreshTokenTTL  time.Duration
 	VerificationTTL  time.Duration
 	PasswordResetTTL time.Duration
+	// PasskeyChallengeTTL is how long a passkey registration or sign-in may
+	// take between the options and the answer.
+	PasskeyChallengeTTL time.Duration
 	// VerificationURL and PasswordResetURL are link bases; the token is
 	// appended as ?token=... The reset link should open a client page that
 	// asks for the new password and calls POST /auth/password/reset.
@@ -33,11 +36,12 @@ type Config struct {
 
 func DefaultConfig(baseURL string) Config {
 	return Config{
-		RefreshTokenTTL:  7 * 24 * time.Hour,
-		VerificationTTL:  24 * time.Hour,
-		PasswordResetTTL: time.Hour,
-		VerificationURL:  baseURL + "/auth/verify-email",
-		PasswordResetURL: baseURL + "/reset-password",
+		RefreshTokenTTL:     7 * 24 * time.Hour,
+		VerificationTTL:     24 * time.Hour,
+		PasswordResetTTL:    time.Hour,
+		PasskeyChallengeTTL: 5 * time.Minute,
+		VerificationURL:     baseURL + "/auth/verify-email",
+		PasswordResetURL:    baseURL + "/reset-password",
 	}
 }
 
@@ -46,6 +50,9 @@ type Deps struct {
 	Sessions       application.SessionRepository
 	Verifications  application.OneTimeTokenRepository
 	PasswordResets application.OneTimeTokenRepository
+	Passkeys       application.PasskeyRepository
+	Challenges     application.PasskeyChallengeRepository
+	RelyingParty   application.RelyingParty
 	Hasher         application.PasswordHasher
 	Tokens         application.AccessTokenIssuer
 	Mailer         application.Mailer
@@ -71,6 +78,12 @@ type Handlers struct {
 	ResetPassword        ResetPasswordHandler
 	ChangePassword       ChangePasswordHandler
 	DeleteAccount        DeleteAccountHandler
+
+	BeginPasskeyRegistration  BeginPasskeyRegistrationHandler
+	FinishPasskeyRegistration FinishPasskeyRegistrationHandler
+	BeginPasskeyLogin         BeginPasskeyLoginHandler
+	FinishPasskeyLogin        FinishPasskeyLoginHandler
+	DeletePasskey             DeletePasskeyHandler
 }
 
 func New(d Deps) Handlers {
@@ -93,6 +106,9 @@ func New(d Deps) Handlers {
 		VerifyEmail: VerifyEmailHandler{b}, ResendVerification: ResendVerificationHandler{b},
 		RequestPasswordReset: RequestPasswordResetHandler{b}, ResetPassword: ResetPasswordHandler{b},
 		ChangePassword: ChangePasswordHandler{b}, DeleteAccount: DeleteAccountHandler{b},
+		BeginPasskeyRegistration: BeginPasskeyRegistrationHandler{b}, FinishPasskeyRegistration: FinishPasskeyRegistrationHandler{b},
+		BeginPasskeyLogin: BeginPasskeyLoginHandler{b}, FinishPasskeyLogin: FinishPasskeyLoginHandler{b},
+		DeletePasskey: DeletePasskeyHandler{b},
 	}
 }
 

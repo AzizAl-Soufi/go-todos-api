@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Go REST API for todos with accounts/auth, teams with roles and invitations, and audit logs. [ARCHITECTURE.md](ARCHITECTURE.md) is the authoritative design doc (read it before adding a feature, module or backend); [README.md](README.md) documents the HTTP contract, config keys and error codes.
+Go REST API for todos with accounts/auth (passwords and passkeys), teams with roles and invitations, and audit logs. [ARCHITECTURE.md](ARCHITECTURE.md) is the authoritative design doc (read it before adding a feature, module or backend); [README.md](README.md) documents the HTTP contract, config keys and error codes.
 
 ## Commands
 
@@ -57,4 +57,4 @@ Rules that matter when changing code:
 - **Migrations**: Postgres in `internal/platform/database/postgres/migrations` (numbered goose SQL, also the sqlc schema); Mongo as Go files in `internal/platform/database/mongodb/migrations/versions` (contiguous versions, registered via blank import) plus indexes in `schema/*.json`. Released migrations are never edited — add a new file, for both backends.
 - IDs are 24-hex ObjectIDs on memory/Mongo and UUIDs on Postgres; parse with `platform/ids`.
 
-When adding a use case or endpoint, also cover it in `application` tests and `cmd/api` end-to-end tests (`app_test.go`, `organize_test.go`, `teams_test.go`), and document it in the README. ARCHITECTURE.md has step-by-step checklists for adding a use case, module, or storage backend.
+When adding a use case or endpoint, also cover it in `application` tests and `cmd/api` end-to-end tests (`app_test.go`, `organize_test.go`, `teams_test.go`, `passkeys_test.go`), and document it in the README. ARCHITECTURE.md has step-by-step checklists for adding a use case, module, or storage backend.

@@ -17,6 +17,8 @@ func TestContract(t *testing.T) {
 			Sessions:       memstore.NewSessions(),
 			Verifications:  memstore.NewVerifications(),
 			PasswordResets: memstore.NewPasswordResets(),
+			Passkeys:       memstore.NewPasskeys(),
+			Challenges:     memstore.NewPasskeyChallenges(),
 			Tx:             tx.None{},
 			MissingID:      "missing",
 		}

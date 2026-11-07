@@ -13,9 +13,10 @@ import (
 )
 
 type Deps struct {
-	Users  application.UserReader
-	Tokens application.AccessTokenVerifier
-	Todos  application.TodoLister
+	Users    application.UserReader
+	Passkeys application.PasskeyReader
+	Tokens   application.AccessTokenVerifier
+	Todos    application.TodoLister
 }
 
 // Handlers are all identity queries.
@@ -23,10 +24,11 @@ type Handlers struct {
 	GetUser      GetUserHandler
 	GetOverview  GetOverviewHandler
 	Authenticate AuthenticateHandler
+	ListPasskeys ListPasskeysHandler
 }
 
 func New(d Deps) Handlers {
-	return Handlers{GetUser: GetUserHandler{d}, GetOverview: GetOverviewHandler{d}, Authenticate: AuthenticateHandler{d}}
+	return Handlers{GetUser: GetUserHandler{d}, GetOverview: GetOverviewHandler{d}, Authenticate: AuthenticateHandler{d}, ListPasskeys: ListPasskeysHandler{d}}
 }
 
 // GetUser returns one account.
@@ -38,6 +40,17 @@ type GetUserHandler struct{ d Deps }
 
 func (h GetUserHandler) Handle(ctx context.Context, q GetUser) (*domain.User, error) {
 	return h.d.Users.FindByID(ctx, q.UserID)
+}
+
+// ListPasskeys returns the user's passkeys, oldest first.
+type ListPasskeys struct {
+	UserID string
+}
+
+type ListPasskeysHandler struct{ d Deps }
+
+func (h ListPasskeysHandler) Handle(ctx context.Context, q ListPasskeys) ([]*domain.Passkey, error) {
+	return h.d.Passkeys.ListForUser(ctx, q.UserID)
 }
 
 // GetOverview returns the account with all of its todos.

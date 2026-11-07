@@ -24,6 +24,8 @@ func TestContract(t *testing.T) {
 			Sessions:       mongostore.NewSessions(db),
 			Verifications:  mongostore.NewVerifications(db),
 			PasswordResets: mongostore.NewPasswordResets(db),
+			Passkeys:       mongostore.NewPasskeys(db),
+			Challenges:     mongostore.NewPasskeyChallenges(db),
 			Tx:             runner,
 			AtomicTx:       !standalone,
 			MissingID:      bson.NewObjectID().Hex(),

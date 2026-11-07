@@ -1,5 +1,5 @@
 // Package identity is the identity module's public surface: accounts,
-// password login, password reset and change, refresh-token sessions, email
+// password and passkey login, password reset and change, refresh-token sessions, email
 // verification and the Authenticator other modules rely on (via
 // platform/auth).
 //
@@ -10,7 +10,7 @@
 //	application/command/   write use cases, one handler per command
 //	application/query/     read use cases, one handler per query
 //	transport/             driving adapters (HTTP)
-//	adapters/              driven adapters (persistence, security, mail, todos, teams and audit gateways)
+//	adapters/              driven adapters (persistence, security, passkeys (WebAuthn), mail, todos, teams and audit gateways)
 package identity
 
 import (
@@ -37,6 +37,9 @@ type Deps struct {
 	Sessions       application.SessionRepository
 	Verifications  application.OneTimeTokenRepository
 	PasswordResets application.OneTimeTokenRepository
+	Passkeys       application.PasskeyRepository
+	Challenges     application.PasskeyChallengeRepository
+	RelyingParty   application.RelyingParty
 	Hasher         application.PasswordHasher
 	Tokens         application.AccessTokens
 	Mailer         application.Mailer
@@ -57,17 +60,17 @@ func New(d Deps) *Module {
 	return &Module{
 		Commands: command.New(command.Deps{
 			Users: d.Users, Sessions: d.Sessions, Verifications: d.Verifications, PasswordResets: d.PasswordResets,
-			Hasher: d.Hasher, Tokens: d.Tokens, Mailer: d.Mailer, Todos: d.Todos, Teams: d.Teams, Audit: d.Audit,
+			Passkeys: d.Passkeys, Challenges: d.Challenges, RelyingParty: d.RelyingParty, Hasher: d.Hasher, Tokens: d.Tokens, Mailer: d.Mailer, Todos: d.Todos, Teams: d.Teams, Audit: d.Audit,
 			Tx: d.Tx, Config: d.Config, Now: d.Now,
 		}),
-		Queries: query.New(query.Deps{Users: d.Users, Tokens: d.Tokens, Todos: d.Todos}),
+		Queries: query.New(query.Deps{Users: d.Users, Passkeys: d.Passkeys, Tokens: d.Tokens, Todos: d.Todos}),
 	}
 }
 
 // Authenticator verifies access tokens for platform/auth.Middleware.
 func (m *Module) Authenticator() auth.Authenticator { return m.Queries.Authenticate }
 
-// RegisterRoutes mounts /auth/* and /me. limit rate-limits the public auth
+// RegisterRoutes mounts /auth/*, /me and /me/passkeys. limit rate-limits the public auth
 // endpoints (and password change); protect authenticates the caller.
 func (m *Module) RegisterRoutes(mux *http.ServeMux, protect, limit httpx.Middleware) {
 	httpapi.Register(mux, m.Commands, m.Queries, protect, limit)

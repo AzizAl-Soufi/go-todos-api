@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/passkeys"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/persistence/memstore"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/security"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
@@ -106,6 +107,33 @@ func (g *todoGateway) DeleteAllForUser(_ context.Context, userID string) error {
 	return g.deleteErr
 }
 
+// auditLog keeps the recorded security events.
+type auditLog struct {
+	mu      sync.Mutex
+	entries []application.AuditEntry
+}
+
+func (a *auditLog) Record(_ context.Context, e application.AuditEntry) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.entries = append(a.entries, e)
+	return nil
+}
+
+func (a *auditLog) DeleteUserLog(context.Context, string) error { return nil }
+
+// last returns the most recent entry with action, or false.
+func (a *auditLog) last(action string) (application.AuditEntry, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i := len(a.entries) - 1; i >= 0; i-- {
+		if a.entries[i].Action == action {
+			return a.entries[i], true
+		}
+	}
+	return application.AuditEntry{}, false
+}
+
 // recordingTx counts units of work and runs them in place. The counter is
 // atomic because some tests run use cases concurrently.
 type recordingTx struct{ calls atomic.Int32 }
@@ -125,6 +153,8 @@ type fixture struct {
 	users    *memstore.Users
 	sessions *memstore.Sessions
 	resets   *memstore.OneTimeTokens
+	passkeys *memstore.Passkeys
+	audit    *auditLog
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -138,6 +168,16 @@ func newFixture(t *testing.T) *fixture {
 		users:    memstore.NewUsers(),
 		sessions: memstore.NewSessions(),
 		resets:   memstore.NewPasswordResets(),
+		passkeys: memstore.NewPasskeys(),
+		audit:    &auditLog{},
+	}
+	rpConfig, err := passkeys.ConfigFromBaseURL(passkeyOrigin, "Todos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rp, err := passkeys.New(rpConfig)
+	if err != nil {
+		t.Fatal(err)
 	}
 	tokens := security.NewJWT(testutil.NewRSAKey(t), 15*time.Minute)
 	f.cmd = command.New(command.Deps{
@@ -145,6 +185,10 @@ func newFixture(t *testing.T) *fixture {
 		Sessions:       f.sessions,
 		Verifications:  memstore.NewVerifications(),
 		PasswordResets: f.resets,
+		Passkeys:       f.passkeys,
+		Challenges:     memstore.NewPasskeyChallenges(),
+		RelyingParty:   rp,
+		Audit:          f.audit,
 		Hasher:         security.NewBcryptHasher(bcrypt.MinCost),
 		Tokens:         tokens,
 		Mailer:         f.mailer,
@@ -153,7 +197,7 @@ func newFixture(t *testing.T) *fixture {
 		Config:         command.DefaultConfig("http://example.test"),
 		Now:            f.clock.Now,
 	})
-	f.qry = query.New(query.Deps{Users: f.users, Tokens: tokens, Todos: f.todos})
+	f.qry = query.New(query.Deps{Users: f.users, Passkeys: f.passkeys, Tokens: tokens, Todos: f.todos})
 	return f
 }
 

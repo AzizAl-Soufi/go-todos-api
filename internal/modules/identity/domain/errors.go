@@ -25,4 +25,12 @@ var (
 
 	ErrInvalidResetToken = apperrors.Validation("INVALID_RESET_TOKEN", "invalid or expired password reset token")
 	ErrIncorrectPassword = apperrors.Validation("INCORRECT_PASSWORD", "current password is incorrect")
+
+	ErrPasskeyNameTooLong       = apperrors.Validationf("PASSKEY_NAME_TOO_LONG", "passkey name must be at most %d characters", MaxPasskeyNameLength)
+	ErrInvalidPasskeyChallenge  = apperrors.Validation("INVALID_PASSKEY_CHALLENGE", "invalid or expired passkey challenge")
+	ErrPasskeyRejected          = apperrors.Validation("PASSKEY_REJECTED", "the passkey could not be verified")
+	ErrPasskeyExists            = apperrors.Conflict("PASSKEY_EXISTS", "this passkey is already registered")
+	ErrTooManyPasskeys          = apperrors.Conflictf("TOO_MANY_PASSKEYS", "an account can have at most %d passkeys", MaxPasskeys)
+	ErrPasskeyNotFound          = apperrors.NotFound("PASSKEY_NOT_FOUND", "passkey not found")
+	ErrInvalidPasskeyCredential = apperrors.Unauthorized("INVALID_PASSKEY", "passkey sign-in failed")
 )

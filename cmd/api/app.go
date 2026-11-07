@@ -1,17 +1,20 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity"
 	identityaudit "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/auditgateway"
 	identitymail "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/mail"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/passkeys"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/security"
 	identityteams "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/teamsgateway"
 	identitytodos "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/todosgateway"
@@ -51,7 +54,13 @@ func newApp(ctx context.Context, cfg *config.Config) (*app, error) {
 		return nil, fmt.Errorf("initialize JWT: %w", err)
 	}
 
-	modules := wireModules(store, security.NewBcryptHasher(security.DefaultBcryptCost), tokens, newMailers(cfg), cfg)
+	rp, err := newRelyingParty(cfg)
+	if err != nil {
+		store.close()
+		return nil, fmt.Errorf("initialize passkeys: %w", err)
+	}
+
+	modules := wireModules(store, security.NewBcryptHasher(security.DefaultBcryptCost), tokens, rp, newMailers(cfg), cfg)
 	return &app{cfg: cfg, handler: newRouter(cfg, modules), close: store.close}, nil
 }
 
@@ -72,7 +81,7 @@ type mailers struct {
 // records into it, teams deletes team data in todos, identity reaches all of
 // them on account deletion. Team memberships flow to todos and audit through
 // platform/access (teams.Resolver), not through imports.
-func wireModules(store *storage, hasher application.PasswordHasher, tokens application.AccessTokens, mailer mailers, cfg *config.Config) modules {
+func wireModules(store *storage, hasher application.PasswordHasher, tokens application.AccessTokens, rp application.RelyingParty, mailer mailers, cfg *config.Config) modules {
 	auditModule := audit.New(audit.Deps{Events: store.events})
 	todosModule := todos.New(todos.Deps{
 		Todos:       store.todos,
@@ -96,6 +105,9 @@ func wireModules(store *storage, hasher application.PasswordHasher, tokens appli
 		Sessions:       store.sessions,
 		Verifications:  store.verifications,
 		PasswordResets: store.passwordResets,
+		Passkeys:       store.passkeys,
+		Challenges:     store.challenges,
+		RelyingParty:   rp,
 		Hasher:         hasher,
 		Tokens:         tokens,
 		Mailer:         mailer.identity,
@@ -114,6 +126,30 @@ func identityConfig(cfg *config.Config) identity.Config {
 		c.PasswordResetURL = cfg.Auth.PasswordResetURL
 	}
 	return c
+}
+
+// newRelyingParty configures passkeys for PASSKEY_RP_ID and PASSKEY_ORIGINS,
+// each defaulting to the host and origin of APP_BASE_URL.
+func newRelyingParty(cfg *config.Config) (*passkeys.RelyingParty, error) {
+	pc := passkeys.Config{RPID: cfg.Passkey.RPID, RPName: cfg.Passkey.RPName}
+	for o := range strings.SplitSeq(cfg.Passkey.Origins, ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			pc.Origins = append(pc.Origins, o)
+		}
+	}
+	if pc.RPID == "" || len(pc.Origins) == 0 {
+		def, err := passkeys.ConfigFromBaseURL(cfg.App.BaseURL, pc.RPName)
+		if err != nil {
+			return nil, err
+		}
+		pc.RPID = cmp.Or(pc.RPID, def.RPID)
+		if len(pc.Origins) == 0 {
+			pc.Origins = def.Origins
+		}
+	}
+	pc.RPName = cmp.Or(pc.RPName, "Todos")
+	pc.Timeout = identityConfig(cfg).PasskeyChallengeTTL
+	return passkeys.New(pc)
 }
 
 func newMailers(cfg *config.Config) mailers {

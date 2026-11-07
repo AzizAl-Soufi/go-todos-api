@@ -51,7 +51,7 @@ cmd/
 
 internal/
 ├── modules/                  one directory per feature (bounded context)
-│   ├── identity/             accounts, passwords, sessions, email verification, authentication
+│   ├── identity/             accounts, passwords, passkeys, sessions, email verification, authentication
 │   │   ├── identity.go       the module's public API (New, RegisterRoutes, Authenticator)
 │   │   ├── domain/           entities + invariants (User, Session, OneTimeToken, errors)
 │   │   ├── application/      ports.go: write repositories and read-only readers
@@ -62,6 +62,7 @@ internal/
 │   │   └── adapters/         driven adapters
 │   │       ├── persistence/  memstore | mongostore | pgstore (+ queries.sql, sqlcgen/), storetest/
 │   │       ├── security/     bcrypt hasher, RS256 JWT issuer/verifier
+│   │       ├── passkeys/     WebAuthn relying party (go-webauthn); passkeytest/ software authenticator
 │   │       ├── mail/         verification and reset emails on a platform mail.Sender
 │   │       ├── todosgateway/ bridge to the todos module
 │   │       ├── teamsgateway/ bridge to the teams module (account deletion)
@@ -153,13 +154,16 @@ POST /todos ─► decode ─► command.CreateTodo ─► CreateTodoHandler ─
 
 ### identity
 
-Accounts, passwords, sessions, email verification and authentication of every request.
+Accounts, passwords, passkeys, sessions, email verification and authentication of every request.
 
 | Port (application/ports.go) | Adapters |
 |-----------------------------|----------|
 | `UserRepository` (commands) / `UserReader` (queries) | `memstore.Users`, `mongostore.Users`, `pgstore.Users` |
 | `SessionRepository` | `memstore.Sessions`, `mongostore.Sessions`, `pgstore.Sessions` |
 | `OneTimeTokenRepository` (used twice: email verifications, password resets) | `memstore.OneTimeTokens`, `mongostore.OneTimeTokens`, `pgstore.OneTimeTokens` |
+| `PasskeyRepository` (commands) / `PasskeyReader` (queries) | `memstore.Passkeys`, `mongostore.Passkeys`, `pgstore.Passkeys` |
+| `PasskeyChallengeRepository` (pending WebAuthn ceremonies) | `memstore.PasskeyChallenges`, `mongostore.PasskeyChallenges`, `pgstore.PasskeyChallenges` |
+| `RelyingParty` (WebAuthn ceremonies) | `passkeys.RelyingParty` (go-webauthn) |
 | `PasswordHasher` | `security.BcryptHasher` |
 | `AccessTokenIssuer` (commands) / `AccessTokenVerifier` (queries) | `security.JWT` (RS256) |
 | `Mailer` | `mail.Mailer` on a `platform/mail.Sender` (log or SMTP) |
@@ -168,9 +172,11 @@ Accounts, passwords, sessions, email verification and authentication of every re
 | `AuditLog` (security log) | `auditgateway.Gateway` → `audit.Module` |
 | `tx.Runner` | `tx.None`, `postgres.TxRunner`, `mongodb.TxRunner` |
 
-Commands: `Register`, `Login`, `Refresh`, `Logout`, `LogoutAll`, `VerifyEmail`, `ResendVerification`, `RequestPasswordReset`, `ResetPassword`, `ChangePassword`, `DeleteAccount`. Shared steps (start a session, issue or redeem a one-time token, hash or check a password, revoke every credential, record a security event) live once in `command/command.go`. Logins, failed logins, logouts, refresh-token reuse, verification, password reset requests, resets and changes go to the user's security log; `DeleteAccount` first takes the user out of their teams (which fails with `OWNS_TEAMS` while they own a team with other members), then deletes their personal todos, credentials and security log.
+Commands: `Register`, `Login`, `Refresh`, `Logout`, `LogoutAll`, `VerifyEmail`, `ResendVerification`, `RequestPasswordReset`, `ResetPassword`, `ChangePassword`, `DeleteAccount`, and for passkeys `BeginPasskeyRegistration`, `FinishPasskeyRegistration`, `BeginPasskeyLogin`, `FinishPasskeyLogin`, `DeletePasskey`. Shared steps (start a session, issue or redeem a one-time token, hash or check a password, revoke every credential, record a security event) live once in `command/command.go`. Logins, failed logins, logouts, refresh-token reuse, verification, password reset requests, resets and changes go to the user's security log; `DeleteAccount` first takes the user out of their teams (which fails with `OWNS_TEAMS` while they own a team with other members), then deletes their personal todos, credentials (passkeys included) and security log.
 
-Queries: `GetUser`, `GetOverview`, and `Authenticate`, whose handler also implements `platform/auth.Authenticator` for the auth middleware.
+Passkeys keep WebAuthn out of the application layer. `RelyingParty` takes and returns opaque bytes: the options JSON for the browser, the ceremony state kept between the two calls, and the credential record (public key, sign counter, flags) that the adapter stores in `domain.Passkey.Credential` and updates on every sign-in. A ceremony is two commands: `Begin…` stores a `domain.PasskeyChallenge` named by a single-use opaque token (only its hash is stored, like the one-time tokens) and returns the options; `Finish…` consumes the challenge (used up even if the answer fails), lets the adapter verify the answer and then writes in one unit of work. A registration challenge carries the account's ID and a sign-in challenge none, so one can't stand in for the other. Sign-in uses discoverable credentials: the user handle the authenticator returns is the account ID, and `FinishPasskeyLogin` hands the adapter a lookup for that account's passkeys. A sign counter that went backwards fails the sign-in, and failures on an existing account are recorded like failed password logins.
+
+Queries: `GetUser`, `GetOverview`, `ListPasskeys`, and `Authenticate`, whose handler also implements `platform/auth.Authenticator` for the auth middleware.
 
 ### todos
 
@@ -369,6 +375,7 @@ Errors flow outwards as values and are turned into HTTP exactly once:
 
 | Concern | Design |
 |---------|--------|
+| Passkeys | WebAuthn with discoverable credentials and user verification required; only public keys are stored; challenges single-use, 5 minutes, bound to registration (and the account) or sign-in, stored hashed; bound to `PASSKEY_RP_ID` and `PASSKEY_ORIGINS`; a sign counter going backwards fails the sign-in |
 | Passwords | bcrypt cost 12; 8–72 bytes (bcrypt silently truncates longer input, so it is rejected); unknown emails are compared against a dummy hash to keep timing equal |
 | Access tokens | RS256 JWT, 15 minutes, claims `sub`, `ver`, `token_type`; only RS256 accepted; expiration required |
 | Revocation | Per-request token-version check against the user. Logout-all, password reset and change, and account deletion take effect immediately |
@@ -386,11 +393,11 @@ Errors flow outwards as values and are turned into HTTP exactly once:
 | Level | Where | Runs on |
 |-------|-------|---------|
 | Domain rules | `modules/*/domain/*_test.go` | pure Go |
-| Commands and queries | `modules/identity/application/usecases_test.go` | memory stores, real bcrypt (min cost) and JWT, fake mailer, test clock |
+| Commands and queries | `modules/identity/application/usecases_test.go`, `passkeys_test.go` | memory stores, real bcrypt (min cost), JWT and WebAuthn with a software authenticator (`passkeys/passkeytest`), fake mailer, test clock |
 | Store contracts | `modules/*/adapters/persistence/storetest` run from each store package | memory always; PostgreSQL / MongoDB when `TEST_POSTGRES_URI` / `TEST_MONGO_URI` are set |
 | Adapter edge cases | e.g. invalid IDs rejected before the database, SMTP header injection | pure Go |
 | Platform | middleware, rate limiter, config, migrations, codegen | pure Go / real databases for migrations |
-| End to end | `cmd/api/app_test.go`, `organize_test.go`, `teams_test.go`: real router and middleware over HTTP | memory, or `TEST_E2E_BACKEND=postgres\|mongo` |
+| End to end | `cmd/api/app_test.go`, `organize_test.go`, `teams_test.go`, `passkeys_test.go`: real router and middleware over HTTP | memory, or `TEST_E2E_BACKEND=postgres\|mongo` |
 
 `make test` runs everything that needs no database. `make test-integration` starts PostgreSQL and a MongoDB replica set in Docker (`docker-compose.test.yml`), runs the whole suite against them, then runs the end-to-end suite on each database. `platform/database/dbtest` gives every test its own freshly migrated database and drops it afterwards. CI runs both.
 

@@ -22,6 +22,8 @@ const (
 	SessionsCollection       = "sessions"
 	VerificationsCollection  = "email_verifications"
 	PasswordResetsCollection = "password_resets"
+	PasskeysCollection       = "passkeys"
+	ChallengesCollection     = "passkey_challenges"
 )
 
 // ---- users ----
@@ -263,5 +265,160 @@ func (s *OneTimeTokens) DeleteForUser(ctx context.Context, userID string) error 
 		return err
 	}
 	_, err = s.coll.DeleteOne(ctx, bson.M{"_id": oid})
+	return err
+}
+
+// ---- passkeys ----
+
+type Passkeys struct{ coll *mongo.Collection }
+
+var _ application.PasskeyRepository = (*Passkeys)(nil)
+
+func NewPasskeys(db *mongo.Database) *Passkeys {
+	return &Passkeys{coll: db.Collection(PasskeysCollection)}
+}
+
+type passkeyDoc struct {
+	ID           bson.ObjectID `bson:"_id"`
+	UserID       bson.ObjectID `bson:"userId"`
+	Name         string        `bson:"name"`
+	CredentialID []byte        `bson:"credentialId"`
+	Credential   []byte        `bson:"credential"`
+	CreatedAt    time.Time     `bson:"createdAt"`
+	LastUsedAt   *time.Time    `bson:"lastUsedAt,omitempty"`
+}
+
+func (s *Passkeys) Create(ctx context.Context, p *domain.Passkey) error {
+	userOID, err := ids.ObjectID(p.UserID)
+	if err != nil {
+		return err
+	}
+	doc := passkeyDoc{
+		ID: bson.NewObjectID(), UserID: userOID, Name: p.Name, CredentialID: p.CredentialID,
+		Credential: p.Credential, CreatedAt: p.CreatedAt, LastUsedAt: p.LastUsedAt,
+	}
+	if _, err := s.coll.InsertOne(ctx, doc); err != nil {
+		// Relies on the unique credentialId index created by the migrations.
+		if mongo.IsDuplicateKeyError(err) {
+			return domain.ErrPasskeyExists
+		}
+		return err
+	}
+	p.ID = doc.ID.Hex()
+	return nil
+}
+
+func (s *Passkeys) ListForUser(ctx context.Context, userID string) ([]*domain.Passkey, error) {
+	oid, err := ids.ObjectID(userID)
+	if err != nil {
+		return nil, err
+	}
+	cur, err := s.coll.Find(ctx, bson.M{"userId": oid}, options.Find().SetSort(bson.D{{Key: "createdAt", Value: 1}, {Key: "_id", Value: 1}}))
+	if err != nil {
+		return nil, err
+	}
+	var docs []passkeyDoc
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, err
+	}
+	out := make([]*domain.Passkey, 0, len(docs))
+	for _, d := range docs {
+		out = append(out, &domain.Passkey{
+			ID: d.ID.Hex(), UserID: d.UserID.Hex(), Name: d.Name, CredentialID: d.CredentialID,
+			Credential: d.Credential, CreatedAt: d.CreatedAt, LastUsedAt: d.LastUsedAt,
+		})
+	}
+	return out, nil
+}
+
+func (s *Passkeys) RecordUse(ctx context.Context, id string, credential []byte, at time.Time) error {
+	oid, err := ids.ObjectID(id)
+	if err != nil {
+		return err
+	}
+	res, err := s.coll.UpdateOne(ctx, bson.M{"_id": oid}, bson.M{"$set": bson.M{"credential": credential, "lastUsedAt": at}})
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return apperrors.ErrNotFound
+	}
+	return nil
+}
+
+func (s *Passkeys) Delete(ctx context.Context, userID, id string) error {
+	userOID, err := ids.ObjectID(userID)
+	if err != nil {
+		return err
+	}
+	oid, err := ids.ObjectID(id)
+	if err != nil {
+		return err
+	}
+	return mongodb.RequireDeleted(s.coll.DeleteOne(ctx, bson.M{"_id": oid, "userId": userOID}))
+}
+
+func (s *Passkeys) DeleteAllForUser(ctx context.Context, userID string) error {
+	oid, err := ids.ObjectID(userID)
+	if err != nil {
+		return err
+	}
+	_, err = s.coll.DeleteMany(ctx, bson.M{"userId": oid})
+	return err
+}
+
+// ---- passkey challenges (_id = token hash) ----
+
+type PasskeyChallenges struct{ coll *mongo.Collection }
+
+var _ application.PasskeyChallengeRepository = (*PasskeyChallenges)(nil)
+
+func NewPasskeyChallenges(db *mongo.Database) *PasskeyChallenges {
+	return &PasskeyChallenges{coll: db.Collection(ChallengesCollection)}
+}
+
+type challengeDoc struct {
+	TokenHash string         `bson:"_id"`
+	UserID    *bson.ObjectID `bson:"userId,omitempty"`
+	State     []byte         `bson:"state"`
+	ExpiresAt time.Time      `bson:"expiresAt"`
+	CreatedAt time.Time      `bson:"createdAt"`
+}
+
+func (s *PasskeyChallenges) Save(ctx context.Context, c *domain.PasskeyChallenge) error {
+	doc := challengeDoc{TokenHash: c.TokenHash, State: c.State, ExpiresAt: c.ExpiresAt, CreatedAt: c.CreatedAt}
+	if c.UserID != "" {
+		oid, err := ids.ObjectID(c.UserID)
+		if err != nil {
+			return err
+		}
+		doc.UserID = &oid
+	}
+	// The TTL index removes expired challenges too, but only once a minute.
+	if _, err := s.coll.DeleteMany(ctx, bson.M{"expiresAt": bson.M{"$lt": c.CreatedAt}}); err != nil {
+		return err
+	}
+	_, err := s.coll.InsertOne(ctx, doc)
+	return err
+}
+
+func (s *PasskeyChallenges) Consume(ctx context.Context, tokenHash string) (*domain.PasskeyChallenge, error) {
+	var doc challengeDoc
+	if err := s.coll.FindOneAndDelete(ctx, bson.M{"_id": tokenHash}).Decode(&doc); err != nil {
+		return nil, mongodb.MapNotFound(err)
+	}
+	c := &domain.PasskeyChallenge{TokenHash: doc.TokenHash, State: doc.State, ExpiresAt: doc.ExpiresAt, CreatedAt: doc.CreatedAt}
+	if doc.UserID != nil {
+		c.UserID = doc.UserID.Hex()
+	}
+	return c, nil
+}
+
+func (s *PasskeyChallenges) DeleteForUser(ctx context.Context, userID string) error {
+	oid, err := ids.ObjectID(userID)
+	if err != nil {
+		return err
+	}
+	_, err = s.coll.DeleteMany(ctx, bson.M{"userId": oid})
 	return err
 }

@@ -19,6 +19,8 @@ func TestContract(t *testing.T) {
 			Sessions:       pgstore.NewSessions(pool),
 			Verifications:  pgstore.NewVerifications(pool),
 			PasswordResets: pgstore.NewPasswordResets(pool),
+			Passkeys:       pgstore.NewPasskeys(pool),
+			Challenges:     pgstore.NewPasskeyChallenges(pool),
 			Tx:             postgres.NewTxRunner(pool),
 			AtomicTx:       true,
 			MissingID:      uuid.NewString(),

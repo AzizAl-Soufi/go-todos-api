@@ -209,6 +209,8 @@ func (h DeleteAccountHandler) Handle(ctx context.Context, cmd DeleteAccount) err
 			func() error { return h.Sessions.DeleteAllForUser(ctx, id) },
 			func() error { return h.Verifications.DeleteForUser(ctx, id) },
 			func() error { return h.PasswordResets.DeleteForUser(ctx, id) },
+			func() error { return h.Passkeys.DeleteAllForUser(ctx, id) },
+			func() error { return h.Challenges.DeleteForUser(ctx, id) },
 			func() error { return h.Audit.DeleteUserLog(ctx, id) },
 			func() error { return h.Users.Delete(ctx, id) },
 		} {

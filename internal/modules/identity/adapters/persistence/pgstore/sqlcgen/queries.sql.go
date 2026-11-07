@@ -29,6 +29,24 @@ func (q *Queries) ConsumeEmailVerification(ctx context.Context, tokenHash string
 	return i, err
 }
 
+const consumePasskeyChallenge = `-- name: ConsumePasskeyChallenge :one
+DELETE FROM passkey_challenges WHERE token_hash = $1 RETURNING token_hash, user_id, state, expires_at, created_at
+`
+
+// Single-use: the row is deleted as it is read.
+func (q *Queries) ConsumePasskeyChallenge(ctx context.Context, tokenHash string) (PasskeyChallenge, error) {
+	row := q.db.QueryRow(ctx, consumePasskeyChallenge, tokenHash)
+	var i PasskeyChallenge
+	err := row.Scan(
+		&i.TokenHash,
+		&i.UserID,
+		&i.State,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const consumePasswordReset = `-- name: ConsumePasswordReset :one
 DELETE FROM password_resets WHERE token_hash = $1 RETURNING user_id, token_hash, expires_at, created_at
 `
@@ -44,6 +62,59 @@ func (q *Queries) ConsumePasswordReset(ctx context.Context, tokenHash string) (P
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const createPasskey = `-- name: CreatePasskey :one
+
+INSERT INTO passkeys (user_id, name, credential_id, credential, created_at)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id
+`
+
+type CreatePasskeyParams struct {
+	UserID       uuid.UUID
+	Name         string
+	CredentialID []byte
+	Credential   []byte
+	CreatedAt    time.Time
+}
+
+// passkeys
+func (q *Queries) CreatePasskey(ctx context.Context, arg CreatePasskeyParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, createPasskey,
+		arg.UserID,
+		arg.Name,
+		arg.CredentialID,
+		arg.Credential,
+		arg.CreatedAt,
+	)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const createPasskeyChallenge = `-- name: CreatePasskeyChallenge :exec
+INSERT INTO passkey_challenges (token_hash, user_id, state, expires_at, created_at)
+VALUES ($1, $2, $3, $4, $5)
+`
+
+type CreatePasskeyChallengeParams struct {
+	TokenHash string
+	UserID    *uuid.UUID
+	State     []byte
+	ExpiresAt time.Time
+	CreatedAt time.Time
+}
+
+func (q *Queries) CreatePasskeyChallenge(ctx context.Context, arg CreatePasskeyChallengeParams) error {
+	_, err := q.db.Exec(ctx, createPasskeyChallenge,
+		arg.TokenHash,
+		arg.UserID,
+		arg.State,
+		arg.ExpiresAt,
+		arg.CreatedAt,
+	)
+	return err
 }
 
 const createSession = `-- name: CreateSession :one
@@ -129,6 +200,34 @@ func (q *Queries) DeleteEmailVerification(ctx context.Context, userID uuid.UUID)
 	return err
 }
 
+const deleteExpiredPasskeyChallenges = `-- name: DeleteExpiredPasskeyChallenges :exec
+
+DELETE FROM passkey_challenges WHERE expires_at < $1
+`
+
+// passkey challenges
+func (q *Queries) DeleteExpiredPasskeyChallenges(ctx context.Context, expiresAt time.Time) error {
+	_, err := q.db.Exec(ctx, deleteExpiredPasskeyChallenges, expiresAt)
+	return err
+}
+
+const deletePasskey = `-- name: DeletePasskey :execrows
+DELETE FROM passkeys WHERE id = $1 AND user_id = $2
+`
+
+type DeletePasskeyParams struct {
+	ID     uuid.UUID
+	UserID uuid.UUID
+}
+
+func (q *Queries) DeletePasskey(ctx context.Context, arg DeletePasskeyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deletePasskey, arg.ID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deletePasswordReset = `-- name: DeletePasswordReset :exec
 DELETE FROM password_resets WHERE user_id = $1
 `
@@ -148,6 +247,24 @@ func (q *Queries) DeleteUser(ctx context.Context, id uuid.UUID) (int64, error) {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const deleteUserPasskeyChallenges = `-- name: DeleteUserPasskeyChallenges :exec
+DELETE FROM passkey_challenges WHERE user_id = $1
+`
+
+func (q *Queries) DeleteUserPasskeyChallenges(ctx context.Context, userID *uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteUserPasskeyChallenges, userID)
+	return err
+}
+
+const deleteUserPasskeys = `-- name: DeleteUserPasskeys :exec
+DELETE FROM passkeys WHERE user_id = $1
+`
+
+func (q *Queries) DeleteUserPasskeys(ctx context.Context, userID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteUserPasskeys, userID)
+	return err
 }
 
 const deleteUserSessions = `-- name: DeleteUserSessions :exec
@@ -228,6 +345,38 @@ func (q *Queries) IncrementTokenVersion(ctx context.Context, id uuid.UUID) (int6
 	return result.RowsAffected(), nil
 }
 
+const listUserPasskeys = `-- name: ListUserPasskeys :many
+SELECT id, user_id, name, credential_id, credential, created_at, last_used_at FROM passkeys WHERE user_id = $1 ORDER BY created_at, id
+`
+
+func (q *Queries) ListUserPasskeys(ctx context.Context, userID uuid.UUID) ([]Passkey, error) {
+	rows, err := q.db.Query(ctx, listUserPasskeys, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Passkey
+	for rows.Next() {
+		var i Passkey
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Name,
+			&i.CredentialID,
+			&i.Credential,
+			&i.CreatedAt,
+			&i.LastUsedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markEmailVerified = `-- name: MarkEmailVerified :execrows
 UPDATE users
 SET email_verified_at = COALESCE(email_verified_at, $2)
@@ -242,6 +391,24 @@ type MarkEmailVerifiedParams struct {
 // Keeps the first verification time if the email was already verified.
 func (q *Queries) MarkEmailVerified(ctx context.Context, arg MarkEmailVerifiedParams) (int64, error) {
 	result, err := q.db.Exec(ctx, markEmailVerified, arg.ID, arg.EmailVerifiedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const recordPasskeyUse = `-- name: RecordPasskeyUse :execrows
+UPDATE passkeys SET credential = $2, last_used_at = $3 WHERE id = $1
+`
+
+type RecordPasskeyUseParams struct {
+	ID         uuid.UUID
+	Credential []byte
+	LastUsedAt *time.Time
+}
+
+func (q *Queries) RecordPasskeyUse(ctx context.Context, arg RecordPasskeyUseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordPasskeyUse, arg.ID, arg.Credential, arg.LastUsedAt)
 	if err != nil {
 		return 0, err
 	}

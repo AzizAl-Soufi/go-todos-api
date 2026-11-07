@@ -44,6 +44,24 @@ type EmailVerification struct {
 	CreatedAt time.Time
 }
 
+type Passkey struct {
+	ID           uuid.UUID
+	UserID       uuid.UUID
+	Name         string
+	CredentialID []byte
+	Credential   []byte
+	CreatedAt    time.Time
+	LastUsedAt   *time.Time
+}
+
+type PasskeyChallenge struct {
+	TokenHash string
+	UserID    *uuid.UUID
+	State     []byte
+	ExpiresAt time.Time
+	CreatedAt time.Time
+}
+
 type PasswordReset struct {
 	UserID    uuid.UUID
 	TokenHash string

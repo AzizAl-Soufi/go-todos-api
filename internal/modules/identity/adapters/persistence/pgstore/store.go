@@ -249,3 +249,124 @@ func (s *OneTimeTokens) DeleteForUser(ctx context.Context, userID string) error 
 	}
 	return postgres.MapErr("delete "+s.kind, s.remove(s.q(ctx), ctx, uid))
 }
+
+// ---- passkeys ----
+
+type Passkeys struct{ base }
+
+var _ application.PasskeyRepository = (*Passkeys)(nil)
+
+func NewPasskeys(pool *pgxpool.Pool) *Passkeys { return &Passkeys{base{pool}} }
+
+func (s *Passkeys) Create(ctx context.Context, p *domain.Passkey) error {
+	uid, err := ids.UUID(p.UserID)
+	if err != nil {
+		return err
+	}
+	id, err := s.q(ctx).CreatePasskey(ctx, sqlcgen.CreatePasskeyParams{
+		UserID: uid, Name: p.Name, CredentialID: p.CredentialID, Credential: p.Credential, CreatedAt: p.CreatedAt,
+	})
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation {
+			return domain.ErrPasskeyExists
+		}
+		return postgres.MapErr("create passkey", err)
+	}
+	p.ID = id.String()
+	return nil
+}
+
+func (s *Passkeys) ListForUser(ctx context.Context, userID string) ([]*domain.Passkey, error) {
+	uid, err := ids.UUID(userID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.q(ctx).ListUserPasskeys(ctx, uid)
+	if err != nil {
+		return nil, postgres.MapErr("list passkeys", err)
+	}
+	out := make([]*domain.Passkey, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, &domain.Passkey{
+			ID: r.ID.String(), UserID: r.UserID.String(), Name: r.Name, CredentialID: r.CredentialID,
+			Credential: r.Credential, CreatedAt: r.CreatedAt, LastUsedAt: r.LastUsedAt,
+		})
+	}
+	return out, nil
+}
+
+func (s *Passkeys) RecordUse(ctx context.Context, id string, credential []byte, at time.Time) error {
+	pid, err := ids.UUID(id)
+	if err != nil {
+		return err
+	}
+	rows, err := s.q(ctx).RecordPasskeyUse(ctx, sqlcgen.RecordPasskeyUseParams{ID: pid, Credential: credential, LastUsedAt: &at})
+	return postgres.RequireAffected("record passkey use", rows, err)
+}
+
+func (s *Passkeys) Delete(ctx context.Context, userID, id string) error {
+	uid, pid, err := ids.UUIDPair(userID, id)
+	if err != nil {
+		return err
+	}
+	rows, err := s.q(ctx).DeletePasskey(ctx, sqlcgen.DeletePasskeyParams{ID: pid, UserID: uid})
+	return postgres.RequireAffected("delete passkey", rows, err)
+}
+
+func (s *Passkeys) DeleteAllForUser(ctx context.Context, userID string) error {
+	uid, err := ids.UUID(userID)
+	if err != nil {
+		return err
+	}
+	return postgres.MapErr("delete user passkeys", s.q(ctx).DeleteUserPasskeys(ctx, uid))
+}
+
+// ---- passkey challenges ----
+
+type PasskeyChallenges struct{ base }
+
+var _ application.PasskeyChallengeRepository = (*PasskeyChallenges)(nil)
+
+func NewPasskeyChallenges(pool *pgxpool.Pool) *PasskeyChallenges {
+	return &PasskeyChallenges{base{pool}}
+}
+
+func (s *PasskeyChallenges) Save(ctx context.Context, c *domain.PasskeyChallenge) error {
+	var uid *uuid.UUID
+	if c.UserID != "" {
+		id, err := ids.UUID(c.UserID)
+		if err != nil {
+			return err
+		}
+		uid = &id
+	}
+	q := s.q(ctx)
+	if err := q.DeleteExpiredPasskeyChallenges(ctx, c.CreatedAt); err != nil {
+		return postgres.MapErr("prune passkey challenges", err)
+	}
+	err := q.CreatePasskeyChallenge(ctx, sqlcgen.CreatePasskeyChallengeParams{
+		TokenHash: c.TokenHash, UserID: uid, State: c.State, ExpiresAt: c.ExpiresAt, CreatedAt: c.CreatedAt,
+	})
+	return postgres.MapErr("save passkey challenge", err)
+}
+
+func (s *PasskeyChallenges) Consume(ctx context.Context, tokenHash string) (*domain.PasskeyChallenge, error) {
+	row, err := s.q(ctx).ConsumePasskeyChallenge(ctx, tokenHash)
+	if err != nil {
+		return nil, postgres.MapErr("consume passkey challenge", err)
+	}
+	c := &domain.PasskeyChallenge{TokenHash: row.TokenHash, State: row.State, ExpiresAt: row.ExpiresAt, CreatedAt: row.CreatedAt}
+	if row.UserID != nil {
+		c.UserID = row.UserID.String()
+	}
+	return c, nil
+}
+
+func (s *PasskeyChallenges) DeleteForUser(ctx context.Context, userID string) error {
+	uid, err := ids.UUID(userID)
+	if err != nil {
+		return err
+	}
+	return postgres.MapErr("delete user passkey challenges", s.q(ctx).DeleteUserPasskeyChallenges(ctx, &uid))
+}

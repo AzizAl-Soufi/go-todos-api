@@ -45,6 +45,16 @@ type AuthConfig struct {
 	PasswordResetURL string `mapstructure:"AUTH_PASSWORD_RESET_URL"`
 }
 
+// PasskeyConfig names the WebAuthn relying party. Passkeys are bound to RPID
+// and only work on pages served from Origins; both default to the host and
+// origin of APP_BASE_URL.
+type PasskeyConfig struct {
+	RPID   string `mapstructure:"PASSKEY_RP_ID"`
+	RPName string `mapstructure:"PASSKEY_RP_NAME" default:"Todos"`
+	// Origins is a comma-separated list of scheme://host[:port] values.
+	Origins string `mapstructure:"PASSKEY_ORIGINS"`
+}
+
 // SMTPConfig enables the SMTP mailer when Host is set; otherwise emails are logged.
 type SMTPConfig struct {
 	Host     string `mapstructure:"SMTP_HOST"`
@@ -55,11 +65,12 @@ type SMTPConfig struct {
 }
 
 type Config struct {
-	App  AppConfig      `mapstructure:",squash"`
-	DB   DatabaseConfig `mapstructure:",squash"`
-	JWT  JWTConfig      `mapstructure:",squash"`
-	Auth AuthConfig     `mapstructure:",squash"`
-	SMTP SMTPConfig     `mapstructure:",squash"`
+	App     AppConfig      `mapstructure:",squash"`
+	DB      DatabaseConfig `mapstructure:",squash"`
+	JWT     JWTConfig      `mapstructure:",squash"`
+	Auth    AuthConfig     `mapstructure:",squash"`
+	Passkey PasskeyConfig  `mapstructure:",squash"`
+	SMTP    SMTPConfig     `mapstructure:",squash"`
 }
 
 // setting is one environment variable declared on Config.

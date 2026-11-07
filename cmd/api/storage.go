@@ -42,6 +42,8 @@ type storage struct {
 	sessions       application.SessionRepository
 	verifications  application.OneTimeTokenRepository
 	passwordResets application.OneTimeTokenRepository
+	passkeys       application.PasskeyRepository
+	challenges     application.PasskeyChallengeRepository
 	teams          teams.TeamStore
 	members        teams.MemberStore
 	invitations    teams.InvitationStore
@@ -72,6 +74,8 @@ func newMemoryStorage() *storage {
 		sessions:       identitymem.NewSessions(),
 		verifications:  identitymem.NewVerifications(),
 		passwordResets: identitymem.NewPasswordResets(),
+		passkeys:       identitymem.NewPasskeys(),
+		challenges:     identitymem.NewPasskeyChallenges(),
 		teams:          teamsmem.NewTeams(),
 		members:        teamsmem.NewMembers(),
 		invitations:    teamsmem.NewInvitations(),
@@ -120,6 +124,8 @@ func mongoStorage(ctx context.Context, client mongodb.MongoDBClient) *storage {
 		sessions:       identitymongo.NewSessions(db),
 		verifications:  identitymongo.NewVerifications(db),
 		passwordResets: identitymongo.NewPasswordResets(db),
+		passkeys:       identitymongo.NewPasskeys(db),
+		challenges:     identitymongo.NewPasskeyChallenges(db),
 		teams:          teamsmongo.NewTeams(db),
 		members:        teamsmongo.NewMembers(db),
 		invitations:    teamsmongo.NewInvitations(db),
@@ -164,6 +170,8 @@ func postgresStorage(pool *pgxpool.Pool) *storage {
 		sessions:       identitypg.NewSessions(pool),
 		verifications:  identitypg.NewVerifications(pool),
 		passwordResets: identitypg.NewPasswordResets(pool),
+		passkeys:       identitypg.NewPasskeys(pool),
+		challenges:     identitypg.NewPasskeyChallenges(pool),
 		teams:          teamspg.NewTeams(pool),
 		members:        teamspg.NewMembers(pool),
 		invitations:    teamspg.NewInvitations(pool),

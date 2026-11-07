@@ -35,10 +35,11 @@ func setup(t *testing.T, envFile string) {
 // defaultConfig is what LoadConfig returns when nothing is set.
 func defaultConfig() Config {
 	return Config{
-		App:  AppConfig{BaseURL: "http://localhost:8000"},
-		DB:   DatabaseConfig{DBType: "memory", MongoMigrationsConfig: "./cmd/migrate/mongo.yaml"},
-		Auth: AuthConfig{RateLimitPerMinute: 20, RateLimitBurst: 10},
-		SMTP: SMTPConfig{Port: 587},
+		App:     AppConfig{BaseURL: "http://localhost:8000"},
+		DB:      DatabaseConfig{DBType: "memory", MongoMigrationsConfig: "./cmd/migrate/mongo.yaml"},
+		Auth:    AuthConfig{RateLimitPerMinute: 20, RateLimitBurst: 10},
+		Passkey: PasskeyConfig{RPName: "Todos"},
+		SMTP:    SMTPConfig{Port: 587},
 	}
 }
 

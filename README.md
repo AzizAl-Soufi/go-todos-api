@@ -52,6 +52,13 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md) · Changes: [CHANGELOG.md](CHANGELOG.
     - [POST `/auth/password/forgot`](#post-authpasswordforgot)
     - [POST `/auth/password/reset`](#post-authpasswordreset)
     - [POST `/auth/password/change`](#post-authpasswordchange)
+  - [Passkeys](#passkeys-1)
+    - [POST `/me/passkeys/options`](#post-mepasskeysoptions)
+    - [POST `/me/passkeys`](#post-mepasskeys)
+    - [GET `/me/passkeys`](#get-mepasskeys)
+    - [DELETE `/me/passkeys/{id}`](#delete-mepasskeysid)
+    - [POST `/auth/passkeys/login/options`](#post-authpasskeysloginoptions)
+    - [POST `/auth/passkeys/login`](#post-authpasskeyslogin)
   - [Account](#account)
     - [GET `/me`](#get-me)
     - [DELETE `/me`](#delete-me)
@@ -142,6 +149,9 @@ All settings are environment variables (a `.env` file in the working directory i
 | `AUTH_RATE_LIMIT_PER_MINUTE` | `20` | Per-IP budget for the rate-limited auth endpoints |
 | `AUTH_RATE_LIMIT_BURST` | `10` | Burst on top of that budget |
 | `AUTH_PASSWORD_RESET_URL` | `APP_BASE_URL` + `/reset-password` | Page the reset email links to (see [Resetting and changing passwords](#resetting-and-changing-passwords)) |
+| `PASSKEY_RP_ID` | host of `APP_BASE_URL` | Domain passkeys are bound to: the site's host or a parent domain of it (see [Passkeys](#passkeys)) |
+| `PASSKEY_RP_NAME` | `Todos` | Name the browser shows when creating a passkey |
+| `PASSKEY_ORIGINS` | origin of `APP_BASE_URL` | Comma-separated origins (`https://app.example.com`) of the pages allowed to use passkeys |
 | `SMTP_HOST` | – | SMTP server; empty means emails are logged |
 | `SMTP_PORT` | `587` | SMTP port (STARTTLS when offered) |
 | `SMTP_USERNAME`, `SMTP_PASSWORD` | – | SMTP credentials |
@@ -175,9 +185,39 @@ A single-use token (hashed, 24 h) is emailed on registration and on resend; rese
 - Both reset and change revoke every session and access token issued before, and cancel any pending reset link.
 - Accounts created before password auth have no password. They can't log in or change their password, but the reset flow gives them one.
 
+### Passkeys
+
+Users can sign in with a **passkey** (WebAuthn) instead of their email and password. A passkey is a key pair kept by the device or password manager (Touch ID, Windows Hello, a phone, a security key); the API stores only the public key and checks a signature, so there is nothing to phish or leak.
+
+- **Adding one** (signed in): `POST /me/passkeys/options` returns the options for `navigator.credentials.create()` and a single-use `token`; the client sends the browser's answer back to `POST /me/passkeys` with that token.
+- **Signing in** (no email needed): `POST /auth/passkeys/login/options` returns the options for `navigator.credentials.get()`; the browser lets the user pick a passkey, and `POST /auth/passkeys/login` returns the same user and tokens as a password login.
+- Passkeys are discoverable and require user verification (biometrics or device PIN), so one passkey stands in for both factors. Existing passkeys are excluded when adding another, so a device can't register twice.
+- Each challenge is single-use and valid 5 minutes, and is tied to its purpose (a sign-in challenge can't add a passkey, and one account's can't add a passkey to another). Only a hash of the challenge token is stored.
+- A sign counter that goes backwards (a possibly cloned security key) fails the sign-in. Failed passkey sign-ins on an existing account go to its security log, as do added and removed passkeys.
+- Passkeys are bound to `PASSKEY_RP_ID` and only work on pages served from `PASSKEY_ORIGINS`. Both default to `APP_BASE_URL`; when the web client runs elsewhere (say `https://app.example.com` with the API on `https://api.example.com`), set `PASSKEY_RP_ID=example.com` and `PASSKEY_ORIGINS=https://app.example.com`. Changing the RP ID later invalidates every registered passkey.
+- An account has at most 20 passkeys. Passkeys are an addition to the password: registering still needs one, and a password reset or change doesn't remove passkeys (review them with `GET /me/passkeys`).
+
+Client sketch:
+
+```js
+// Add a passkey (signed in)
+const { token, options } = await api.post("/me/passkeys/options");
+const cred = await navigator.credentials.create({
+  publicKey: PublicKeyCredential.parseCreationOptionsFromJSON(options.publicKey),
+});
+await api.post("/me/passkeys", { token, name: "MacBook", credential: cred.toJSON() });
+
+// Sign in
+const login = await api.post("/auth/passkeys/login/options");
+const assertion = await navigator.credentials.get({
+  publicKey: PublicKeyCredential.parseRequestOptionsFromJSON(login.options.publicKey),
+});
+const { user, authorization } = await api.post("/auth/passkeys/login", { token: login.token, credential: assertion.toJSON() });
+```
+
 ### Rate limiting
 
-A per-client-IP token bucket guards the public `/auth/*` endpoints and password change (`429` with `Retry-After`). It's in-process, so the limit applies per replica. `X-Forwarded-For` is not trusted.
+A per-client-IP token bucket guards the public `/auth/*` endpoints (including passkey sign-in) and password change (`429` with `Retry-After`). It's in-process, so the limit applies per replica. `X-Forwarded-For` is not trusted.
 
 ## Organizing Todos
 
@@ -474,11 +514,34 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │   ├── expires_at: timestamptz
     │   └── created_at: timestamptz
     │
-    └── password_resets
-        ├── user_id: uuid [PK] [FK → users.id, ON DELETE CASCADE]
-        ├── token_hash: text [UNIQUE]
+    ├── password_resets
+    │   ├── user_id: uuid [PK] [FK → users.id, ON DELETE CASCADE]
+    │   ├── token_hash: text [UNIQUE]
+    │   ├── expires_at: timestamptz
+    │   └── created_at: timestamptz
+    │
+    ├── passkeys
+    │   ├── id: uuid [PK]
+    │   ├── user_id: uuid [FK → users.id, ON DELETE CASCADE]
+    │   ├── name: text
+    │   ├── credential_id: bytea [UNIQUE] (the authenticator's credential ID)
+    │   ├── credential: bytea (WebAuthn credential record: public key, sign counter, flags)
+    │   ├── created_at: timestamptz
+    │   ├── last_used_at: timestamptz (nullable)
+    │   │
+    │   └── [Indexes]
+    │       └── [Index] idx_passkeys_user_created (user_id, created_at, id)
+    │
+    └── passkey_challenges
+        ├── token_hash: text [PK]
+        ├── user_id: uuid (nullable: sign-in) [FK → users.id, ON DELETE CASCADE]
+        ├── state: bytea (WebAuthn ceremony state)
         ├── expires_at: timestamptz
-        └── created_at: timestamptz
+        ├── created_at: timestamptz
+        │
+        └── [Indexes]
+            ├── [Index] idx_passkey_challenges_expires_at (expires_at)
+            └── [Index] idx_passkey_challenges_user_id (user_id)
 ```
 
 ### MongoDB collections
@@ -627,6 +690,30 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │   │
     │   └── [Indexes]
     │       ├── [Unique Index] { tokenHash: 1 }
+    │       └── [TTL Index] { expiresAt: 1 } (expireAfterSeconds: 0)
+    │
+    ├── passkeys
+    │   ├── _id: objectId [PK]
+    │   ├── userId: objectId [FK → users._id]
+    │   ├── name: string
+    │   ├── credentialId: binData
+    │   ├── credential: binData (WebAuthn credential record)
+    │   ├── createdAt: ISODate
+    │   ├── lastUsedAt: ISODate (absent until used)
+    │   │
+    │   └── [Indexes]
+    │       ├── [Unique Index] { credentialId: 1 }
+    │       └── [Index] { userId: 1, createdAt: 1, _id: 1 }
+    │
+    ├── passkey_challenges
+    │   ├── _id: string [PK] (token hash)
+    │   ├── userId: objectId (absent for sign-in) [FK → users._id]
+    │   ├── state: binData (WebAuthn ceremony state)
+    │   ├── expiresAt: ISODate
+    │   ├── createdAt: ISODate
+    │   │
+    │   └── [Indexes]
+    │       ├── [Index] { userId: 1 }
     │       └── [TTL Index] { expiresAt: 1 } (expireAfterSeconds: 0)
     │
     └── schema_versions (migration bookkeeping)
@@ -949,6 +1036,128 @@ Response `200 OK`
 
 Errors: `INCORRECT_PASSWORD` (400) when `current_password` is wrong, including for accounts without a password (they use [the reset flow](#post-authpasswordforgot)); `WEAK_PASSWORD`, `PASSWORD_TOO_LONG` (400).
 
+### Passkeys
+
+See [Passkeys](#passkeys) for the flow. `options` is what the browser's `navigator.credentials` call takes (`{"publicKey": {...}}`, binary values base64url-encoded); `credential` is the `PublicKeyCredential` the browser returns, serialized with `toJSON()`.
+
+#### POST `/me/passkeys/options`
+
+Starts adding a passkey to the caller's account. Bearer.
+
+Request: no body.
+
+Response `200 OK`
+
+```json
+{
+  "token": "b3xQ8mJb2c3lJbH0Zk1yX2RvbmVfZm9yX3Rlc3Rz",
+  "options": {
+    "publicKey": {
+      "rp": { "name": "Todos", "id": "example.com" },
+      "user": { "name": "aziz@example.com", "displayName": "Aziz Al-Soufi", "id": "NjcyYzVmM2E5ZTFiNGQwMDEyYTdjM2Ux" },
+      "challenge": "kq2l3n6Pq0qLRY7mJ5D8eW8xP2v7cTfVb6dB4mG0QzY",
+      "pubKeyCredParams": [{ "type": "public-key", "alg": -7 }, { "type": "public-key", "alg": -257 }, "…"],
+      "timeout": 300000,
+      "authenticatorSelection": { "requireResidentKey": true, "residentKey": "required", "userVerification": "required" },
+      "attestation": "none",
+      "extensions": { "credProps": true }
+    }
+  }
+}
+```
+
+`excludeCredentials` lists the account's existing passkeys, when it has any. The token is valid for 5 minutes and one attempt.
+
+Errors: `TOO_MANY_PASSKEYS` (409) when the account already has 20.
+
+#### POST `/me/passkeys`
+
+Verifies the browser's answer and stores the passkey. Bearer.
+
+Request
+
+```json
+{
+  "token": "b3xQ8mJb2c3lJbH0Zk1yX2RvbmVfZm9yX3Rlc3Rz",
+  "name": "MacBook",
+  "credential": { "id": "…", "rawId": "…", "type": "public-key", "response": { "clientDataJSON": "…", "attestationObject": "…" }, "clientExtensionResults": {} }
+}
+```
+
+`name` is optional (default `Passkey`, at most 64 characters).
+
+Response `201 Created`: the passkey, as in [GET `/me/passkeys`](#get-mepasskeys).
+
+Errors: `INVALID_VALUE` (400) without `credential`; `INVALID_PASSKEY_CHALLENGE` (400) for an unknown, used or expired token, or one issued to another account or for sign-in; `PASSKEY_REJECTED` (400) when the answer doesn't verify (wrong origin, wrong challenge, no user verification); `PASSKEY_NAME_TOO_LONG` (400); `PASSKEY_EXISTS` (409); `TOO_MANY_PASSKEYS` (409).
+
+#### GET `/me/passkeys`
+
+Lists the caller's passkeys, oldest first. Bearer.
+
+Response `200 OK`
+
+```json
+[
+  {
+    "id": "672c7a41c3d84b0012f0a1b2",
+    "name": "MacBook",
+    "createdAt": "2026-11-07T10:30:00Z",
+    "lastUsedAt": "2026-11-07T18:02:11Z"
+  }
+]
+```
+
+`lastUsedAt` is `null` until the passkey is used to sign in.
+
+#### DELETE `/me/passkeys/{id}`
+
+Removes one of the caller's passkeys. Sessions it started stay valid; use [logout-all](#post-authlogout-all) to end them. Bearer.
+
+Response `204 No Content`
+
+Errors: `PASSKEY_NOT_FOUND` (404), also for another user's passkey.
+
+#### POST `/auth/passkeys/login/options`
+
+Starts a passkey sign-in. Rate-limited.
+
+Request: no body.
+
+Response `200 OK`
+
+```json
+{
+  "token": "Zq1vV0x4bUJ0c2ZkN2t3eG9fc2lnbl9pbl90b2tlbg",
+  "options": {
+    "publicKey": {
+      "challenge": "1H3pMZ0nC8d6rQyB9vXkT2sLwEa5fJuGoN4hR7iKcYU",
+      "timeout": 300000,
+      "rpId": "example.com",
+      "userVerification": "required"
+    }
+  }
+}
+```
+
+There is no `allowCredentials`: the browser offers every passkey it holds for the site, and the chosen one names the account.
+
+#### POST `/auth/passkeys/login`
+
+Verifies the passkey's signature and signs the user in. Rate-limited.
+
+Request
+
+```json
+{
+  "token": "Zq1vV0x4bUJ0c2ZkN2t3eG9fc2lnbl9pbl90b2tlbg",
+  "credential": { "id": "…", "rawId": "…", "type": "public-key", "response": { "clientDataJSON": "…", "authenticatorData": "…", "signature": "…", "userHandle": "…" }, "clientExtensionResults": {} }
+}
+```
+
+Response `200 OK`: the same `user` and `authorization` as [POST `/auth/login`](#post-authlogin).
+
+Errors: `INVALID_VALUE` (400) without `credential`; `INVALID_PASSKEY_CHALLENGE` (400) for an unknown, used or expired token; `INVALID_PASSKEY` (401) when the passkey is unknown or removed, the signature or origin doesn't verify, or the sign counter went backwards.
+
 ### Account
 
 #### GET `/me`
@@ -981,7 +1190,7 @@ Response `200 OK`
 
 #### DELETE `/me`
 
-Deletes the account with its personal todos, projects and collections, its sessions, security log and pending email verification and password reset, and takes it out of every team. Team records the user created stay with their team, and teams the user owns alone are deleted. Bearer. Everything is removed in one transaction (on MongoDB this needs a replica set; on a standalone server the deletes run without one), and all of the user's tokens stop working.
+Deletes the account with its personal todos, projects and collections, its sessions, passkeys, security log and pending email verification and password reset, and takes it out of every team. Team records the user created stay with their team, and teams the user owns alone are deleted. Bearer. Everything is removed in one transaction (on MongoDB this needs a replica set; on a standalone server the deletes run without one), and all of the user's tokens stop working.
 
 Request: no body.
 

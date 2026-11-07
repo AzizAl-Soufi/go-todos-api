@@ -116,7 +116,11 @@ func newTestServer(t *testing.T, mutate ...func(*config.Config)) *testServer {
 
 	mailer := &captureMailer{links: map[string]string{}, resets: map[string]string{}, invites: map[string]string{}}
 	tokens := security.NewJWT(testutil.NewRSAKey(t), time.Minute)
-	mods := wireModules(testStorage(t), security.NewBcryptHasher(bcrypt.MinCost), tokens, mailers{identity: mailer, teams: mailer}, cfg)
+	rp, err := newRelyingParty(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mods := wireModules(testStorage(t), security.NewBcryptHasher(bcrypt.MinCost), tokens, rp, mailers{identity: mailer, teams: mailer}, cfg)
 
 	srv := httptest.NewServer(newRouter(cfg, mods))
 	t.Cleanup(srv.Close)

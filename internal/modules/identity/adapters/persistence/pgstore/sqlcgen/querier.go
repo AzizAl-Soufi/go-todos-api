@@ -6,6 +6,7 @@ package sqlcgen
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -14,22 +15,34 @@ type Querier interface {
 	// Single-use: the row is deleted as it is read.
 	ConsumeEmailVerification(ctx context.Context, tokenHash string) (EmailVerification, error)
 	// Single-use: the row is deleted as it is read.
+	ConsumePasskeyChallenge(ctx context.Context, tokenHash string) (PasskeyChallenge, error)
+	// Single-use: the row is deleted as it is read.
 	ConsumePasswordReset(ctx context.Context, tokenHash string) (PasswordReset, error)
+	// passkeys
+	CreatePasskey(ctx context.Context, arg CreatePasskeyParams) (uuid.UUID, error)
+	CreatePasskeyChallenge(ctx context.Context, arg CreatePasskeyChallengeParams) error
 	// sessions
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	// Queries owned by the identity module. Regenerate with `make sqlc`.
 	// users
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	DeleteEmailVerification(ctx context.Context, userID uuid.UUID) error
+	// passkey challenges
+	DeleteExpiredPasskeyChallenges(ctx context.Context, expiresAt time.Time) error
+	DeletePasskey(ctx context.Context, arg DeletePasskeyParams) (int64, error)
 	DeletePasswordReset(ctx context.Context, userID uuid.UUID) error
 	DeleteUser(ctx context.Context, id uuid.UUID) (int64, error)
+	DeleteUserPasskeyChallenges(ctx context.Context, userID *uuid.UUID) error
+	DeleteUserPasskeys(ctx context.Context, userID uuid.UUID) error
 	DeleteUserSessions(ctx context.Context, userID uuid.UUID) error
 	GetSessionByTokenHash(ctx context.Context, tokenHash string) (Session, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	IncrementTokenVersion(ctx context.Context, id uuid.UUID) (int64, error)
+	ListUserPasskeys(ctx context.Context, userID uuid.UUID) ([]Passkey, error)
 	// Keeps the first verification time if the email was already verified.
 	MarkEmailVerified(ctx context.Context, arg MarkEmailVerifiedParams) (int64, error)
+	RecordPasskeyUse(ctx context.Context, arg RecordPasskeyUseParams) (int64, error)
 	// Conditional on revoked_at IS NULL, so exactly one concurrent caller wins.
 	RevokeSession(ctx context.Context, arg RevokeSessionParams) (int64, error)
 	RevokeSessionFamily(ctx context.Context, arg RevokeSessionFamilyParams) error

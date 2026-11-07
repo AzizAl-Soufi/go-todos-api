@@ -10,6 +10,7 @@ package application
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/domain"
@@ -53,6 +54,63 @@ type OneTimeTokenRepository interface {
 	// Consume atomically finds and deletes the token with tokenHash.
 	Consume(ctx context.Context, tokenHash string) (*domain.OneTimeToken, error)
 	DeleteForUser(ctx context.Context, userID string) error
+}
+
+type PasskeyRepository interface {
+	PasskeyReader
+	// Create stores p and assigns p.ID; a credential ID that is already
+	// stored (for any account) is domain.ErrPasskeyExists.
+	Create(ctx context.Context, p *domain.Passkey) error
+	// RecordUse stores the credential record as updated by a sign-in, and
+	// when that sign-in happened.
+	RecordUse(ctx context.Context, id string, credential []byte, at time.Time) error
+	// Delete removes one of userID's passkeys; another user's passkey is
+	// ErrNotFound.
+	Delete(ctx context.Context, userID, id string) error
+	DeleteAllForUser(ctx context.Context, userID string) error
+}
+
+// PasskeyChallengeRepository stores pending WebAuthn ceremonies.
+type PasskeyChallengeRepository interface {
+	// Save stores c and deletes every challenge that expired before c.CreatedAt.
+	Save(ctx context.Context, c *domain.PasskeyChallenge) error
+	// Consume atomically finds and deletes the challenge with tokenHash.
+	Consume(ctx context.Context, tokenHash string) (*domain.PasskeyChallenge, error)
+	DeleteForUser(ctx context.Context, userID string) error
+}
+
+// PasskeyUse is a verified passkey sign-in.
+type PasskeyUse struct {
+	CredentialID []byte
+	// Credential is the credential record updated by this sign-in (sign
+	// counter, flags); it must be stored back.
+	Credential []byte
+	// CloneWarning means the sign counter went backwards: a copy of the
+	// private key may exist.
+	CloneWarning bool
+}
+
+// PasskeyOwner returns the account a passkey sign-in names and its passkeys;
+// ErrNotFound when there is no such account.
+type PasskeyOwner func(userID string) (*domain.User, []*domain.Passkey, error)
+
+// RelyingParty runs the WebAuthn ceremonies. Options are the JSON the client
+// passes to navigator.credentials (create or get); state is what the server
+// keeps until the answer comes back. Both are opaque to the application.
+type RelyingParty interface {
+	BeginRegistration(u *domain.User, existing []*domain.Passkey) (options json.RawMessage, state []byte, err error)
+	// FinishRegistration verifies the client's attestation response; a
+	// response that doesn't verify is domain.ErrPasskeyRejected.
+	FinishRegistration(u *domain.User, existing []*domain.Passkey, state, response []byte) (credentialID, credential []byte, err error)
+	// BeginLogin starts a sign-in with a discoverable credential: the
+	// authenticator, not the user, says which account it belongs to.
+	BeginLogin() (options json.RawMessage, state []byte, err error)
+	// FinishLogin verifies the client's assertion response against the
+	// passkeys of the account owner returns. A response that doesn't verify,
+	// or names an unknown account or passkey, is
+	// domain.ErrInvalidPasskeyCredential; the user is returned whenever the
+	// account was found, so failures can be recorded in its security log.
+	FinishLogin(state, response []byte, owner PasskeyOwner) (*domain.User, PasskeyUse, error)
 }
 
 type PasswordHasher interface {
@@ -99,6 +157,11 @@ type TodoDeleter interface {
 
 type UserReader interface {
 	FindByID(ctx context.Context, id string) (*domain.User, error)
+}
+
+type PasskeyReader interface {
+	// ListForUser returns the user's passkeys, oldest first.
+	ListForUser(ctx context.Context, userID string) ([]*domain.Passkey, error)
 }
 
 // AccessClaims is what an access token proves about its bearer.

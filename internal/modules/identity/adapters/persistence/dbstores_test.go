@@ -19,7 +19,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
-func invalidIDCases(users application.UserRepository, sessions application.SessionRepository, tokens application.OneTimeTokenRepository) map[string]func() error {
+func invalidIDCases(users application.UserRepository, sessions application.SessionRepository, tokens application.OneTimeTokenRepository,
+	passkeys application.PasskeyRepository, challenges application.PasskeyChallengeRepository) map[string]func() error {
 	ctx := context.Background()
 	now := time.Now()
 	return map[string]func() error{
@@ -34,6 +35,13 @@ func invalidIDCases(users application.UserRepository, sessions application.Sessi
 		"DeleteAllForUser":      func() error { return sessions.DeleteAllForUser(ctx, "bad") },
 		"Save token":            func() error { return tokens.Save(ctx, &domain.OneTimeToken{UserID: "bad"}) },
 		"DeleteForUser":         func() error { return tokens.DeleteForUser(ctx, "bad") },
+		"Create passkey":        func() error { return passkeys.Create(ctx, &domain.Passkey{UserID: "bad"}) },
+		"ListForUser passkeys":  func() error { _, err := passkeys.ListForUser(ctx, "bad"); return err },
+		"RecordUse":             func() error { return passkeys.RecordUse(ctx, "bad", nil, now) },
+		"Delete passkey":        func() error { return passkeys.Delete(ctx, "bad", "bad") },
+		"DeleteAllForUser keys": func() error { return passkeys.DeleteAllForUser(ctx, "bad") },
+		"Save challenge":        func() error { return challenges.Save(ctx, &domain.PasskeyChallenge{UserID: "bad"}) },
+		"DeleteForUser chall.":  func() error { return challenges.DeleteForUser(ctx, "bad") },
 	}
 }
 
@@ -41,14 +49,17 @@ func TestMongoStores_RejectInvalidIDs(t *testing.T) {
 	var u mongostore.Users
 	var s mongostore.Sessions
 	var v mongostore.OneTimeTokens
-	testutil.ExpectErrorIs(t, apperrors.ErrInvalidID, invalidIDCases(&u, &s, &v))
+	var p mongostore.Passkeys
+	var c mongostore.PasskeyChallenges
+	testutil.ExpectErrorIs(t, apperrors.ErrInvalidID, invalidIDCases(&u, &s, &v, &p, &c))
 	testutil.ExpectErrorIs(t, apperrors.ErrInvalidID, map[string]func() error{
 		"FindByID with a UUID": func() error { _, err := u.FindByID(context.Background(), uuid.NewString()); return err },
 	})
 }
 
 func TestPostgresStores_RejectInvalidIDs(t *testing.T) {
-	cases := invalidIDCases(pgstore.NewUsers(nil), pgstore.NewSessions(nil), pgstore.NewPasswordResets(nil))
+	cases := invalidIDCases(pgstore.NewUsers(nil), pgstore.NewSessions(nil), pgstore.NewPasswordResets(nil),
+		pgstore.NewPasskeys(nil), pgstore.NewPasskeyChallenges(nil))
 	cases["RevokeFamily"] = func() error { return pgstore.NewSessions(nil).RevokeFamily(context.Background(), "bad", time.Now()) }
 	cases["FindByID with an ObjectID"] = func() error {
 		_, err := pgstore.NewUsers(nil).FindByID(context.Background(), bson.NewObjectID().Hex())
