@@ -1,0 +1,215 @@
+# Manual requests for the VS Code REST Client extension (or JetBrains HTTP client).
+# Run them top to bottom: later requests reuse tokens and IDs from earlier responses.
+
+@base = http://localhost:8000
+# Sign in with the Firebase SDK in your client (Google, or email and password)
+# and paste its ID token here: `await auth.currentUser.getIdToken()`. It
+# expires after an hour.
+@access = PASTE-FIREBASE-ID-TOKEN-HERE
+
+### Health
+GET {{base}}/health
+
+### Sign in: creates the account on the first call, then finds it
+POST {{base}}/auth
+Authorization: Bearer {{access}}
+
+### Profile and todos
+GET {{base}}/me
+Authorization: Bearer {{access}}
+
+### Create a collection (groups projects)
+# @name collection
+POST {{base}}/collections
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{"name": "Work", "icon": "💼", "color": "purple"}
+
+### Create a project (a list of todos) in the collection
+# @name project
+POST {{base}}/projects
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{"name": "Website relaunch", "icon": "🚀", "color": "blue", "collectionId": "{{collection.response.body.id}}"}
+
+### Create a todo in the project
+# @name created
+POST {{base}}/todos
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{
+  "title": "Pick a CMS",
+  "projectId": "{{project.response.body.id}}",
+  "notes": "Compare Strapi and Payload.",
+  "status": "in_progress",
+  "priority": "high",
+  "tags": ["research", "website"],
+  "dueAt": "2026-12-20"
+}
+
+### Create an inbox todo (no project)
+POST {{base}}/todos
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{"title": "Call the bank", "priority": "urgent"}
+
+### List todos (newest first; todos of archived projects are hidden)
+GET {{base}}/todos
+Authorization: Bearer {{access}}
+
+### Filter and sort: open, important todos of the project, soonest deadline first
+GET {{base}}/todos?project={{project.response.body.id}}&status=pending,in_progress&priority=high,urgent&sort=due
+Authorization: Bearer {{access}}
+
+### Inbox, overdue todos, tag and text search
+GET {{base}}/todos?project=inbox
+Authorization: Bearer {{access}}
+
+###
+GET {{base}}/todos?overdue=true
+Authorization: Bearer {{access}}
+
+###
+GET {{base}}/todos?tag=website&q=cms
+Authorization: Bearer {{access}}
+
+### Get one todo
+GET {{base}}/todos/{{created.response.body.id}}
+Authorization: Bearer {{access}}
+
+### Update a todo (partial: send only what changes; null clears dueAt)
+PATCH {{base}}/todos/{{created.response.body.id}}
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{"status": "done", "dueAt": null}
+
+### Project with its progress
+GET {{base}}/projects/{{project.response.body.id}}
+Authorization: Bearer {{access}}
+
+### Collections with their projects and progress (sidebar)
+GET {{base}}/collections
+Authorization: Bearer {{access}}
+
+### Archive the project (hides it and its todos by default)
+PATCH {{base}}/projects/{{project.response.body.id}}
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{"archived": true}
+
+### Archived projects
+GET {{base}}/projects?archived=true
+Authorization: Bearer {{access}}
+
+### Delete a todo
+DELETE {{base}}/todos/{{created.response.body.id}}
+Authorization: Bearer {{access}}
+
+### Delete the project (and its todos)
+DELETE {{base}}/projects/{{project.response.body.id}}
+Authorization: Bearer {{access}}
+
+### Delete the collection (its projects would be kept)
+DELETE {{base}}/collections/{{collection.response.body.id}}
+Authorization: Bearer {{access}}
+
+### ---- Passkeys ----
+### Passkey ceremonies need a browser (navigator.credentials); these show the
+### options. Send the browser's credential.toJSON() back with the token.
+
+### Options to add a passkey (bearer)
+POST {{base}}/me/passkeys/options
+Authorization: Bearer {{access}}
+
+### List your passkeys
+GET {{base}}/me/passkeys
+Authorization: Bearer {{access}}
+
+### Options to sign in with a passkey (no email needed)
+POST {{base}}/auth/passkeys/login/options
+
+### ---- Teams ----
+
+### Create a team (you become its owner)
+# @name team
+POST {{base}}/teams
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{"name": "Platform"}
+
+### List your teams
+GET {{base}}/teams
+Authorization: Bearer {{access}}
+
+### Get the team with its members
+GET {{base}}/teams/{{team.response.body.id}}
+Authorization: Bearer {{access}}
+
+### Invite someone (with SMTP unset the invitation link is logged)
+POST {{base}}/teams/{{team.response.body.id}}/invitations
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{"email": "teammate@example.com", "role": "member"}
+
+### List pending invitations
+GET {{base}}/teams/{{team.response.body.id}}/invitations
+Authorization: Bearer {{access}}
+
+### Accept an invitation (signed in as the invited email; paste the token from the logged link)
+POST {{base}}/invitations/accept
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{"token": "PASTE-INVITATION-TOKEN-HERE"}
+
+### Create a team project
+# @name teamProject
+POST {{base}}/projects
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{"name": "Launch", "icon": "🚀", "teamId": "{{team.response.body.id}}"}
+
+### Add a todo to the team project (it belongs to the team)
+POST {{base}}/todos
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{"title": "Ship it", "projectId": "{{teamProject.response.body.id}}", "priority": "high"}
+
+### Only the team's todos
+GET {{base}}/todos?team={{team.response.body.id}}
+Authorization: Bearer {{access}}
+
+### Only personal todos
+GET {{base}}/todos?team=personal
+Authorization: Bearer {{access}}
+
+### Team audit log (owners and admins), newest first
+GET {{base}}/teams/{{team.response.body.id}}/audit-log?limit=20
+Authorization: Bearer {{access}}
+
+### Your security log
+GET {{base}}/me/audit-log
+Authorization: Bearer {{access}}
+
+### Delete the team with all its content
+DELETE {{base}}/teams/{{team.response.body.id}}
+Authorization: Bearer {{access}}
+
+### Delete the account (and its Firebase user, with a service account configured)
+DELETE {{base}}/me
+Authorization: Bearer {{access}}
+
+### Log out everywhere instead of deleting: ID tokens of earlier sign-ins
+### stop working, including the one above; sign in again to get a new one
+POST {{base}}/auth/logout-all
+Authorization: Bearer {{access}}

@@ -1,7 +1,11 @@
 # syntax=docker/dockerfile:1
 
 # build
-FROM --platform=$BUILDPLATFORM golang:1.27.3 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27 AS build
+
+# The exact Go version comes from the toolchain directive in go.mod (the
+# official image defaults to GOTOOLCHAIN=local, which would ignore it).
+ENV GOTOOLCHAIN=auto CGO_ENABLED=0
 
 WORKDIR /src
 
@@ -15,10 +19,10 @@ ARG TARGETARCH
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w" -o /out/api ./cmd && \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w" -o /out/migrate ./cmd/migration
+    for bin in api:./cmd/api migrate:./cmd/migrate; do \
+      GOOS=$TARGETOS GOARCH=$TARGETARCH \
+        go build -trimpath -ldflags="-s -w" -o "/out/${bin%%:*}" "${bin#*:}" || exit 1; \
+    done
 
 # runtime
 FROM gcr.io/distroless/static-debian12:nonroot
@@ -28,15 +32,18 @@ WORKDIR /app
 COPY --from=build /out/api /app/api
 COPY --from=build /out/migrate /app/migrate
 
-# The migrator resolves these paths relative to /app (see cmd/migration/mongo.yaml):
-#   docker run --entrypoint /app/migrate <image> -c ./cmd/migration/mongo.yaml
-COPY cmd/migration/mongo.yaml /app/cmd/migration/mongo.yaml
-COPY cmd/migration/seeds /app/cmd/migration/seeds
-COPY internal/database/mongodb/migrations/schema /app/internal/database/mongodb/migrations/schema
+# PostgreSQL migrations are embedded in both binaries. The MongoDB migrator
+# reads these files, resolved relative to /app (see cmd/migrate/mongo.yaml).
+# Run migrations as a deployment step:   docker run --entrypoint /app/migrate <image>
+# or at startup with MIGRATE_ON_START=true.
+COPY cmd/migrate/mongo.yaml /app/cmd/migrate/mongo.yaml
+COPY cmd/migrate/seeds /app/cmd/migrate/seeds
+COPY internal/platform/database/mongodb/migrations/schema /app/internal/platform/database/mongodb/migrations/schema
 
-# Configuration comes from the environment (see .env.example). JWT keys must be
-# mounted into the container, e.g. at /run/secrets, and pointed to with
-# JWT_PRIVATE_KEY_PATH / JWT_PUBLIC_KEY_PATH.
+# Configuration comes from the environment (see .env.example). FIREBASE_PROJECT_ID
+# is required; an optional Firebase service account key (for passkey sign-in)
+# should be mounted, e.g. at /run/secrets, and pointed to with
+# FIREBASE_CREDENTIALS_FILE.
 ENV PORT=8000
 EXPOSE 8000
 
