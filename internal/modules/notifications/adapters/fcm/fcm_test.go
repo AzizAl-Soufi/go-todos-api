@@ -26,8 +26,11 @@ func fcmError(code string) error {
 }
 
 func newPusher(f *fakeFCM) *Pusher {
-	dead := func(err error) bool { return errors.Is(err, errUnregistered) || errors.Is(err, errInvalid) }
-	return &Pusher{client: f, deadToken: dead}
+	return &Pusher{
+		client:          f,
+		unregistered:    func(err error) bool { return errors.Is(err, errUnregistered) },
+		invalidArgument: func(err error) bool { return errors.Is(err, errInvalid) },
+	}
 }
 
 // fakeFCM answers per token: tokens starting with "gone" are unregistered,
@@ -97,5 +100,44 @@ func TestPush_ReportsOtherFailures(t *testing.T) {
 	down := &fakeFCM{fail: errors.New("fcm down")}
 	if _, err := newPusher(down).Push(context.Background(), []string{"ok"}, domain.Message{}); err == nil {
 		t.Fatal("want an error when FCM is down")
+	}
+}
+
+func TestPush_RejectedMessageKeepsTheTokens(t *testing.T) {
+	f := &fakeFCM{}
+	p := newPusher(f)
+	invalid, err := p.Push(context.Background(), []string{"bad-1", "bad-2", "bad-3"}, domain.Message{})
+	if len(invalid) != 0 {
+		t.Fatalf("invalid = %v; a message every token rejects must not cost the recipients their devices", invalid)
+	}
+	if !errors.Is(err, errInvalid) {
+		t.Fatalf("err = %v, want the rejection reported", err)
+	}
+
+	// One token alone can't tell, and is dropped.
+	if invalid, _ := p.Push(context.Background(), []string{"bad-1"}, domain.Message{}); !slices.Equal(invalid, []string{"bad-1"}) {
+		t.Fatalf("single bad token: invalid = %v", invalid)
+	}
+}
+
+// shortFCM answers without a response per token.
+type shortFCM struct{ res *messaging.BatchResponse }
+
+func (f shortFCM) SendEachForMulticast(context.Context, *messaging.MulticastMessage) (*messaging.BatchResponse, error) {
+	return f.res, nil
+}
+
+func TestPush_UnexpectedResponsesAreErrors(t *testing.T) {
+	for name, res := range map[string]*messaging.BatchResponse{
+		"nil response":       nil,
+		"too few responses":  {Responses: []*messaging.SendResponse{{Success: true}}},
+		"nil token response": {Responses: []*messaging.SendResponse{{Success: true}, nil}},
+	} {
+		p := newPusher(nil)
+		p.client = shortFCM{res: res}
+		invalid, err := p.Push(context.Background(), []string{"a", "b"}, domain.Message{})
+		if err == nil || len(invalid) != 0 {
+			t.Errorf("%s: invalid = %v, err = %v; want an error and no tokens dropped", name, invalid, err)
+		}
 	}
 }

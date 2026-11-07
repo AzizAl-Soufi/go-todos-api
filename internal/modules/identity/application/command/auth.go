@@ -118,7 +118,9 @@ func (h SignInHandler) syncVerified(ctx context.Context, user *domain.User, c ap
 
 // LogoutAll refuses, from now on, every Firebase ID token of a sign-in that
 // happened before: the user has to sign in again on every device. Refreshed
-// ID tokens keep their sign-in time, so they are refused too.
+// ID tokens keep their sign-in time, so they are refused too. The user's
+// push devices are forgotten as well, so a lost or stolen device stops
+// receiving notifications; apps register again after their next sign-in.
 type LogoutAll struct {
 	UserID string
 }
@@ -128,6 +130,9 @@ type LogoutAllHandler struct{ *base }
 func (h LogoutAllHandler) Handle(ctx context.Context, cmd LogoutAll) error {
 	return h.Tx.WithinTx(ctx, func(ctx context.Context) error {
 		if err := h.Users.RevokeSessions(ctx, cmd.UserID, h.Now()); err != nil {
+			return err
+		}
+		if err := h.Devices.DeleteUserDevices(ctx, cmd.UserID); err != nil {
 			return err
 		}
 		return h.record(ctx, cmd.UserID, "session.logout_all", nil)

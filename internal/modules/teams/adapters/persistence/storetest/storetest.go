@@ -167,7 +167,7 @@ func newInvitation(t *testing.T, b Backend, teamID, email, hash string, created 
 	t.Helper()
 	inv := &domain.Invitation{
 		TeamID: teamID, Email: email, Role: access.Member, InvitedBy: b.NewID(), TokenHash: hash,
-		ExpiresAt: base.Add(created + 24*time.Hour), CreatedAt: base.Add(created),
+		ExpiresAt: base.Add(created + 24*time.Hour), CreatedAt: base.Add(created), SentAt: base.Add(created),
 	}
 	if err := b.Invitations.Save(ctx, inv); err != nil || inv.ID == "" {
 		t.Fatalf("save invitation: %v, id %q", err, inv.ID)
@@ -183,7 +183,8 @@ func testInvitations(t *testing.T, b Backend) {
 
 	got, err := b.Invitations.FindByTokenHash(ctx, "hash-1")
 	if err != nil || got.ID != first.ID || got.TeamID != team.ID || got.Email != "bo@example.com" || got.Role != access.Member ||
-		got.InvitedBy != first.InvitedBy || !got.ExpiresAt.Equal(first.ExpiresAt) || !got.CreatedAt.Equal(first.CreatedAt) {
+		got.InvitedBy != first.InvitedBy || !got.ExpiresAt.Equal(first.ExpiresAt) || !got.CreatedAt.Equal(first.CreatedAt) ||
+		!got.SentAt.Equal(first.SentAt) {
 		t.Fatalf("round trip:\n got  %+v (%v)\n want %+v", got, err, first)
 	}
 
@@ -200,7 +201,12 @@ func testInvitations(t *testing.T, b Backend) {
 		t.Fatalf("Get: %+v (%v)", got, err)
 	}
 
+	testResend(t, b, team.ID, again)
+
 	expectNotFound(t, map[string]error{
+		"Resend in another team": b.Invitations.Resend(ctx, application.InvitationResend{
+			TeamID: team.ID, ID: theirs.ID, TokenHash: "hash-x", SentBefore: base.Add(time.Hour),
+		}),
 		"Get from another team":    func() error { _, err := b.Invitations.Get(ctx, team.ID, theirs.ID); return err }(),
 		"Delete from another team": b.Invitations.Delete(ctx, team.ID, theirs.ID),
 		"Find unknown token":       func() error { _, err := b.Invitations.FindByTokenHash(ctx, "nope"); return err }(),
@@ -218,6 +224,42 @@ func testInvitations(t *testing.T, b Backend) {
 	}
 	if _, err := b.Invitations.FindByTokenHash(ctx, "hash-3"); err != nil {
 		t.Fatal("DeleteByTeam removed another team's invitation")
+	}
+}
+
+// testResend checks that a resend replaces the link, expiry and send time
+// but keeps the invitation, and only happens once the cooldown has passed.
+func testResend(t *testing.T, b Backend, teamID string, inv *domain.Invitation) {
+	t.Helper()
+	sentAt := inv.SentAt.Add(3 * time.Minute)
+	resend := application.InvitationResend{
+		TeamID:     teamID,
+		ID:         inv.ID,
+		TokenHash:  "hash-resent",
+		SentAt:     sentAt,
+		ExpiresAt:  sentAt.Add(24 * time.Hour),
+		SentBefore: inv.SentAt.Add(-time.Second), // not yet: sent after this
+	}
+	if err := b.Invitations.Resend(ctx, resend); !errors.Is(err, apperrors.ErrNotFound) {
+		t.Fatalf("resend within the cooldown: err = %v, want ErrNotFound", err)
+	}
+
+	resend.SentBefore = inv.SentAt // sent exactly then: allowed
+	if err := b.Invitations.Resend(ctx, resend); err != nil {
+		t.Fatalf("resend after the cooldown: %v", err)
+	}
+	got, err := b.Invitations.Get(ctx, teamID, inv.ID)
+	if err != nil || got.ID != inv.ID || got.TokenHash != "hash-resent" || !got.SentAt.Equal(sentAt) ||
+		!got.ExpiresAt.Equal(resend.ExpiresAt) || !got.CreatedAt.Equal(inv.CreatedAt) || got.Email != inv.Email {
+		t.Fatalf("after resend: %+v (%v)", got, err)
+	}
+	if _, err := b.Invitations.FindByTokenHash(ctx, inv.TokenHash); !errors.Is(err, apperrors.ErrNotFound) {
+		t.Fatalf("old link still works after a resend: %v", err)
+	}
+
+	// The same resend again: the send time it just set is after SentBefore.
+	if err := b.Invitations.Resend(ctx, resend); !errors.Is(err, apperrors.ErrNotFound) {
+		t.Fatalf("second resend in the same cooldown: err = %v, want ErrNotFound", err)
 	}
 }
 

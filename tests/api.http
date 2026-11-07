@@ -160,7 +160,12 @@ Content-Type: application/json
 {"email": "teammate@example.com", "role": "member"}
 
 ### List pending invitations
+# @name invitations
 GET {{base}}/teams/{{team.response.body.id}}/invitations
+Authorization: Bearer {{access}}
+
+### Resend an invitation with a new link (at most every 2 minutes; sooner is 429 with retryAt in UTC)
+POST {{base}}/teams/{{team.response.body.id}}/invitations/{{invitations.response.body.$[0].id}}/resend
 Authorization: Bearer {{access}}
 
 ### Accept an invitation (signed in as the invited email; paste the token from the logged link)
@@ -212,8 +217,13 @@ Content-Type: application/json
 
 {"token": "PASTE-FCM-TOKEN-HERE", "platform": "web"}
 
-### Your devices
+### Your devices (each has an id)
+# @name devices
 GET {{base}}/me/devices
+Authorization: Bearer {{access}}
+
+### Unregister a device by its id (never by its token)
+DELETE {{base}}/me/devices/{{devices.response.body.$[0].id}}
 Authorization: Bearer {{access}}
 
 ### Delete the account (and its Firebase user, with a service account configured)

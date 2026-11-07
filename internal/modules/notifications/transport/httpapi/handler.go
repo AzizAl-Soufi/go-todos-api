@@ -19,19 +19,21 @@ type handler struct {
 }
 
 // Register mounts /me/devices; protect authenticates the caller and resolves
-// them into an access.Actor.
+// them into an access.Actor. Devices are named by their ID in URLs, never by
+// their token: URLs end up in access logs.
 func Register(mux *http.ServeMux, cmd command.Handlers, qry query.Handlers, protect httpx.Middleware) {
 	h := handler{cmd: cmd, qry: qry}
 	for pattern, e := range map[string]httpx.Endpoint{
-		"POST /me/devices":           access.ForActor(h.register),
-		"GET /me/devices":            access.ForActor(h.list),
-		"DELETE /me/devices/{token}": access.ForActor(h.unregister),
+		"POST /me/devices":        access.ForActor(h.register),
+		"GET /me/devices":         access.ForActor(h.list),
+		"DELETE /me/devices/{id}": access.ForActor(h.unregister),
 	} {
 		mux.Handle(pattern, protect(e))
 	}
 }
 
 type deviceResponse struct {
+	ID        string    `json:"id"`
 	Token     string    `json:"token"`
 	Platform  string    `json:"platform"`
 	CreatedAt time.Time `json:"createdAt"`
@@ -40,6 +42,7 @@ type deviceResponse struct {
 
 func toDevice(d *domain.Device) deviceResponse {
 	return deviceResponse{
+		ID:        d.ID(),
 		Token:     d.Token,
 		Platform:  string(d.Platform),
 		CreatedAt: d.CreatedAt,
@@ -90,7 +93,7 @@ func (h handler) list(r *http.Request, a access.Actor) (int, any, error) {
 }
 
 func (h handler) unregister(r *http.Request, a access.Actor) (int, any, error) {
-	cmd := command.UnregisterDevice{UserID: a.UserID, Token: r.PathValue("token")}
+	cmd := command.UnregisterDevice{UserID: a.UserID, DeviceID: r.PathValue("id")}
 	if err := h.cmd.UnregisterDevice.Handle(r.Context(), cmd); err != nil {
 		return 0, nil, err
 	}

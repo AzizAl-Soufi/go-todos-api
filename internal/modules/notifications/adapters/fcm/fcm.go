@@ -26,13 +26,10 @@ type multicaster interface {
 
 type Pusher struct {
 	client multicaster
-	// deadToken reports a per-token error meaning the token will never work
-	// again; the SDK's checks, swapped in tests (its error type is internal).
-	deadToken func(error) bool
-}
-
-func isDeadToken(err error) bool {
-	return messaging.IsUnregistered(err) || messaging.IsInvalidArgument(err)
+	// unregistered and invalidArgument classify per-token errors; they are
+	// the SDK's checks, swapped in tests (its error type is internal).
+	unregistered    func(error) bool
+	invalidArgument func(error) bool
 }
 
 var _ application.Pusher = (*Pusher)(nil)
@@ -50,12 +47,21 @@ func New(ctx context.Context, projectID, credentialsFile string) (*Pusher, error
 	if err != nil {
 		return nil, fmt.Errorf("fcm: %w", err)
 	}
-	return &Pusher{client: c, deadToken: isDeadToken}, nil
+	return &Pusher{
+		client:          c,
+		unregistered:    messaging.IsUnregistered,
+		invalidArgument: messaging.IsInvalidArgument,
+	}, nil
 }
 
 // Push sends m to tokens in batches of 500. Tokens FCM reports as
 // unregistered or malformed are returned as invalid; other failures (FCM
 // down, quota) are returned as err after every batch was tried.
+//
+// INVALID_ARGUMENT means something in the request was invalid, the token or
+// the message. When every token of a batch gets it, the message is at fault
+// and no token is returned as invalid: otherwise one bad message would make
+// every recipient's devices be forgotten.
 func (p *Pusher) Push(ctx context.Context, tokens []string, m domain.Message) ([]string, error) {
 	var invalid []string
 	var errs []error
@@ -66,11 +72,23 @@ func (p *Pusher) Push(ctx context.Context, tokens []string, m domain.Message) ([
 			errs = append(errs, err)
 			continue
 		}
+		if res == nil || len(res.Responses) != len(batch) {
+			// The SDK answers once per token; anything else means we can't
+			// tell which tokens were delivered, so none is called invalid.
+			errs = append(errs, fmt.Errorf("unexpected response for %d tokens", len(batch)))
+			continue
+		}
+		if p.messageRejected(batch, res.Responses) {
+			errs = append(errs, fmt.Errorf("message rejected: %w", res.Responses[0].Error))
+			continue
+		}
 		for i, r := range res.Responses {
 			switch {
-			case r.Success || i >= len(batch):
-				continue // delivered, or a response FCM shouldn't have sent
-			case p.deadToken(r.Error):
+			case r == nil:
+				errs = append(errs, fmt.Errorf("no response for token %d of the batch", i))
+			case r.Success:
+				continue
+			case p.unregistered(r.Error) || p.invalidArgument(r.Error):
 				invalid = append(invalid, batch[i])
 			default:
 				errs = append(errs, r.Error)
@@ -78,9 +96,25 @@ func (p *Pusher) Push(ctx context.Context, tokens []string, m domain.Message) ([
 		}
 	}
 	if len(errs) > 0 {
-		return invalid, fmt.Errorf("fcm: %d of %d sends failed: %w", len(errs), len(tokens), errors.Join(errs...))
+		return invalid, fmt.Errorf("fcm: %d failures sending to %d devices: %w", len(errs), len(tokens), errors.Join(errs...))
 	}
 	return invalid, nil
+}
+
+// messageRejected reports whether FCM refused the message rather than the
+// tokens: every token of a batch of several failed with INVALID_ARGUMENT. A
+// single token can't tell the two apart; it is treated as a bad token, since
+// domain.Message keeps messages well within FCM's limits.
+func (p *Pusher) messageRejected(batch []string, responses []*messaging.SendResponse) bool {
+	if len(batch) < 2 {
+		return false
+	}
+	for _, r := range responses {
+		if r == nil || r.Success || !p.invalidArgument(r.Error) {
+			return false
+		}
+	}
+	return true
 }
 
 func message(tokens []string, m domain.Message) *messaging.MulticastMessage {

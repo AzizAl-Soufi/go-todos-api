@@ -2,9 +2,13 @@ package httpx
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"math"
 	"net/http"
 	"runtime/debug"
+	"strconv"
+	"time"
 
 	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 )
@@ -30,6 +34,8 @@ func RespondJSON(w http.ResponseWriter, status int, payload any) {
 //	{"error": {"code": "<CODE>", "message": "<human-readable explanation>"}}
 //
 // "code" is stable and meant for programmatic handling; "message" may change.
+// Errors the client may retry later (apperrors.RetryLaterError) also carry
+// "retryAt", the UTC time from which to retry, and a Retry-After header.
 func RespondError(w http.ResponseWriter, status int, code, message string) {
 	RespondJSON(w, status, errorBody{Error: errorDetail{Code: code, Message: message}})
 }
@@ -47,7 +53,13 @@ func RespondErr(w http.ResponseWriter, r *http.Request, err error) {
 		RespondError(w, http.StatusInternalServerError, internalErrorCode, internalErrorMessage)
 		return
 	}
-	RespondError(w, appErr.Status(), appErr.Code(), appErr.Message())
+	detail := errorDetail{Code: appErr.Code(), Message: appErr.Message()}
+	var later apperrors.RetryLaterError
+	if errors.As(err, &later) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(later.Wait.Seconds()))))
+		detail.RetryAt = &later.At
+	}
+	RespondJSON(w, appErr.Status(), errorBody{Error: detail})
 }
 
 type errorBody struct {
@@ -55,8 +67,9 @@ type errorBody struct {
 }
 
 type errorDetail struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string     `json:"code"`
+	Message string     `json:"message"`
+	RetryAt *time.Time `json:"retryAt,omitempty"` // UTC
 }
 
 // RespondNoContent writes 204 No Content.

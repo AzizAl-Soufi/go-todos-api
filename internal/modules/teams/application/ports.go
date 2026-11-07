@@ -10,6 +10,7 @@ package application
 
 import (
 	"context"
+	"time"
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/domain"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
@@ -44,8 +45,22 @@ type InvitationRepository interface {
 	// the same team and email.
 	Save(ctx context.Context, inv *domain.Invitation) error
 	FindByTokenHash(ctx context.Context, tokenHash string) (*domain.Invitation, error)
+	// Resend gives an invitation a new token, expiry and send time, keeping
+	// its ID; only if it was last sent at or before r.SentBefore, so two
+	// resends at once can't both pass the cooldown. ErrNotFound when the
+	// invitation is gone or was sent later.
+	Resend(ctx context.Context, r InvitationResend) error
 	Delete(ctx context.Context, teamID, id string) error
 	DeleteByTeam(ctx context.Context, teamID string) error
+}
+
+// InvitationResend is a new link for an invitation (InvitationRepository.Resend).
+type InvitationResend struct {
+	TeamID, ID string
+	TokenHash  string
+	SentAt     time.Time
+	ExpiresAt  time.Time
+	SentBefore time.Time // the cooldown: last sent at or before this
 }
 
 // TeamData is how team deletion reaches the team's projects, collections and

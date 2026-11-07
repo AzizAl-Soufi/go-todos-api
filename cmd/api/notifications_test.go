@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -47,8 +48,13 @@ func TestDevices(t *testing.T) {
 	s.do("POST", "/me/devices", ann.access, map[string]string{"platform": "ios"}).expectCode(t, 400, "INVALID_DEVICE_TOKEN")
 	s.do("POST", "/me/devices", ann.access, map[string]string{"token": "tok", "platform": "symbian"}).expectCode(t, 400, "INVALID_PLATFORM")
 
-	r := s.do("POST", "/me/devices", ann.access, map[string]string{"token": "fcm:ann-phone", "platform": "iOS"}).expect(t, 200)
-	if r.str("token") != "fcm:ann-phone" || r.str("platform") != "ios" || r.str("createdAt") == "" {
+	s.do("POST", "/me/devices", ann.access, map[string]string{"token": "fcm:\x00", "platform": "ios"}).
+		expectCode(t, 400, "INVALID_DEVICE_TOKEN")
+
+	phone := map[string]string{"token": "fcm:ann-phone", "platform": "iOS"}
+	r := s.do("POST", "/me/devices", ann.access, phone).expect(t, 200)
+	id := r.str("id")
+	if id == "" || strings.Contains(id, "ann-phone") || r.str("token") != "fcm:ann-phone" || r.str("platform") != "ios" {
 		t.Fatalf("registered device: %s", r.raw)
 	}
 	s.device(ann, "fcm:ann-phone") // registering again is fine
@@ -56,8 +62,10 @@ func TestDevices(t *testing.T) {
 		t.Fatalf("devices = %v", list)
 	}
 
-	s.do("DELETE", "/me/devices/fcm:ann-phone", bo.access, nil).expectCode(t, 404, "DEVICE_NOT_FOUND")
-	s.do("DELETE", "/me/devices/fcm:ann-phone", ann.access, nil).expect(t, 204)
+	// Devices are deleted by ID: the token never goes into a URL (or a log).
+	s.do("DELETE", "/me/devices/"+id, bo.access, nil).expectCode(t, 404, "DEVICE_NOT_FOUND")
+	s.do("DELETE", "/me/devices/fcm:ann-phone", ann.access, nil).expectCode(t, 404, "DEVICE_NOT_FOUND")
+	s.do("DELETE", "/me/devices/"+id, ann.access, nil).expect(t, 204)
 	if list := s.do("GET", "/me/devices", ann.access, nil).expect(t, 200).items(t); len(list) != 0 {
 		t.Fatalf("devices after unregistering = %v", list)
 	}
@@ -114,6 +122,17 @@ func TestNotificationsOffWithoutServiceAccount(t *testing.T) {
 	s.do("POST", "/todos", ann.access, map[string]any{"title": "Ship it", "projectId": project}).expect(t, 201)
 	if got := s.pushes.sent(); len(got) != 0 {
 		t.Fatalf("pushed without a service account: %+v", got)
+	}
+}
+
+func TestLogoutAllForgetsDevices(t *testing.T) {
+	s := newTestServer(t)
+	ann := s.register("Ann", "ann@example.com")
+	s.device(ann, "ann-lost-phone")
+	s.do("POST", "/auth/logout-all", ann.access, nil).expect(t, 204)
+	// A lost or stolen device must stop getting the team's tasks.
+	if list, err := s.store.devices.ListForUser(context.Background(), ann.userID); err != nil || len(list) != 0 {
+		t.Fatalf("devices survived logout-all: %v, %v", list, err)
 	}
 }
 

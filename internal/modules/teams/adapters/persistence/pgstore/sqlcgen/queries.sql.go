@@ -115,7 +115,7 @@ func (q *Queries) DeleteTeam(ctx context.Context, id uuid.UUID) (int64, error) {
 }
 
 const findInvitationByTokenHash = `-- name: FindInvitationByTokenHash :one
-SELECT id, team_id, email, role, invited_by, token_hash, expires_at, created_at FROM team_invitations WHERE token_hash = $1
+SELECT id, team_id, email, role, invited_by, token_hash, expires_at, created_at, sent_at FROM team_invitations WHERE token_hash = $1
 `
 
 func (q *Queries) FindInvitationByTokenHash(ctx context.Context, tokenHash string) (TeamInvitation, error) {
@@ -130,12 +130,13 @@ func (q *Queries) FindInvitationByTokenHash(ctx context.Context, tokenHash strin
 		&i.TokenHash,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.SentAt,
 	)
 	return i, err
 }
 
 const getInvitation = `-- name: GetInvitation :one
-SELECT id, team_id, email, role, invited_by, token_hash, expires_at, created_at FROM team_invitations WHERE team_id = $1 AND id = $2
+SELECT id, team_id, email, role, invited_by, token_hash, expires_at, created_at, sent_at FROM team_invitations WHERE team_id = $1 AND id = $2
 `
 
 type GetInvitationParams struct {
@@ -155,6 +156,7 @@ func (q *Queries) GetInvitation(ctx context.Context, arg GetInvitationParams) (T
 		&i.TokenHash,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.SentAt,
 	)
 	return i, err
 }
@@ -199,7 +201,7 @@ func (q *Queries) GetTeam(ctx context.Context, id uuid.UUID) (Team, error) {
 }
 
 const listInvitationsByTeam = `-- name: ListInvitationsByTeam :many
-SELECT id, team_id, email, role, invited_by, token_hash, expires_at, created_at FROM team_invitations WHERE team_id = $1 ORDER BY created_at, id
+SELECT id, team_id, email, role, invited_by, token_hash, expires_at, created_at, sent_at FROM team_invitations WHERE team_id = $1 ORDER BY created_at, id
 `
 
 func (q *Queries) ListInvitationsByTeam(ctx context.Context, teamID uuid.UUID) ([]TeamInvitation, error) {
@@ -220,6 +222,7 @@ func (q *Queries) ListInvitationsByTeam(ctx context.Context, teamID uuid.UUID) (
 			&i.TokenHash,
 			&i.ExpiresAt,
 			&i.CreatedAt,
+			&i.SentAt,
 		); err != nil {
 			return nil, err
 		}
@@ -310,13 +313,45 @@ func (q *Queries) RemoveMember(ctx context.Context, arg RemoveMemberParams) (int
 	return result.RowsAffected(), nil
 }
 
+const resendInvitation = `-- name: ResendInvitation :execrows
+UPDATE team_invitations
+SET token_hash = $1, expires_at = $2, sent_at = $3
+WHERE team_id = $4 AND id = $5 AND sent_at <= $6
+`
+
+type ResendInvitationParams struct {
+	TokenHash  string
+	ExpiresAt  time.Time
+	SentAt     time.Time
+	TeamID     uuid.UUID
+	ID         uuid.UUID
+	SentBefore time.Time
+}
+
+// Resending gives the invitation a new link, expiry and send time, unless
+// it was sent after @sent_before (the cooldown) or is gone: then no row.
+func (q *Queries) ResendInvitation(ctx context.Context, arg ResendInvitationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, resendInvitation,
+		arg.TokenHash,
+		arg.ExpiresAt,
+		arg.SentAt,
+		arg.TeamID,
+		arg.ID,
+		arg.SentBefore,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const saveInvitation = `-- name: SaveInvitation :one
 
-INSERT INTO team_invitations (team_id, email, role, invited_by, token_hash, expires_at, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO team_invitations (team_id, email, role, invited_by, token_hash, expires_at, created_at, sent_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 ON CONFLICT (team_id, email) DO UPDATE
 SET id = gen_random_uuid(), role = EXCLUDED.role, invited_by = EXCLUDED.invited_by, token_hash = EXCLUDED.token_hash,
-    expires_at = EXCLUDED.expires_at, created_at = EXCLUDED.created_at
+    expires_at = EXCLUDED.expires_at, created_at = EXCLUDED.created_at, sent_at = EXCLUDED.sent_at
 RETURNING id
 `
 
@@ -328,6 +363,7 @@ type SaveInvitationParams struct {
 	TokenHash string
 	ExpiresAt time.Time
 	CreatedAt time.Time
+	SentAt    time.Time
 }
 
 // invitations
@@ -341,6 +377,7 @@ func (q *Queries) SaveInvitation(ctx context.Context, arg SaveInvitationParams) 
 		arg.TokenHash,
 		arg.ExpiresAt,
 		arg.CreatedAt,
+		arg.SentAt,
 	)
 	var id uuid.UUID
 	err := row.Scan(&id)

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 )
 
 func TestTeamName(t *testing.T) {
@@ -72,5 +73,27 @@ func TestInvitationExpired(t *testing.T) {
 	inv := Invitation{ExpiresAt: now}
 	if !inv.Expired(now) || inv.Expired(now.Add(-time.Second)) {
 		t.Fatal("an invitation expires at ExpiresAt")
+	}
+}
+
+func TestInvitationResend(t *testing.T) {
+	sent := time.Date(2026, 11, 7, 12, 0, 0, 500_000_000, time.UTC)
+	inv := &Invitation{SentAt: sent}
+	if !inv.ResendAvailableAt().Equal(sent.Add(InvitationResendCooldown)) {
+		t.Fatalf("ResendAvailableAt = %v", inv.ResendAvailableAt())
+	}
+
+	err := inv.CheckResend(sent.Add(time.Minute))
+	var later apperrors.RetryLaterError
+	if !errors.Is(err, ErrResendTooSoon) || !errors.As(err, &later) {
+		t.Fatalf("a minute after sending: err = %v, want ErrResendTooSoon with a retry time", err)
+	}
+	// Rounded up to the whole second, so retrying at that time works.
+	if want := time.Date(2026, 11, 7, 12, 2, 1, 0, time.UTC); !later.At.Equal(want) || later.Wait != 60500*time.Millisecond {
+		t.Fatalf("retry at %v after %v, want %v after 60.5s", later.At, later.Wait, want)
+	}
+
+	if err := inv.CheckResend(sent.Add(InvitationResendCooldown)); err != nil {
+		t.Fatalf("once the cooldown has passed: %v", err)
 	}
 }

@@ -18,8 +18,15 @@ type handler struct {
 }
 
 // Register mounts the routes; protect must authenticate the caller and
-// resolve them into an access.Actor.
-func Register(mux *http.ServeMux, cmd command.Handlers, qry query.Handlers, protect httpx.Middleware) {
+// resolve them into an access.Actor. limitCreate runs after protect on
+// POST /todos (a team task can notify the whole team).
+func Register(
+	mux *http.ServeMux,
+	cmd command.Handlers,
+	qry query.Handlers,
+	protect httpx.Middleware,
+	limitCreate httpx.Middleware,
+) {
 	h := handler{cmd: cmd, qry: qry}
 	routes := map[string]func(r *http.Request, a access.Actor) (int, any, error){
 		"POST /todos":        h.createTodo,
@@ -42,7 +49,11 @@ func Register(mux *http.ServeMux, cmd command.Handlers, qry query.Handlers, prot
 		"DELETE /collections/{id}": h.deleteCollection,
 	}
 	for pattern, fn := range routes {
-		mux.Handle(pattern, protect(access.ForActor(fn)))
+		var e http.Handler = access.ForActor(fn)
+		if pattern == "POST /todos" {
+			e = limitCreate(e)
+		}
+		mux.Handle(pattern, protect(e))
 	}
 }
 

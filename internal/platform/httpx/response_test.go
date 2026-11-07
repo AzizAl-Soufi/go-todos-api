@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 )
@@ -104,7 +105,39 @@ func TestRespondErr(t *testing.T) {
 			if body.Error.Code != tt.wantCode || body.Error.Message != tt.wantMessage {
 				t.Fatalf("error = %+v, want code %q message %q", body.Error, tt.wantCode, tt.wantMessage)
 			}
+			if body.Error.RetryAt != nil || rec.Header().Get("Retry-After") != "" {
+				t.Fatalf("retry hints on an error that has none: %s", rec.Body)
+			}
 		})
+	}
+}
+
+func TestRespondErr_RetryLater(t *testing.T) {
+	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.FixedZone("CET", 3600))
+	at := now.Add(90*time.Second + 300*time.Millisecond)
+	err := fmt.Errorf("resend: %w", apperrors.RetryAt(apperrors.TooManyRequests("SOON", "try later"), now, at))
+
+	rec := httptest.NewRecorder()
+	RespondErr(rec, httptest.NewRequest(http.MethodPost, "/x", nil), err)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	// Rounded up to the second, in UTC; Retry-After counts from the caller's clock.
+	if got := rec.Header().Get("Retry-After"); got != "91" {
+		t.Fatalf("Retry-After = %q, want 91", got)
+	}
+	var body struct {
+		Error struct {
+			Code    string `json:"code"`
+			RetryAt string `json:"retryAt"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.Code != "SOON" || body.Error.RetryAt != "2026-11-07T11:01:31Z" {
+		t.Fatalf("body = %s, want code SOON and retryAt 2026-11-07T11:01:31Z", rec.Body)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -120,6 +121,15 @@ func (a *auditLog) last(action string) (application.AuditEntry, bool) {
 	return application.AuditEntry{}, false
 }
 
+// deviceGateway records whose push devices the notifications module was told
+// to forget.
+type deviceGateway struct{ forgotten []string }
+
+func (g *deviceGateway) DeleteUserDevices(_ context.Context, userID string) error {
+	g.forgotten = append(g.forgotten, userID)
+	return nil
+}
+
 // recordingTx counts units of work and runs them in place. The counter is
 // atomic because some tests run use cases concurrently.
 type recordingTx struct{ calls atomic.Int32 }
@@ -135,6 +145,7 @@ type fixture struct {
 	clock    *clock
 	firebase *fakeFirebase
 	todos    *todoGateway
+	devices  *deviceGateway
 	tx       *recordingTx
 	users    *memstore.Users
 	passkeys *memstore.Passkeys
@@ -149,6 +160,7 @@ func newFixture(t *testing.T, withAdmin ...bool) *fixture {
 		clock:    &clock{now: time.Now()},
 		firebase: newFakeFirebase(),
 		todos:    &todoGateway{},
+		devices:  &deviceGateway{},
 		tx:       &recordingTx{},
 		users:    memstore.NewUsers(),
 		passkeys: memstore.NewPasskeys(),
@@ -175,6 +187,7 @@ func newFixture(t *testing.T, withAdmin ...bool) *fixture {
 		Firebase:     admin,
 		Audit:        f.audit,
 		Todos:        f.todos,
+		Devices:      f.devices,
 		Tx:           f.tx,
 		Config:       command.DefaultConfig(),
 		Now:          f.clock.Now,
@@ -353,8 +366,15 @@ func TestLogoutAll_RevokesEarlierSignIns(t *testing.T) {
 	res, before := f.signIn(t, f.claims("uid-ann", "ann@example.com"))
 
 	f.clock.Advance(time.Minute)
+	f.tx.calls.Store(0)
 	if err := f.cmd.LogoutAll.Handle(bg, command.LogoutAll{UserID: res.UserID}); err != nil {
 		t.Fatal(err)
+	}
+	if n := f.tx.calls.Load(); n != 1 {
+		t.Fatalf("logout-all used %d transactions, want 1", n)
+	}
+	if !slices.Equal(f.devices.forgotten, []string{res.UserID}) {
+		t.Fatalf("push devices forgotten for %v, want the user's (a lost device must stop getting pushes)", f.devices.forgotten)
 	}
 	if _, err := f.qry.Authenticate.Handle(bg, query.Authenticate{IDToken: before}); !errors.Is(err, domain.ErrTokenRevoked) {
 		t.Fatalf("token of an earlier sign-in: err = %v, want ErrTokenRevoked", err)

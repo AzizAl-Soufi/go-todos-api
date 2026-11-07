@@ -84,6 +84,7 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md) · Changes: [CHANGELOG.md](CHANGELOG.
     - [Invitations](#invitations)
       - [POST `/teams/{id}/invitations`](#post-teamsidinvitations)
       - [GET `/teams/{id}/invitations`](#get-teamsidinvitations)
+      - [POST `/teams/{id}/invitations/{invitationId}/resend`](#post-teamsidinvitationsinvitationidresend)
       - [DELETE `/teams/{id}/invitations/{invitationId}`](#delete-teamsidinvitationsinvitationid)
       - [POST `/invitations/accept`](#post-invitationsaccept)
       - [POST `/invitations/decline`](#post-invitationsdecline)
@@ -93,7 +94,7 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md) · Changes: [CHANGELOG.md](CHANGELOG.
     - [Devices](#devices)
       - [POST `/me/devices`](#post-medevices)
       - [GET `/me/devices`](#get-medevices)
-      - [DELETE `/me/devices/{token}`](#delete-medevicestoken)
+      - [DELETE `/me/devices/{id}`](#delete-medevicesid)
   - [Testing](#testing)
     - [Unit tests](#unit-tests)
     - [Integration tests](#integration-tests)
@@ -144,6 +145,8 @@ All settings are environment variables (a `.env` file in the working directory i
 | `AUTH_REQUIRE_VERIFIED_EMAIL`    | `false`                    | Block the todos API until the email is verified                                                                   |
 | `AUTH_RATE_LIMIT_PER_MINUTE`     | `20`                       | Per-IP budget for the rate-limited auth endpoints                                                                 |
 | `AUTH_RATE_LIMIT_BURST`          | `10`                       | Burst on top of that budget                                                                                       |
+| `TODO_CREATE_RATE_LIMIT_PER_MINUTE` | `120`                   | Per-user budget for `POST /todos` (a team task can notify the whole team)                                         |
+| `TODO_CREATE_RATE_LIMIT_BURST`   | `30`                       | Burst on top of that budget                                                                                       |
 | `PASSKEY_RP_ID`                  | host of `APP_BASE_URL`     | Domain passkeys are bound to: the site's host or a parent domain of it (see [Passkeys](#passkeys))                |
 | `PASSKEY_RP_NAME`                | `Todos`                    | Name the browser shows when creating a passkey                                                                    |
 | `PASSKEY_ORIGINS`                | origin of `APP_BASE_URL`   | Comma-separated origins (`https://app.example.com`) of the pages allowed to use passkeys                          |
@@ -334,7 +337,7 @@ Every change in a team is written to the **team audit log**, in the same transac
 | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Team        | `team.created`, `team.renamed`, `team.ownership_transferred`                                                                                                                                                                                                                                  |
 | Members     | `member.joined`, `member.role_changed`, `member.removed`, `member.left`                                                                                                                                                                                                                       |
-| Invitations | `invitation.created`, `invitation.revoked`, `invitation.declined`                                                                                                                                                                                                                             |
+| Invitations | `invitation.created`, `invitation.resent`, `invitation.revoked`, `invitation.declined`                                                                                                                                                                                                                             |
 | Content     | `project.*`, `collection.*`, `todo.*` with `created`, `updated`, `deleted`                                                                                                                                                                                                                    |
 | Security    | `user.registered`, `account.linked`, `session.login`, `session.login_failed` (passkeys), `session.logout_all`, `passkey.added`, `passkey.removed`; older logs may also hold `session.logout`, `session.refresh_reuse_detected`, `email.verified` and `password.*` events from before Firebase |
 
@@ -344,16 +347,18 @@ An event records the actor, action, target, small `details` (a title, the change
 
 When a team's **owner or an admin** adds a task to a team project, everyone else in the team gets a push notification through **Firebase Cloud Messaging**: "New task in Platform: Bo added “Ship it”". Tasks members add, and personal tasks, notify nobody, and the person who added the task isn't notified.
 
-- **Devices**: after sign-in (and whenever FCM hands the app a new token), the client registers its FCM registration token with `POST /me/devices`, and removes it with `DELETE /me/devices/{token}` on sign-out. A user keeps up to 10 devices; registering more drops the least recently registered. A token registered by another user (someone else signed in on the device) moves to them.
-- **Payload**: `notification` has the title and body; `data` has `type` (`todo.created`), `teamId`, `projectId` and `todoId`, so the app can open the task.
-- **Delivery** happens after the task is saved, in the background: a slow or failing FCM never fails or slows adding a task, and failures are logged. Recipients are read from the team at send time, so removed members don't get notified. Tokens FCM reports as unregistered are forgotten. A crash between saving the task and sending loses that notification (there is no outbox yet).
+- **Devices**: after sign-in (and whenever FCM hands the app a new token), the client registers its FCM registration token with `POST /me/devices`, and removes it on sign-out with `DELETE /me/devices/{id}`, using the `id` the registration returned. Tokens never go into URLs, where access logs and proxies would record them. A user keeps up to 10 devices; registering more drops the least recently registered. A token registered by another user (someone else signed in on the device) moves to them. **Log out everywhere** and deleting the account forget all of the user's devices, so a lost or stolen device stops receiving notifications; apps register again after their next sign-in.
+- **Payload**: `notification` has the title (at most 100 characters) and body (at most 200; long task titles and names are shortened with "…"); `data` has `type` (`todo.created`), `teamId`, `projectId` and `todoId`, so the app can open the task.
+- **Delivery** happens after the task is saved, in the background: a slow or failing FCM never fails or slows adding a task, and failures are logged. Recipients are read from the team at send time, so removed members don't get notified. Tokens FCM reports as unregistered or invalid are forgotten, except when it rejects the message for every recipient of a batch: then the message is at fault, and the tokens are kept. Creating todos is rate-limited per user (`TODO_CREATE_RATE_LIMIT_PER_MINUTE`), which also bounds how many notifications one person can cause. At most 32 notifications are sent at once; beyond that they are dropped and logged rather than queued. On shutdown (SIGTERM) the server finishes requests in flight, then waits for notifications being sent, within a 5-second grace period, before closing the database. A crash between saving the task and sending loses that notification (there is no outbox yet).
 - **Setup**: sending needs `FIREBASE_CREDENTIALS_FILE` (a service account allowed to use the Firebase Cloud Messaging API). Without it, devices are still registered but nothing is sent. Deleting an account forgets its devices.
 
 ```js
 import { getMessaging, getToken } from "firebase/messaging";
 
 const token = await getToken(getMessaging(app), { vapidKey: VAPID_KEY });
-await api.post("/me/devices", { token, platform: "web" });
+const { id } = await api.post("/me/devices", { token, platform: "web" });
+// on sign-out:
+await api.delete(`/me/devices/${id}`);
 ```
 
 ## Database Schema
@@ -494,6 +499,7 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │   ├── token_hash: text [UNIQUE]
     │   ├── expires_at: timestamptz
     │   ├── created_at: timestamptz
+    │   ├── sent_at: timestamptz (last time the email was sent; resend cooldown)
     │   │
     │   └── [Constraints]
     │       └── [Unique] (team_id, email)
@@ -670,6 +676,7 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │   ├── tokenHash: string
     │   ├── expiresAt: ISODate
     │   ├── createdAt: ISODate
+    │   ├── sentAt: ISODate (last time the email was sent; resend cooldown)
     │   │
     │   └── [Indexes]
     │       ├── [Unique Index] { tokenHash: 1 }
@@ -786,7 +793,18 @@ All API errors use the following structure:
 }
 ```
 
-`code` is stable and meant for programmatic handling; `message` is for people and may change. Unexpected failures are logged with the request ID and returned as `500` with code `INTERNAL`, so internal details never leak. Unknown routes return `404 NOT_FOUND` and wrong methods `405 METHOD_NOT_ALLOWED` (with an `Allow` header), in the same shape. Every response carries `X-Request-ID`, and access logs are structured and correlated by it.
+`code` is stable and meant for programmatic handling; `message` is for people and may change. A `429` also says when to try again: `retryAt` in the body (UTC, RFC 3339, whole seconds) and `Retry-After` in seconds:
+
+```json
+{
+  "error": {
+    "code": "INVITATION_RESEND_TOO_SOON",
+    "message": "this invitation was sent less than 2 minutes ago; resend it after retryAt",
+    "retryAt": "2026-11-07T11:08:11Z"
+  }
+}
+```
+ Unexpected failures are logged with the request ID and returned as `500` with code `INTERNAL`, so internal details never leak. Unknown routes return `404 NOT_FOUND` and wrong methods `405 METHOD_NOT_ALLOWED` (with an `Allow` header), in the same shape. Every response carries `X-Request-ID`, and access logs are structured and correlated by it.
 
 ### Common error codes
 
@@ -800,7 +818,7 @@ All API errors use the following structure:
 | 403    | `EMAIL_NOT_VERIFIED`                           | Todos, teams and audit endpoints, only when `AUTH_REQUIRE_VERIFIED_EMAIL=true`                                  |
 | 403    | `INSUFFICIENT_ROLE`                            | Your role in the team doesn't allow this (see [Roles](#roles))                                                  |
 | 404    | `TEAM_NOT_FOUND`                               | The team doesn't exist or you're not a member                                                                   |
-| 429    | `RATE_LIMITED`                                 | Rate-limited endpoint called too often; see `Retry-After`                                                       |
+| 429    | `RATE_LIMITED`                                 | Rate-limited endpoint called too often; retry from `retryAt` (UTC) or after `Retry-After` seconds               |
 
 Endpoint-specific codes are listed with each endpoint.
 
@@ -809,7 +827,7 @@ Endpoint-specific codes are listed with each endpoint.
 ### Conventions
 
 - **Bearer** endpoints need `Authorization: Bearer <Firebase ID token>` of a user with an account (see [Signing in with Firebase](#signing-in-with-firebase)).
-- **Rate-limited** endpoints share a per-client-IP budget (`AUTH_RATE_LIMIT_PER_MINUTE`, `AUTH_RATE_LIMIT_BURST`).
+- **Rate-limited** endpoints share a per-client-IP budget (`AUTH_RATE_LIMIT_PER_MINUTE`, `AUTH_RATE_LIMIT_BURST`). `POST /todos` has its own per-user budget (`TODO_CREATE_RATE_LIMIT_PER_MINUTE`, `TODO_CREATE_RATE_LIMIT_BURST`).
 - Timestamps are RFC 3339 in UTC. IDs are 24-character hex strings on memory and MongoDB, and UUIDs on PostgreSQL.
 
 ### Health
@@ -859,7 +877,7 @@ Errors: `MISSING_ACCESS_TOKEN` (401) without the header; `EMAIL_REQUIRED` (400) 
 
 #### POST `/auth/logout-all`
 
-Signs the user out everywhere: ID tokens from every sign-in until now stop working, on every device. Bearer.
+Signs the user out everywhere: ID tokens from every sign-in until now stop working, on every device, and the user's push devices are forgotten. Bearer.
 
 Response `204 No Content`
 
@@ -1080,7 +1098,7 @@ Response `201 Created`
 }
 ```
 
-Omit `projectId` (or send `null`) for the inbox. Errors: `INVALID_TITLE`, `TITLE_TOO_LONG`, `NOTES_TOO_LONG`, `INVALID_STATUS`, `INVALID_PRIORITY`, `INVALID_TAG`, `TOO_MANY_TAGS`, `INVALID_FIELD` (wrong JSON type or unparsable date) (400); `INSUFFICIENT_ROLE` (403) for a viewer of the project's team; `PROJECT_NOT_FOUND` (404).
+Omit `projectId` (or send `null`) for the inbox. Errors: `INVALID_TITLE`, `TITLE_TOO_LONG`, `NOTES_TOO_LONG`, `INVALID_STATUS`, `INVALID_PRIORITY`, `INVALID_TAG`, `TOO_MANY_TAGS`, `INVALID_FIELD` (wrong JSON type or unparsable date) (400); `INSUFFICIENT_ROLE` (403) for a viewer of the project's team; `PROJECT_NOT_FOUND` (404); `RATE_LIMITED` (429, with `Retry-After`) beyond the caller's budget (`TODO_CREATE_RATE_LIMIT_PER_MINUTE`).
 
 #### GET `/todos`
 
@@ -1500,7 +1518,7 @@ Errors: `INVALID_USER_ID` (400); `INSUFFICIENT_ROLE` (403); `MEMBER_NOT_FOUND`, 
 
 #### POST `/teams/{id}/invitations`
 
-Emails an invitation to join the team with a role below the caller's. Owners and admins. Inviting the same address again replaces its pending invitation.
+Emails an invitation to join the team with a role below the caller's. Owners and admins. Inviting the same address again replaces its pending invitation (new ID and link), but, like a [resend](#post-teamsidinvitationsinvitationidresend), only 2 minutes after that invitation's last email; sooner is `429 INVITATION_RESEND_TOO_SOON` with `retryAt`.
 
 Request
 
@@ -1522,11 +1540,13 @@ Response `201 Created`
   "invitedBy": "672c5f3a9e1b4d0012a7c3e1",
   "expired": false,
   "expiresAt": "2026-11-14T11:06:10.551Z",
-  "createdAt": "2026-11-07T11:06:10.551Z"
+  "createdAt": "2026-11-07T11:06:10.551Z",
+  "sentAt": "2026-11-07T11:06:10.551Z",
+  "resendAvailableAt": "2026-11-07T11:08:10.551Z"
 }
 ```
 
-The token is only in the email. Errors: `INVALID_EMAIL`, `INVALID_ROLE`, `OWNER_NOT_ASSIGNABLE` (400); `INSUFFICIENT_ROLE` (403) for members and viewers, or a role not below the caller's; `TEAM_NOT_FOUND` (404); `ALREADY_MEMBER` (409).
+`sentAt` is when the email was last sent, and `resendAvailableAt` when it may be [resent](#post-teamsidinvitationsinvitationidresend), 2 minutes later; both UTC. The token is only in the email. Errors: `INVALID_EMAIL`, `INVALID_ROLE`, `OWNER_NOT_ASSIGNABLE` (400); `INSUFFICIENT_ROLE` (403) for members and viewers, or a role not below the caller's; `TEAM_NOT_FOUND` (404); `ALREADY_MEMBER` (409); `INVITATION_RESEND_TOO_SOON` (429) when this address was sent an invitation less than 2 minutes ago.
 
 #### GET `/teams/{id}/invitations`
 
@@ -1535,6 +1555,18 @@ Lists the team's pending invitations, oldest first; `expired` marks those past `
 Response `200 OK`: an array of invitations, as above.
 
 Errors: `INSUFFICIENT_ROLE` (403); `TEAM_NOT_FOUND` (404).
+
+#### POST `/teams/{id}/invitations/{invitationId}/resend`
+
+Emails the invitation again, with a **new link**: the previous link stops working, and the invitation (even an expired one) is valid for 7 days from now. It keeps its ID, email and role. Owners and admins, for roles they could invite.
+
+Each invitation can be sent at most **once every 2 minutes** (counting from its creation or last resend; re-inviting the address counts as a send too). Sooner, the answer is `429 INVITATION_RESEND_TOO_SOON` with `retryAt`, the UTC time it becomes possible (the invitation's `resendAvailableAt`, rounded up to the second), and `Retry-After`.
+
+Request: no body.
+
+Response `200 OK`: the invitation, as above, with the new `sentAt`, `expiresAt` and `resendAvailableAt`.
+
+Errors: `INSUFFICIENT_ROLE` (403) for members and viewers, or an invitation with a role not below the caller's; `INVITATION_NOT_FOUND`, `TEAM_NOT_FOUND` (404); `INVITATION_RESEND_TOO_SOON` (429).
 
 #### DELETE `/teams/{id}/invitations/{invitationId}`
 
@@ -1624,12 +1656,13 @@ Request
 { "token": "fMEP0vJqS0yH0lJk7vRg:APA91bH...", "platform": "android" }
 ```
 
-`platform` is `android`, `ios` or `web`.
+`token` is printable ASCII without spaces, at most 1024 characters. `platform` is `android`, `ios` or `web`.
 
 Response `200 OK`
 
 ```json
 {
+  "id": "9f86d081884c7d659a2feaa0c55ad015",
   "token": "fMEP0vJqS0yH0lJk7vRg:APA91bH...",
   "platform": "android",
   "createdAt": "2026-11-07T10:30:00Z",
@@ -1637,19 +1670,21 @@ Response `200 OK`
 }
 ```
 
-Errors: `INVALID_DEVICE_TOKEN` (400) for an empty or malformed token; `INVALID_PLATFORM` (400).
+`id` names the device in `DELETE /me/devices/{id}`: the first 128 bits of the token's SHA-256, in hex. It never changes for a token, and can't be turned back into the token.
+
+Errors: `INVALID_DEVICE_TOKEN` (400) for an empty, too long or malformed token; `INVALID_PLATFORM` (400).
 
 #### GET `/me/devices`
 
 Lists the caller's devices, least recently registered first, in the shape above.
 
-#### DELETE `/me/devices/{token}`
+#### DELETE `/me/devices/{id}`
 
-Unregisters one of the caller's devices (e.g. on sign-out).
+Unregisters one of the caller's devices (e.g. on sign-out), by the `id` from `POST` or `GET /me/devices`.
 
 Response `204 No Content`
 
-Errors: `DEVICE_NOT_FOUND` (404), also for another user's token.
+Errors: `DEVICE_NOT_FOUND` (404), also for another user's device.
 
 ## Testing
 

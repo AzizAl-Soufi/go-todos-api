@@ -45,6 +45,14 @@ type AuthConfig struct {
 	RateLimitBurst     int `mapstructure:"AUTH_RATE_LIMIT_BURST" default:"10"`
 }
 
+// LimitsConfig bounds how fast one signed-in user may write.
+type LimitsConfig struct {
+	// Per-user limit on POST /todos. A team task by an owner or admin pushes
+	// a notification to the whole team, so this also bounds notifications.
+	TodoCreatesPerMinute int `mapstructure:"TODO_CREATE_RATE_LIMIT_PER_MINUTE" default:"120"`
+	TodoCreateBurst      int `mapstructure:"TODO_CREATE_RATE_LIMIT_BURST" default:"30"`
+}
+
 // PasskeyConfig names the WebAuthn relying party. Passkeys are bound to RPID
 // and only work on pages served from Origins; both default to the host and
 // origin of APP_BASE_URL.
@@ -69,6 +77,7 @@ type Config struct {
 	DB       DatabaseConfig `mapstructure:",squash"`
 	Firebase FirebaseConfig `mapstructure:",squash"`
 	Auth     AuthConfig     `mapstructure:",squash"`
+	Limits   LimitsConfig   `mapstructure:",squash"`
 	Passkey  PasskeyConfig  `mapstructure:",squash"`
 	SMTP     SMTPConfig     `mapstructure:",squash"`
 }

@@ -179,6 +179,7 @@ func invitationToDomain(i sqlcgen.TeamInvitation) *domain.Invitation {
 	return &domain.Invitation{
 		ID: i.ID.String(), TeamID: i.TeamID.String(), Email: i.Email, Role: access.Role(i.Role),
 		InvitedBy: i.InvitedBy.String(), TokenHash: i.TokenHash, ExpiresAt: i.ExpiresAt, CreatedAt: i.CreatedAt,
+		SentAt: i.SentAt,
 	}
 }
 
@@ -189,7 +190,7 @@ func (s *Invitations) Save(ctx context.Context, inv *domain.Invitation) error {
 	}
 	id, err := s.q(ctx).SaveInvitation(ctx, sqlcgen.SaveInvitationParams{
 		TeamID: teamID, Email: inv.Email, Role: string(inv.Role), InvitedBy: invitedBy,
-		TokenHash: inv.TokenHash, ExpiresAt: inv.ExpiresAt, CreatedAt: inv.CreatedAt,
+		TokenHash: inv.TokenHash, ExpiresAt: inv.ExpiresAt, CreatedAt: inv.CreatedAt, SentAt: inv.SentAt,
 	})
 	if err != nil {
 		return postgres.MapErr("save invitation", err)
@@ -216,6 +217,22 @@ func (s *Invitations) FindByTokenHash(ctx context.Context, tokenHash string) (*d
 		return nil, postgres.MapErr("find invitation", err)
 	}
 	return invitationToDomain(row), nil
+}
+
+func (s *Invitations) Resend(ctx context.Context, r application.InvitationResend) error {
+	invID, team, err := ids.UUIDPair(r.ID, r.TeamID)
+	if err != nil {
+		return err
+	}
+	rows, err := s.q(ctx).ResendInvitation(ctx, sqlcgen.ResendInvitationParams{
+		TeamID:     team,
+		ID:         invID,
+		TokenHash:  r.TokenHash,
+		ExpiresAt:  r.ExpiresAt,
+		SentAt:     r.SentAt,
+		SentBefore: r.SentBefore,
+	})
+	return postgres.RequireAffected("resend invitation", rows, err)
 }
 
 func (s *Invitations) Delete(ctx context.Context, teamID, id string) error {

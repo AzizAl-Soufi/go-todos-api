@@ -46,22 +46,27 @@ type Deps struct {
 	Directory access.Directory
 	Pusher    Pusher // nil: devices are kept, nothing is sent
 	// Dispatch runs a notification after the request that caused it; nil
-	// means in a new goroutine. Tests pass one that runs it in place.
+	// means in the background, at most maxInFlight at a time, drained by
+	// Close. Tests pass one that runs it in place.
 	Dispatch func(func())
 	Now      func() time.Time // nil means time.Now
 }
 
 type Module struct {
-	Commands command.Handlers
-	Queries  query.Handlers
-	dispatch func(func())
+	Commands   command.Handlers
+	Queries    query.Handlers
+	dispatch   func(func())
+	background *background // nil when Deps.Dispatch was given
 }
 
 func New(d Deps) *Module {
+	var bg *background
 	if d.Dispatch == nil {
-		d.Dispatch = func(f func()) { go f() }
+		bg = newBackground(maxInFlight)
+		d.Dispatch = bg.run
 	}
 	return &Module{
+		background: bg,
 		Commands: command.New(command.Deps{
 			Devices:   d.Devices,
 			Directory: d.Directory,
@@ -100,6 +105,16 @@ func (m *Module) TodoCreated(ctx context.Context, e TodoCreated) {
 			)
 		}
 	})
+}
+
+// Close stops sending new notifications and waits for those in flight,
+// until ctx ends (then it returns ctx's error). Call it after the HTTP server
+// has shut down and before the database is closed.
+func (m *Module) Close(ctx context.Context) error {
+	if m.background == nil {
+		return nil
+	}
+	return m.background.close(ctx)
 }
 
 // DeleteUserDevices forgets a deleted account's devices.

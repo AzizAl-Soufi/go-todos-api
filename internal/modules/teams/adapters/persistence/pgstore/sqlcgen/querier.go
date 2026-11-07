@@ -28,6 +28,9 @@ type Querier interface {
 	ListMembersByTeam(ctx context.Context, teamID uuid.UUID) ([]TeamMember, error)
 	ListMembersByUser(ctx context.Context, userID uuid.UUID) ([]TeamMember, error)
 	RemoveMember(ctx context.Context, arg RemoveMemberParams) (int64, error)
+	// Resending gives the invitation a new link, expiry and send time, unless
+	// it was sent after @sent_before (the cooldown) or is gone: then no row.
+	ResendInvitation(ctx context.Context, arg ResendInvitationParams) (int64, error)
 	// invitations
 	// Saving replaces the pending invitation for the same team and email.
 	SaveInvitation(ctx context.Context, arg SaveInvitationParams) (uuid.UUID, error)

@@ -22,7 +22,16 @@ func TestNewDevice(t *testing.T) {
 	if !normalized || !inUTC || !d.UpdatedAt.Equal(d.CreatedAt) {
 		t.Fatalf("NewDevice = %+v", d)
 	}
-	for _, bad := range []string{"", "  ", "has space", strings.Repeat("x", MaxTokenLength+1)} {
+	invalid := []string{
+		"",
+		"  ",
+		"has space",
+		"nul\x00byte",
+		"tab\tinside",
+		"non-ascii-é",
+		strings.Repeat("x", MaxTokenLength+1),
+	}
+	for _, bad := range invalid {
 		if _, err := NewDevice("u1", bad, "web", now); !errors.Is(err, ErrInvalidToken) {
 			t.Errorf("token %q: err = %v", bad, err)
 		}
@@ -75,5 +84,58 @@ func TestTodoCreated(t *testing.T) {
 	e.ActorName = " "
 	if m := e.Message("Platform"); !strings.HasPrefix(m.Body, "An admin added") {
 		t.Fatalf("message without a name = %q", m.Body)
+	}
+}
+
+func TestDeviceID(t *testing.T) {
+	d := &Device{Token: "fcm:token-1"}
+	id := d.ID()
+	if len(id) != 32 || strings.Contains(id, "token") || id != DeviceID("fcm:token-1") {
+		t.Fatalf("ID = %q, want 32 hex characters derived from the token", id)
+	}
+	if DeviceID("fcm:token-2") == id {
+		t.Fatal("different tokens must have different IDs")
+	}
+}
+
+func TestTodoCreated_MessageIsShortened(t *testing.T) {
+	e := TodoCreated{
+		TeamID:    "t1",
+		Title:     strings.Repeat("🚀", 500),
+		ActorName: strings.Repeat("A", 100),
+		ActorRole: access.Admin,
+	}
+	m := e.Message(strings.Repeat("T", 100))
+	title, body := []rune(m.Title), []rune(m.Body)
+	if len(title) > MaxTitleLength || title[len(title)-1] != '…' {
+		t.Fatalf("title has %d characters: %q", len(title), m.Title)
+	}
+	if len(body) > MaxBodyLength || !strings.HasSuffix(m.Body, "…”") {
+		t.Fatalf("body has %d characters: %q", len(body), m.Body)
+	}
+	if !strings.HasPrefix(m.Body, strings.Repeat("A", maxActorLength-1)+"… added “🚀") {
+		t.Fatalf("body = %q, want the shortened name, then the task", m.Body)
+	}
+}
+
+func TestTruncate(t *testing.T) {
+	cases := []struct {
+		s    string
+		n    int
+		want string
+	}{
+		{"short", 10, "short"},
+		{"exactly", 7, "exactly"},
+		{"too long", 4, "too…"},
+		{"🚀🚀🚀", 2, "🚀…"},
+		{"cut", 1, "…"},
+		{"no room", 0, ""},
+		{"negative", -5, ""},
+		{"", 0, ""},
+	}
+	for _, c := range cases {
+		if got := truncate(c.s, c.n); got != c.want {
+			t.Errorf("truncate(%q, %d) = %q, want %q", c.s, c.n, got, c.want)
+		}
 	}
 }

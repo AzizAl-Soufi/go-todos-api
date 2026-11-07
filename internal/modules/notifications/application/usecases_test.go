@@ -245,13 +245,21 @@ func TestUnregisterAndDeleteDevices(t *testing.T) {
 	f := newFixture(t)
 	f.register(t, "ann", "ann-phone")
 	f.register(t, "ann", "ann-web")
-	othersDevice := command.UnregisterDevice{UserID: "bo", Token: "ann-phone"}
+	phone := domain.DeviceID("ann-phone")
+	othersDevice := command.UnregisterDevice{UserID: "bo", DeviceID: phone}
 	if err := f.cmd.UnregisterDevice.Handle(bg, othersDevice); !errors.Is(err, domain.ErrDeviceNotFound) {
 		t.Fatalf("another user's device: err = %v", err)
 	}
-	ownDevice := command.UnregisterDevice{UserID: "ann", Token: "ann-phone"}
+	byToken := command.UnregisterDevice{UserID: "ann", DeviceID: "ann-phone"}
+	if err := f.cmd.UnregisterDevice.Handle(bg, byToken); !errors.Is(err, domain.ErrDeviceNotFound) {
+		t.Fatalf("a token is not a device ID: err = %v", err)
+	}
+	ownDevice := command.UnregisterDevice{UserID: "ann", DeviceID: phone}
 	if err := f.cmd.UnregisterDevice.Handle(bg, ownDevice); err != nil {
 		t.Fatal(err)
+	}
+	if got := f.tokens(t, "ann"); !slices.Equal(got, []string{"ann-web"}) {
+		t.Fatalf("devices after unregistering the phone: %v", got)
 	}
 	if err := f.module.DeleteUserDevices(bg, "ann"); err != nil {
 		t.Fatal(err)

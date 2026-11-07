@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications/application"
@@ -77,20 +78,27 @@ func (h RegisterDeviceHandler) Handle(ctx context.Context, cmd RegisterDevice) (
 	return d.Token, nil
 }
 
-// UnregisterDevice removes one of the caller's devices (e.g. on sign-out).
+// UnregisterDevice removes one of the caller's devices (e.g. on sign-out),
+// named by its ID (domain.DeviceID), never by its token.
 type UnregisterDevice struct {
-	UserID string
-	Token  string
+	UserID   string
+	DeviceID string
 }
 
 type UnregisterDeviceHandler struct{ Deps }
 
 func (h UnregisterDeviceHandler) Handle(ctx context.Context, cmd UnregisterDevice) error {
-	token, err := domain.NormalizeToken(cmd.Token)
+	devices, err := h.Devices.ListForUser(ctx, cmd.UserID)
 	if err != nil {
+		return err
+	}
+	// A user has at most domain.MaxDevicesPerUser devices, so matching the
+	// ID here needs no lookup by hash in the stores.
+	i := slices.IndexFunc(devices, func(d *domain.Device) bool { return d.ID() == cmd.DeviceID })
+	if i < 0 {
 		return domain.ErrDeviceNotFound
 	}
-	return apperrors.NotFoundAs(h.Devices.Delete(ctx, cmd.UserID, token), domain.ErrDeviceNotFound)
+	return apperrors.NotFoundAs(h.Devices.Delete(ctx, cmd.UserID, devices[i].Token), domain.ErrDeviceNotFound)
 }
 
 // DeleteUserDevices forgets every device of a deleted account.

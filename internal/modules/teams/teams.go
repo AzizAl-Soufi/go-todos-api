@@ -68,8 +68,13 @@ func New(d Deps) *Module {
 // Resolver loads a caller's memberships for access.Middleware.
 func (m *Module) Resolver() access.Resolver { return m.Queries.Memberships }
 
-// Directory looks up team rosters (access.Directory), e.g. for notifications.
-func (m *Module) Directory() access.Directory { return m.Queries.Roster }
+// NewDirectory looks up team rosters (access.Directory) straight from the
+// stores, without the rest of the module. Modules that teams depends on
+// (notifications, through todos) are built before it, so they get their
+// directory from here instead of from a Module.
+func NewDirectory(teams application.TeamReader, members application.MemberReader) access.Directory {
+	return query.RosterHandler{Deps: query.Deps{Teams: teams, Members: members}}
+}
 
 // RegisterRoutes mounts /teams/* and /invitations/*. protect must
 // authenticate the caller and resolve them into an access.Actor; limit

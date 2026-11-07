@@ -8,7 +8,6 @@ import (
 	"math"
 	"net"
 	"net/http"
-	"strconv"
 	"sync"
 	"time"
 
@@ -90,11 +89,23 @@ func (l *Limiter) sweep(now time.Time) {
 // Middleware limits requests per client IP and answers 429 with Retry-After.
 // The IP comes from RemoteAddr; X-Forwarded-For is deliberately not trusted.
 func (l *Limiter) Middleware(next http.Handler) http.Handler {
+	return l.MiddlewareBy(clientIP)(next)
+}
+
+// MiddlewareBy limits requests per key(r), e.g. the signed-in user, and
+// answers 429 with Retry-After.
+func (l *Limiter) MiddlewareBy(key func(*http.Request) string) httpx.Middleware {
+	return func(next http.Handler) http.Handler {
+		return l.limit(key, next)
+	}
+}
+
+func (l *Limiter) limit(key func(*http.Request) string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ok, wait := l.Allow(clientIP(r))
+		ok, wait := l.Allow(key(r))
 		if !ok {
-			w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(wait.Seconds()))))
-			httpx.RespondErr(w, r, ErrTooManyRequests)
+			now := l.now()
+			httpx.RespondErr(w, r, apperrors.RetryAt(ErrTooManyRequests, now, now.Add(wait)))
 			return
 		}
 		next.ServeHTTP(w, r)

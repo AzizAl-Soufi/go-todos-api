@@ -117,6 +117,7 @@ type TeamInvitation struct {
 	TokenHash string
 	ExpiresAt time.Time
 	CreatedAt time.Time
+	SentAt    time.Time
 }
 
 type TeamMember struct {

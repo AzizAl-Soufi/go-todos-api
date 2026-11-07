@@ -74,9 +74,10 @@ func New(d Deps) *Module {
 
 // RegisterRoutes mounts /todos, /projects and /collections; protect must
 // authenticate the caller and resolve their team memberships
-// (access.Middleware).
-func (m *Module) RegisterRoutes(mux *http.ServeMux, protect httpx.Middleware) {
-	httpapi.Register(mux, m.Commands, m.Queries, protect)
+// (access.Middleware). limitCreate rate-limits creating todos; it runs after
+// protect, so it can key on the caller.
+func (m *Module) RegisterRoutes(mux *http.ServeMux, protect, limitCreate httpx.Middleware) {
+	httpapi.Register(mux, m.Commands, m.Queries, protect, limitCreate)
 }
 
 // Todo is the read model exposed to other modules.
