@@ -78,6 +78,48 @@ func TestLoadConfig_MissingEnvFileIsNotAnError(t *testing.T) {
 	}
 }
 
+// Containers have no .env file; configuration must come from the environment alone.
+func TestLoadConfig_EnvOnlyWithoutEnvFile(t *testing.T) {
+	setup(t, "")
+	t.Setenv("PORT", "9090")
+	t.Setenv("DEBUG", "true")
+	t.Setenv("DB_TYPE", "postgres")
+	t.Setenv("DATABASE_URI", "postgres://db/todos")
+	t.Setenv("DATABASE_NAME", "todos")
+	t.Setenv("JWT_PRIVATE_KEY_PATH", "/run/secrets/private.pem")
+	t.Setenv("JWT_PUBLIC_KEY_PATH", "/run/secrets/public.pem")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	want := Config{
+		App: AppConfig{Port: 9090, Debug: true},
+		DB:  DatabaseConfig{DatabaseURI: "postgres://db/todos", DatabaseName: "todos", DBType: "postgres"},
+		JWT: JWTConfig{PrivateKeyPath: "/run/secrets/private.pem", PublicKeyPath: "/run/secrets/public.pem"},
+	}
+	if *cfg != want {
+		t.Fatalf("config = %+v, want %+v", *cfg, want)
+	}
+}
+
+// Every field in Config must be listed in envKeys, or it can't be set from the environment.
+func TestEnvKeysCoverConfig(t *testing.T) {
+	setup(t, "")
+	for _, key := range envKeys {
+		t.Setenv(key, "1")
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.App.Port != 1 || !cfg.App.Debug || cfg.DB.DatabaseURI == "" || cfg.DB.DatabaseName == "" ||
+		cfg.DB.DBType == "" || cfg.JWT.PrivateKeyPath == "" || cfg.JWT.PublicKeyPath == "" {
+		t.Fatalf("some Config fields are not bound to the environment: %+v", *cfg)
+	}
+}
+
 func TestLoadConfig_InvalidTypeReturnsError(t *testing.T) {
 	setup(t, "PORT=not-a-number\n")
 

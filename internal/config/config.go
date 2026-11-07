@@ -24,12 +24,27 @@ type Config struct {
 	JWT JWTConfig      `mapstructure:",squash"`
 }
 
+var envKeys = []string{
+	"PORT", "DEBUG",
+	"DATABASE_URI", "DATABASE_NAME", "DB_TYPE",
+	"JWT_PRIVATE_KEY_PATH", "JWT_PUBLIC_KEY_PATH",
+}
+
 func LoadConfig() (*Config, error) {
 	viper.SetConfigFile(".env")
 	viper.SetConfigType("env")
 	_ = viper.ReadInConfig()
 
 	viper.AutomaticEnv()
+
+	// AutomaticEnv only applies to keys viper already knows about, so without
+	// a .env file (e.g. in a container) Unmarshal would ignore the environment.
+	// Binding every key makes env-only configuration work.
+	for _, key := range envKeys {
+		if err := viper.BindEnv(key); err != nil {
+			return nil, err
+		}
+	}
 
 	var config Config
 	if err := viper.Unmarshal(&config); err != nil {
