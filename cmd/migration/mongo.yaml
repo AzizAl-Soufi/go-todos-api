@@ -1,6 +1,7 @@
-version: "1"
+version: "0.1"
 
 mongodb:
+  schema: "./internal/database/mongodb/migrations/schema"
   gen:
     out: "./internal/database/mongodb/migrations/generated"
     package: "generated"
@@ -13,26 +14,3 @@ mongodb:
         file: "users.json"
       - collection: "todos"
         file: "todos.json"
-  collections:
-    - name: "todos"
-      struct: "Todo"
-      indexes:
-        - keys:
-            - field: "userId"
-              order: 1
-      schema: # Define your fields here!
-        - name: "ID"
-          type: "bson.ObjectID"
-          bson: "_id,omitempty"
-        - name: "UserID"
-          type: "bson.ObjectID"
-          bson: "userId"
-        - name: "Title"
-          type: "string"
-          bson: "title"
-        - name: "Completed"
-          type: "bool"
-          bson: "completed"
-        - name: "CreatedAt"
-          type: "time.Time"
-          bson: "createdAt"

@@ -13,57 +13,181 @@ package {{.Package}}
 
 import (
 	"context"
+	"errors"
+{{- if .NeedsTime}}
 	"time"
+{{- end}}
 
+	"github.com/AzizAl-Soufi/go-todos-api/internal/database/mongodb"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/domain"
+	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/shared/errors"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
-// {{.Struct}} represents the {{.Collection}} collection
-type {{.Struct}} struct {
-{{- range .Fields}}
-	{{.Name}} {{.Type}} ` + "`bson:\"{{.Bson}}\"`" + `
-{{- end}}
+// {{.StructName}}Repository defines the domain interface (Port)
+type {{.StructName}}Repository interface {
+	EnsureIndexes(ctx context.Context) error
+	Create(ctx context.Context, item *domain.{{.StructName}}) error
+	GetByID(ctx context.Context, id string) (*domain.{{.StructName}}, error)
+	Delete(ctx context.Context, id string) error
 }
 
-type {{.Struct}}Repository struct {
+// mongo{{.StructName}}Repo is the private concrete implementation (Adapter)
+type mongo{{.StructName}}Repo struct {
 	coll *mongo.Collection
 }
 
-func New{{.Struct}}Repository(db *mongo.Database) *{{.Struct}}Repository {
-	return &{{.Struct}}Repository{
-		coll: db.Collection("{{.Collection}}"),
+// mongo{{.StructName}} represents the database schema
+type mongo{{.StructName}} struct {
+{{- range .Fields}}
+	{{.Name}} {{.DBType}} ` + "`bson:\"{{.Bson}}\"`" + `
+{{- end}}
+}
+
+// parse{{.StructName}}ID is a generated helper for string-to-ObjectID conversion
+func parse{{.StructName}}ID(id string) (bson.ObjectID, error) {
+	parsed, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return bson.NilObjectID, apperrors.Validation("INVALID_ID", "invalid id format")
+	}
+	return parsed, nil
+}
+
+// toDomain maps the DB model to the Domain model
+func toDomain{{.StructName}}(dbModel *mongo{{.StructName}}) *domain.{{.StructName}} {
+	return &domain.{{.StructName}}{
+{{- range .Fields}}
+	{{- if .IsID}}
+		{{.Name}}: dbModel.{{.Name}}.Hex(),
+	{{- else}}
+		{{.Name}}: dbModel.{{.Name}},
+	{{- end}}
+{{- end}}
 	}
 }
 
-// Insert creates a new {{.Struct}} document
-func (r *{{.Struct}}Repository) Insert(ctx context.Context, doc *{{.Struct}}) error {
-	_, err := r.coll.InsertOne(ctx, doc)
-	return err
+// NewMongo{{.StructName}}Repository creates a new instance of the repository
+func NewMongo{{.StructName}}Repository(db mongodb.MongoDBClient) {{.StructName}}Repository {
+	return &mongo{{.StructName}}Repo{
+		coll: db.Database().Collection("{{.CollectionName}}"),
+	}
 }
 
-// FindByID retrieves a {{.Struct}} by its ID
-func (r *{{.Struct}}Repository) FindByID(ctx context.Context, id bson.ObjectID) (*{{.Struct}}, error) {
-	var doc {{.Struct}}
-	err := r.coll.FindOne(ctx, bson.M{"_id": id}).Decode(&doc)
+// EnsureIndexes applies the schema-defined indexes to MongoDB
+func (r *mongo{{.StructName}}Repo) EnsureIndexes(ctx context.Context) error {
+	{{- if .Indexes}}
+	indexes := []mongo.IndexModel{
+	{{- range .Indexes}}
+		{
+			Keys: bson.D{
+				{{- range .Keys}}
+				{Key: "{{.Field}}", Value: {{.Order}}},
+				{{- end}}
+			},
+			Options: options.Index().
+				SetName("{{.Name}}"){{if .Unique}}.SetUnique(true){{end}}{{if .Sparse}}.SetSparse(true){{end}},
+		},
+	{{- end}}
+	}
+	_, err := r.coll.Indexes().CreateMany(ctx, indexes)
+	return err
+	{{- else}}
+	return nil
+	{{- end}}
+}
+
+// Create inserts a new document, generating an ID if none is provided
+func (r *mongo{{.StructName}}Repo) Create(ctx context.Context, item *domain.{{.StructName}}) error {
+	dbModel := &mongo{{.StructName}}{
+{{- range .Fields}}
+	{{- if not .IsID}}
+		{{.Name}}: item.{{.Name}},
+	{{- end}}
+{{- end}}
+	}
+
+{{- range .Fields}}
+	{{- if .IsID}}
+	if item.{{.Name}} != "" {
+		id, err := parse{{$.StructName}}ID(item.{{.Name}})
+		if err != nil {
+			return err
+		}
+		dbModel.{{.Name}} = id
+	} {{if eq .Name "ID"}}else {
+		dbModel.{{.Name}} = bson.NewObjectID()
+		item.{{.Name}} = dbModel.{{.Name}}.Hex() // Backfill the domain model
+	}{{end}}
+	{{- end}}
+{{- end}}
+
+	_, err := r.coll.InsertOne(ctx, dbModel)
+	if err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return apperrors.Validation("DUPLICATE_KEY", "a record with this data already exists")
+		}
+		return err
+	}
+	return nil
+}
+
+func (r *mongo{{.StructName}}Repo) GetByID(ctx context.Context, id string) (*domain.{{.StructName}}, error) {
+	parsedID, err := parse{{.StructName}}ID(id)
 	if err != nil {
 		return nil, err
 	}
-	return &doc, nil
+
+	var dbModel mongo{{.StructName}}
+	err = r.coll.FindOne(ctx, bson.M{"_id": parsedID}).Decode(&dbModel)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, apperrors.ErrNotFound
+		}
+		return nil, err
+	}
+
+	return toDomain{{.StructName}}(&dbModel), nil
 }
 
-// DeleteByID removes a {{.Struct}} by its ID
-func (r *{{.Struct}}Repository) DeleteByID(ctx context.Context, id bson.ObjectID) error {
-	_, err := r.coll.DeleteOne(ctx, bson.M{"_id": id})
-	return err
+func (r *mongo{{.StructName}}Repo) Delete(ctx context.Context, id string) error {
+	parsedID, err := parse{{.StructName}}ID(id)
+	if err != nil {
+		return err
+	}
+
+	result, err := r.coll.DeleteOne(ctx, bson.M{"_id": parsedID})
+	if err != nil {
+		return err
+	}
+
+	if result.DeletedCount == 0 {
+		return apperrors.ErrNotFound
+	}
+
+	return nil
 }
 `
 
 type RepoData struct {
-	Package    string
-	Struct     string
-	Collection string
-	Fields     []FieldDef
+	Package        string
+	Struct         string
+	StructName     string
+	Collection     string
+	CollectionName string
+	Indexes        []IndexDef
+	Fields         []FieldDef
+	NeedsTime      bool // whether any field's DB type references the time package
+}
+
+func fieldsNeedTime(fields []FieldDef) bool {
+	for _, f := range fields {
+		if strings.Contains(f.DBType, "time.") {
+			return true
+		}
+	}
+	return false
 }
 
 func GenerateQueries(config *MigrationConfig) error {
@@ -81,12 +205,18 @@ func GenerateQueries(config *MigrationConfig) error {
 		return err
 	}
 
-	for _, coll := range config.MongoDB.Collections {
-		if coll.Struct == "" || len(coll.Schema) == 0 {
-			continue // Skip collections that don't have schemas defined
+	schemas, err := LoadSchemas(config.MongoDB.SchemaDir)
+	if err != nil {
+		return fmt.Errorf("failed to load schemas for code generation: %w", err)
+	}
+
+	for _, schema := range schemas {
+		// Skip files that don't define a struct or fields
+		if schema.Struct == "" || len(schema.Fields) == 0 {
+			continue
 		}
 
-		filename := fmt.Sprintf("%s_repo.go", strings.ToLower(coll.Struct))
+		filename := fmt.Sprintf("%s_repo.go", strings.ToLower(schema.Struct))
 		fullPath := filepath.Join(outDir, filename)
 
 		file, err := os.Create(fullPath)
@@ -95,10 +225,14 @@ func GenerateQueries(config *MigrationConfig) error {
 		}
 
 		data := RepoData{
-			Package:    config.MongoDB.Gen.Package,
-			Struct:     coll.Struct,
-			Collection: coll.Name,
-			Fields:     coll.Schema,
+			Package:        config.MongoDB.Gen.Package,
+			Struct:         schema.Struct,
+			StructName:     schema.Struct,
+			Collection:     schema.Collection,
+			CollectionName: schema.Collection,
+			Indexes:        schema.Indexes,
+			Fields:         schema.Fields,
+			NeedsTime:      fieldsNeedTime(schema.Fields),
 		}
 
 		if err := tmpl.Execute(file, data); err != nil {
@@ -106,7 +240,7 @@ func GenerateQueries(config *MigrationConfig) error {
 			return err
 		}
 		file.Close()
-		fmt.Printf("Generated repository for %s at %s\n", coll.Struct, fullPath)
+		fmt.Printf("Generated staff-level repository for %s at %s\n", schema.Struct, fullPath)
 	}
 
 	return nil
