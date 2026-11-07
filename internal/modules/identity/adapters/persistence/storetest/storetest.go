@@ -1,0 +1,335 @@
+// Package storetest is the contract every identity persistence adapter must
+// satisfy. The memory, MongoDB and PostgreSQL stores all run it, so the
+// backends behave the same way the application layer expects.
+package storetest
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/domain"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/tx"
+	"github.com/google/uuid"
+)
+
+// Stores is one backend's set of identity repositories, on empty storage.
+type Stores struct {
+	Users          application.UserRepository
+	Sessions       application.SessionRepository
+	Verifications  application.OneTimeTokenRepository
+	PasswordResets application.OneTimeTokenRepository
+	Tx             tx.Runner
+	// AtomicTx is true when Tx really rolls back (not tx.None).
+	AtomicTx bool
+	// MissingID is a well-formed ID for this backend that matches no record.
+	MissingID string
+}
+
+// Run runs the contract; newStores must return fresh, empty storage.
+func Run(t *testing.T, newStores func(t *testing.T) Stores) {
+	t.Run("Users", func(t *testing.T) { testUsers(t, newStores(t)) })
+	t.Run("Sessions", func(t *testing.T) { testSessions(t, newStores(t)) })
+	t.Run("ConcurrentRevokeHasOneWinner", func(t *testing.T) { testConcurrentRevoke(t, newStores(t)) })
+	t.Run("OneTimeTokens", func(t *testing.T) { testOneTimeTokens(t, newStores(t)) })
+	t.Run("Transactions", func(t *testing.T) {
+		s := newStores(t)
+		if !s.AtomicTx {
+			t.Skip("this backend runs without transactions")
+		}
+		testTransactions(t, s)
+	})
+}
+
+var ctx = context.Background()
+
+// now is truncated to what every backend stores (MongoDB keeps milliseconds).
+func now() time.Time { return time.Now().UTC().Truncate(time.Millisecond) }
+
+func createUser(t *testing.T, s Stores, email string) *domain.User {
+	t.Helper()
+	u := &domain.User{Name: "Ann", Email: email, PasswordHash: "hash", CreatedAt: now()}
+	if err := s.Users.Create(ctx, u); err != nil || u.ID == "" {
+		t.Fatalf("create user: %v, id %q", err, u.ID)
+	}
+	return u
+}
+
+func mustFindUser(t *testing.T, s Stores, id string) *domain.User {
+	t.Helper()
+	u, err := s.Users.FindByID(ctx, id)
+	if err != nil {
+		t.Fatalf("find user: %v", err)
+	}
+	return u
+}
+
+func testUsers(t *testing.T, s Stores) {
+	u := createUser(t, s, "ann@example.com")
+	if err := s.Users.Create(ctx, &domain.User{Name: "B", Email: "ann@example.com", CreatedAt: now()}); !errors.Is(err, domain.ErrEmailTaken) {
+		t.Fatalf("duplicate email: err = %v, want ErrEmailTaken", err)
+	}
+
+	got := mustFindUser(t, s, u.ID)
+	if got.Name != "Ann" || got.Email != "ann@example.com" || got.PasswordHash != "hash" ||
+		!got.CreatedAt.Equal(u.CreatedAt) || got.EmailVerified() || got.TokenVersion != 0 {
+		t.Fatalf("round trip: got %+v, want %+v", got, u)
+	}
+	byEmail, err := s.Users.FindByEmail(ctx, "ann@example.com")
+	if err != nil || byEmail.ID != u.ID {
+		t.Fatalf("find by email: %+v, %v", byEmail, err)
+	}
+
+	first := now()
+	for _, at := range []time.Time{first, first.Add(time.Hour)} {
+		if err := s.Users.MarkEmailVerified(ctx, u.ID, at); err != nil {
+			t.Fatalf("mark verified: %v", err)
+		}
+	}
+	if got := mustFindUser(t, s, u.ID); got.EmailVerifiedAt == nil || !got.EmailVerifiedAt.Equal(first) {
+		t.Fatalf("verified at = %v, want the first time %v", got.EmailVerifiedAt, first)
+	}
+
+	for range 2 {
+		if err := s.Users.IncrementTokenVersion(ctx, u.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Users.SetPasswordHash(ctx, u.ID, "new-hash"); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustFindUser(t, s, u.ID); got.TokenVersion != 2 || got.PasswordHash != "new-hash" {
+		t.Fatalf("token version %d, hash %q", got.TokenVersion, got.PasswordHash)
+	}
+
+	missing := s.MissingID
+	notFound := map[string]error{
+		"FindByID":              func() error { _, err := s.Users.FindByID(ctx, missing); return err }(),
+		"FindByEmail":           func() error { _, err := s.Users.FindByEmail(ctx, "nobody@example.com"); return err }(),
+		"MarkEmailVerified":     s.Users.MarkEmailVerified(ctx, missing, first),
+		"IncrementTokenVersion": s.Users.IncrementTokenVersion(ctx, missing),
+		"SetPasswordHash":       s.Users.SetPasswordHash(ctx, missing, "x"),
+		"Delete":                s.Users.Delete(ctx, missing),
+	}
+	for name, err := range notFound {
+		if !errors.Is(err, apperrors.ErrNotFound) {
+			t.Errorf("%s(missing) = %v, want ErrNotFound", name, err)
+		}
+	}
+
+	if err := s.Users.Delete(ctx, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Users.FindByID(ctx, u.ID); !errors.Is(err, apperrors.ErrNotFound) {
+		t.Fatalf("deleted user: err = %v", err)
+	}
+}
+
+func newSession(t *testing.T, s Stores, userID, familyID, hash string) *domain.Session {
+	t.Helper()
+	at := now()
+	sess := &domain.Session{UserID: userID, FamilyID: familyID, TokenHash: hash, ExpiresAt: at.Add(time.Hour), CreatedAt: at}
+	if err := s.Sessions.Create(ctx, sess); err != nil || sess.ID == "" {
+		t.Fatalf("create session: %v, id %q", err, sess.ID)
+	}
+	return sess
+}
+
+func revoked(t *testing.T, s Stores, hash string) bool {
+	t.Helper()
+	sess, err := s.Sessions.FindByTokenHash(ctx, hash)
+	if err != nil {
+		t.Fatalf("find session %s: %v", hash, err)
+	}
+	return sess.Revoked()
+}
+
+func testSessions(t *testing.T, s Stores) {
+	u1 := createUser(t, s, "one@example.com")
+	u2 := createUser(t, s, "two@example.com")
+	f1, f2, f3 := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	a := newSession(t, s, u1.ID, f1, "h1")
+	newSession(t, s, u1.ID, f1, "h1b")
+	newSession(t, s, u1.ID, f2, "h2")
+	newSession(t, s, u2.ID, f3, "h3")
+
+	got, err := s.Sessions.FindByTokenHash(ctx, "h1")
+	if err != nil || got.ID != a.ID || got.UserID != u1.ID || got.FamilyID != f1 || !got.ExpiresAt.Equal(a.ExpiresAt) || got.Revoked() {
+		t.Fatalf("round trip: got %+v (%v), want %+v", got, err, a)
+	}
+	if _, err := s.Sessions.FindByTokenHash(ctx, "nope"); !errors.Is(err, apperrors.ErrNotFound) {
+		t.Fatalf("unknown hash: err = %v", err)
+	}
+
+	at := now()
+	if ok, err := s.Sessions.Revoke(ctx, a.ID, at); !ok || err != nil {
+		t.Fatalf("first revoke = %v, %v; want true", ok, err)
+	}
+	if ok, err := s.Sessions.Revoke(ctx, a.ID, at); ok || err != nil {
+		t.Fatalf("second revoke = %v, %v; want false", ok, err)
+	}
+	if ok, err := s.Sessions.Revoke(ctx, s.MissingID, at); ok || err != nil {
+		t.Fatalf("revoke missing = %v, %v; want false", ok, err)
+	}
+
+	if err := s.Sessions.RevokeFamily(ctx, f1, at); err != nil {
+		t.Fatal(err)
+	}
+	if !revoked(t, s, "h1b") || revoked(t, s, "h2") {
+		t.Fatal("RevokeFamily must revoke exactly that family")
+	}
+	if err := s.Sessions.RevokeAllForUser(ctx, u1.ID, at); err != nil {
+		t.Fatal(err)
+	}
+	if !revoked(t, s, "h2") || revoked(t, s, "h3") {
+		t.Fatal("RevokeAllForUser must revoke exactly that user's sessions")
+	}
+
+	if err := s.Sessions.DeleteAllForUser(ctx, u1.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Sessions.FindByTokenHash(ctx, "h1"); !errors.Is(err, apperrors.ErrNotFound) {
+		t.Fatalf("deleted session still found: %v", err)
+	}
+	if revoked(t, s, "h3") {
+		t.Fatal("DeleteAllForUser touched another user's session")
+	}
+}
+
+// testConcurrentRevoke is what makes refresh-token rotation safe: when the
+// same token is presented twice at once, only one request may rotate it.
+func testConcurrentRevoke(t *testing.T, s Stores) {
+	u := createUser(t, s, "race@example.com")
+	sess := newSession(t, s, u.ID, uuid.NewString(), "race")
+
+	const n = 10
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	wins := 0
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok, err := s.Sessions.Revoke(ctx, sess.ID, now())
+			if err != nil {
+				t.Error(err)
+			}
+			if ok {
+				mu.Lock()
+				wins++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if wins != 1 {
+		t.Fatalf("%d concurrent revokes won, want exactly 1", wins)
+	}
+}
+
+func token(userID, hash string) *domain.OneTimeToken {
+	at := now()
+	return &domain.OneTimeToken{UserID: userID, TokenHash: hash, ExpiresAt: at.Add(time.Hour), CreatedAt: at}
+}
+
+func testOneTimeTokens(t *testing.T, s Stores) {
+	u1 := createUser(t, s, "one@example.com")
+	u2 := createUser(t, s, "two@example.com")
+
+	for name, repo := range map[string]application.OneTimeTokenRepository{"verifications": s.Verifications, "password resets": s.PasswordResets} {
+		t.Run(name, func(t *testing.T) {
+			old, fresh := name+"-old", name+"-new"
+			for _, h := range []string{old, fresh} {
+				if err := repo.Save(ctx, token(u1.ID, h)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := repo.Consume(ctx, old); !errors.Is(err, apperrors.ErrNotFound) {
+				t.Fatalf("saving again must replace the previous token: err = %v", err)
+			}
+			want := token(u1.ID, fresh)
+			got, err := repo.Consume(ctx, fresh)
+			if err != nil || got.UserID != u1.ID || got.TokenHash != fresh || !got.ExpiresAt.Truncate(time.Second).Equal(want.ExpiresAt.Truncate(time.Second)) {
+				t.Fatalf("consume = %+v, %v", got, err)
+			}
+			if _, err := repo.Consume(ctx, fresh); !errors.Is(err, apperrors.ErrNotFound) {
+				t.Fatalf("a token must be single-use: err = %v", err)
+			}
+
+			gone := name + "-deleted"
+			repo.Save(ctx, token(u2.ID, gone))
+			if err := repo.DeleteForUser(ctx, u2.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repo.Consume(ctx, gone); !errors.Is(err, apperrors.ErrNotFound) {
+				t.Fatalf("DeleteForUser left the token: err = %v", err)
+			}
+			if err := repo.DeleteForUser(ctx, u2.ID); err != nil {
+				t.Fatalf("deleting nothing must not fail: %v", err)
+			}
+		})
+	}
+
+	t.Run("kinds are independent", func(t *testing.T) {
+		if err := s.Verifications.Save(ctx, token(u1.ID, "verify")); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.PasswordResets.Save(ctx, token(u1.ID, "reset")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.PasswordResets.Consume(ctx, "verify"); !errors.Is(err, apperrors.ErrNotFound) {
+			t.Fatal("a verification token must not work as a password reset")
+		}
+		if _, err := s.PasswordResets.Consume(ctx, "reset"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Verifications.Consume(ctx, "verify"); err != nil {
+			t.Fatal("consuming a reset must not touch the pending verification")
+		}
+	})
+}
+
+func testTransactions(t *testing.T, s Stores) {
+	boom := errors.New("boom")
+	var rolledBack string
+	err := s.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		u := &domain.User{Name: "Tx", Email: "rollback@example.com", CreatedAt: now()}
+		if err := s.Users.Create(ctx, u); err != nil {
+			return err
+		}
+		rolledBack = u.ID
+		if err := s.Sessions.Create(ctx, &domain.Session{UserID: u.ID, FamilyID: uuid.NewString(), TokenHash: "tx", ExpiresAt: now().Add(time.Hour), CreatedAt: now()}); err != nil {
+			return err
+		}
+		return boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the function's error", err)
+	}
+	if _, err := s.Users.FindByID(ctx, rolledBack); !errors.Is(err, apperrors.ErrNotFound) {
+		t.Fatalf("user created in a failed transaction is visible: err = %v", err)
+	}
+	if _, err := s.Sessions.FindByTokenHash(ctx, "tx"); !errors.Is(err, apperrors.ErrNotFound) {
+		t.Fatalf("session created in a failed transaction is visible: err = %v", err)
+	}
+
+	err = s.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		u := &domain.User{Name: "Tx", Email: "commit@example.com", CreatedAt: now()}
+		if err := s.Users.Create(ctx, u); err != nil {
+			return err
+		}
+		// Nested calls join the outer transaction.
+		return s.Tx.WithinTx(ctx, func(ctx context.Context) error { return s.Users.IncrementTokenVersion(ctx, u.ID) })
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := s.Users.FindByEmail(ctx, "commit@example.com")
+	if err != nil || u.TokenVersion != 1 {
+		t.Fatalf("committed transaction: %+v, %v", u, err)
+	}
+}

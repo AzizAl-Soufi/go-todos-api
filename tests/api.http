@@ -1,0 +1,193 @@
+# Manual requests for the VS Code REST Client extension (or JetBrains HTTP client).
+# Run them top to bottom: later requests reuse tokens and IDs from earlier responses.
+
+@base = http://localhost:8000
+@access = {{login.response.body.authorization.access_token}}
+@refresh = {{login.response.body.authorization.refresh_token}}
+
+### Health
+GET {{base}}/health
+
+### Register (sends a verification email; with SMTP unset the link is logged)
+# @name register
+POST {{base}}/auth/register
+Content-Type: application/json
+
+{"name": "Aziz Al-Soufi", "email": "aziz@example.com", "password": "correct horse battery"}
+
+### Log in
+# @name login
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{"email": "aziz@example.com", "password": "correct horse battery"}
+
+### Rotate the refresh token (the old one becomes invalid; replaying it revokes the login)
+# @name refreshed
+POST {{base}}/auth/refresh
+Content-Type: application/json
+
+{"refresh_token": "{{refresh}}"}
+
+### Verify email (paste the token from the logged link)
+POST {{base}}/auth/verify-email
+Content-Type: application/json
+
+{"token": "PASTE-TOKEN-HERE"}
+
+### Resend the verification email
+POST {{base}}/auth/verify-email/resend
+Authorization: Bearer {{access}}
+
+### Profile and todos
+GET {{base}}/me
+Authorization: Bearer {{access}}
+
+### Create a collection (groups projects)
+# @name collection
+POST {{base}}/collections
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{"name": "Work", "icon": "💼", "color": "purple"}
+
+### Create a project (a list of todos) in the collection
+# @name project
+POST {{base}}/projects
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{"name": "Website relaunch", "icon": "🚀", "color": "blue", "collectionId": "{{collection.response.body.id}}"}
+
+### Create a todo in the project
+# @name created
+POST {{base}}/todos
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{
+  "title": "Pick a CMS",
+  "projectId": "{{project.response.body.id}}",
+  "notes": "Compare Strapi and Payload.",
+  "status": "in_progress",
+  "priority": "high",
+  "tags": ["research", "website"],
+  "dueAt": "2026-12-20"
+}
+
+### Create an inbox todo (no project)
+POST {{base}}/todos
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{"title": "Call the bank", "priority": "urgent"}
+
+### List todos (newest first; todos of archived projects are hidden)
+GET {{base}}/todos
+Authorization: Bearer {{access}}
+
+### Filter and sort: open, important todos of the project, soonest deadline first
+GET {{base}}/todos?project={{project.response.body.id}}&status=pending,in_progress&priority=high,urgent&sort=due
+Authorization: Bearer {{access}}
+
+### Inbox, overdue todos, tag and text search
+GET {{base}}/todos?project=inbox
+Authorization: Bearer {{access}}
+
+###
+GET {{base}}/todos?overdue=true
+Authorization: Bearer {{access}}
+
+###
+GET {{base}}/todos?tag=website&q=cms
+Authorization: Bearer {{access}}
+
+### Get one todo
+GET {{base}}/todos/{{created.response.body.id}}
+Authorization: Bearer {{access}}
+
+### Update a todo (partial: send only what changes; null clears dueAt)
+PATCH {{base}}/todos/{{created.response.body.id}}
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{"status": "done", "dueAt": null}
+
+### Project with its progress
+GET {{base}}/projects/{{project.response.body.id}}
+Authorization: Bearer {{access}}
+
+### Collections with their projects and progress (sidebar)
+GET {{base}}/collections
+Authorization: Bearer {{access}}
+
+### Archive the project (hides it and its todos by default)
+PATCH {{base}}/projects/{{project.response.body.id}}
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{"archived": true}
+
+### Archived projects
+GET {{base}}/projects?archived=true
+Authorization: Bearer {{access}}
+
+### Delete a todo
+DELETE {{base}}/todos/{{created.response.body.id}}
+Authorization: Bearer {{access}}
+
+### Delete the project (and its todos)
+DELETE {{base}}/projects/{{project.response.body.id}}
+Authorization: Bearer {{access}}
+
+### Delete the collection (its projects would be kept)
+DELETE {{base}}/collections/{{collection.response.body.id}}
+Authorization: Bearer {{access}}
+
+### Change the password (revokes other logins; returns a fresh token pair)
+# @name changed
+POST {{base}}/auth/password/change
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{"current_password": "correct horse battery", "new_password": "a brand new password"}
+
+### Forgot password (always 202; with SMTP unset the reset link is logged)
+POST {{base}}/auth/password/forgot
+Content-Type: application/json
+
+{"email": "aziz@example.com"}
+
+### Reset the password (paste the token from the logged link)
+POST {{base}}/auth/password/reset
+Content-Type: application/json
+
+{"token": "PASTE-RESET-TOKEN-HERE", "password": "correct horse battery"}
+
+### Log in again (the reset revoked every earlier token)
+# @name relogin
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{"email": "aziz@example.com", "password": "correct horse battery"}
+
+### Log out this login (pass the latest refresh token)
+POST {{base}}/auth/logout
+Content-Type: application/json
+
+{"refresh_token": "{{relogin.response.body.authorization.refresh_token}}"}
+
+### Log out everywhere (revokes all sessions and access tokens)
+POST {{base}}/auth/logout-all
+Authorization: Bearer {{relogin.response.body.authorization.access_token}}
+
+### Delete the account (log in again first: logout-all revoked the token above)
+# @name final
+POST {{base}}/auth/login
+Content-Type: application/json
+
+{"email": "aziz@example.com", "password": "correct horse battery"}
+
+###
+DELETE {{base}}/me
+Authorization: Bearer {{final.response.body.authorization.access_token}}

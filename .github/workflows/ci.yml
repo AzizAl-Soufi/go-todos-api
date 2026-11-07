@@ -40,6 +40,29 @@ jobs:
             go tool cover -func=coverage.out | tail -n 1 | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # Starts PostgreSQL and a single-node MongoDB replica set from
+      # docker-compose.test.yml, runs every test against them (store contracts,
+      # transactions, migrations), then the end-to-end suite on each database.
+      - name: Test against PostgreSQL and MongoDB
+        run: make test-integration
+
+      - name: Database logs
+        if: failure()
+        run: docker compose -f docker-compose.test.yml logs
+
   vulncheck:
     name: Vulnerability Check
     runs-on: ubuntu-latest

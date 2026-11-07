@@ -9,7 +9,7 @@ ifneq (,$(wildcard ./.env))
 endif
 
 GOOSE_DRIVER ?= postgres
-GOOSE_MIGRATION_DIR ?= ./internal/database/postgres/migrations
+GOOSE_MIGRATION_DIR ?= ./internal/platform/database/postgres/migrations
 GOOSE_DBSTRING ?= $(DATABASE_URI)
 
 .DEFAULT_GOAL := help
@@ -19,7 +19,12 @@ ifeq (goose,$(firstword $(MAKECMDGOALS)))
   $(foreach arg,$(GOOSE_ARGS),$(eval $(arg):;@:))
 else
 
-.PHONY: help run build test fmt sqlc-generate
+.PHONY: help run build test test-integration test-db-down fmt migrate sqlc
+
+# Databases from docker-compose.test.yml. directConnection skips replica-set
+# discovery, whose member address is only reachable inside the container.
+TEST_POSTGRES_URI ?= postgres://postgres:postgres@localhost:55432/postgres?sslmode=disable
+TEST_MONGO_URI ?= mongodb://localhost:57017/?directConnection=true
 
 help: ## Show this help message
 	@echo "Usage:  make [OPTIONS] COMMAND"
@@ -32,20 +37,36 @@ help: ## Show this help message
 	' $(MAKEFILE_LIST)
 
 ##@ Common Commands:
-run:    ## Create and run the application
-	go run ./cmd/...
+run:    ## Run the API
+	go run ./cmd/api
 
-build:  ## Build the application binary
-	go build -o bin/myapp ./cmd/...
+build:  ## Build the api and migrate binaries into bin/
+	go build -o bin/api ./cmd/api
+	go build -o bin/migrate ./cmd/migrate
 
-test:   ## Run tests
-	go test -v ./...
+test:   ## Run unit tests (database integration tests are skipped)
+	go test -race ./...
+
+test-integration: ## Run all tests against real PostgreSQL and MongoDB (needs Docker)
+	docker compose -f docker-compose.test.yml up -d --wait
+	TEST_POSTGRES_URI="$(TEST_POSTGRES_URI)" TEST_MONGO_URI="$(TEST_MONGO_URI)" go test -race -count=1 ./...
+	@for backend in postgres mongo; do \
+		echo "$(CYAN)end-to-end suite on $$backend$(RESET)"; \
+		TEST_E2E_BACKEND=$$backend TEST_POSTGRES_URI="$(TEST_POSTGRES_URI)" TEST_MONGO_URI="$(TEST_MONGO_URI)" \
+			go test -race -count=1 ./cmd/api || exit 1; \
+	done
+
+test-db-down: ## Stop the integration-test databases
+	docker compose -f docker-compose.test.yml down
 
 fmt:    ## Format Go files
 	gofmt -s -w .
 
 ##@ Database Commands:
-sqlc:    ## Generate Go models and queries from SQL
+migrate: ## Apply migrations for DB_TYPE (postgres: embedded SQL, mongo: cmd/migrate/mongo.yaml)
+	go run ./cmd/migrate
+
+sqlc:    ## Generate each module's Go queries from its queries.sql
 	sqlc generate
 
 endif

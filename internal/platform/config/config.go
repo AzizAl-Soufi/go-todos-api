@@ -1,0 +1,119 @@
+// Package config loads configuration from a .env file and the environment.
+//
+// Every setting is declared once, as a struct field with a `mapstructure` tag
+// naming its environment variable and an optional `default` tag; the list of
+// keys to bind is derived from the struct, so it can't drift.
+package config
+
+import (
+	"reflect"
+	"strings"
+
+	"github.com/spf13/viper"
+)
+
+type AppConfig struct {
+	Port    int    `mapstructure:"PORT"`
+	Debug   bool   `mapstructure:"DEBUG"`
+	BaseURL string `mapstructure:"APP_BASE_URL" default:"http://localhost:8000"`
+	// MigrateOnStart applies pending database migrations when the API boots.
+	MigrateOnStart bool `mapstructure:"MIGRATE_ON_START"`
+}
+
+type DatabaseConfig struct {
+	DatabaseURI  string `mapstructure:"DATABASE_URI"`
+	DatabaseName string `mapstructure:"DATABASE_NAME"`
+	DBType       string `mapstructure:"DB_TYPE" default:"memory"`
+	// MongoMigrationsConfig points the MongoDB migrator at its YAML config.
+	MongoMigrationsConfig string `mapstructure:"MONGO_MIGRATIONS_CONFIG" default:"./cmd/migrate/mongo.yaml"`
+}
+
+type JWTConfig struct {
+	PrivateKeyPath string `mapstructure:"JWT_PRIVATE_KEY_PATH"`
+	PublicKeyPath  string `mapstructure:"JWT_PUBLIC_KEY_PATH"`
+}
+
+type AuthConfig struct {
+	// RequireVerifiedEmail blocks the todos API until the email is verified.
+	RequireVerifiedEmail bool `mapstructure:"AUTH_REQUIRE_VERIFIED_EMAIL"`
+	// Per-client-IP limit on the unauthenticated /auth endpoints.
+	RateLimitPerMinute int `mapstructure:"AUTH_RATE_LIMIT_PER_MINUTE" default:"20"`
+	RateLimitBurst     int `mapstructure:"AUTH_RATE_LIMIT_BURST" default:"10"`
+	// PasswordResetURL is the page the reset email links to (token appended as
+	// ?token=...). It should ask for a new password and call
+	// POST /auth/password/reset. Defaults to APP_BASE_URL + "/reset-password".
+	PasswordResetURL string `mapstructure:"AUTH_PASSWORD_RESET_URL"`
+}
+
+// SMTPConfig enables the SMTP mailer when Host is set; otherwise emails are logged.
+type SMTPConfig struct {
+	Host     string `mapstructure:"SMTP_HOST"`
+	Port     int    `mapstructure:"SMTP_PORT" default:"587"`
+	Username string `mapstructure:"SMTP_USERNAME"`
+	Password string `mapstructure:"SMTP_PASSWORD"`
+	From     string `mapstructure:"SMTP_FROM"`
+}
+
+type Config struct {
+	App  AppConfig      `mapstructure:",squash"`
+	DB   DatabaseConfig `mapstructure:",squash"`
+	JWT  JWTConfig      `mapstructure:",squash"`
+	Auth AuthConfig     `mapstructure:",squash"`
+	SMTP SMTPConfig     `mapstructure:",squash"`
+}
+
+// setting is one environment variable declared on Config.
+type setting struct {
+	key, defaultValue string
+	hasDefault        bool
+}
+
+// settings walks Config (following squashed structs) and returns every key.
+func settings() []setting {
+	var out []setting
+	var walk func(t reflect.Type)
+	walk = func(t reflect.Type) {
+		for i := range t.NumField() {
+			f := t.Field(i)
+			name, opts, _ := strings.Cut(f.Tag.Get("mapstructure"), ",")
+			if opts == "squash" && f.Type.Kind() == reflect.Struct {
+				walk(f.Type)
+				continue
+			}
+			if name == "" {
+				continue
+			}
+			def, ok := f.Tag.Lookup("default")
+			out = append(out, setting{key: name, defaultValue: def, hasDefault: ok})
+		}
+	}
+	walk(reflect.TypeFor[Config]())
+	return out
+}
+
+func LoadConfig() (*Config, error) {
+	viper.SetConfigFile(".env")
+	viper.SetConfigType("env")
+	_ = viper.ReadInConfig()
+
+	viper.AutomaticEnv()
+
+	// AutomaticEnv only applies to keys viper already knows about, so without
+	// a .env file (e.g. in a container) Unmarshal would ignore the environment.
+	// Binding every declared key makes env-only configuration work.
+	for _, s := range settings() {
+		if err := viper.BindEnv(s.key); err != nil {
+			return nil, err
+		}
+		if s.hasDefault {
+			viper.SetDefault(s.key, s.defaultValue)
+		}
+	}
+
+	var config Config
+	if err := viper.Unmarshal(&config); err != nil {
+		return nil, err
+	}
+
+	return &config, nil
+}

@@ -1,0 +1,38 @@
+# Throwaway databases for integration tests (`make test-integration`).
+# Data lives in tmpfs, so nothing survives `make test-db-down`.
+name: todos-api-test
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "127.0.0.1:55432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # A single-node replica set: transactions (atomic account deletion) need one.
+  mongo:
+    image: mongo:8.2.1
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "127.0.0.1:57017:27017"
+    tmpfs:
+      - /data/db
+    healthcheck:
+      # Initiates the replica set on first run; healthy once it has a primary.
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --eval
+        - "try { rs.status() } catch (e) { rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'localhost:27017'}]}) }; quit(db.hello().isWritablePrimary ? 0 : 1)"
+      interval: 2s
+      timeout: 10s
+      retries: 30
