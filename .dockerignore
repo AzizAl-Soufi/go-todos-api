@@ -1,0 +1,21 @@
+# Never ship local configuration or keys in the image.
+.env
+.env.*
+!.env.example
+secrets/
+
+# VCS, CI and editor files
+.git
+.github
+.vscode
+.idea
+.DS_Store
+
+# Build/test artifacts and scratch files
+*.test
+*.out
+coverage.*
+*.coverprofile
+m.md
+Dockerfile
+.dockerignore
