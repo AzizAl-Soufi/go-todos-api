@@ -28,6 +28,7 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md) · Changes: [CHANGELOG.md](CHANGELOG.
     - [Roles](#roles)
     - [Invitation flow](#invitation-flow)
     - [Audit logs](#audit-logs)
+  - [Push notifications](#push-notifications)
   - [Database Schema](#database-schema)
     - [Enums](#enums)
     - [PostgreSQL tables](#postgresql-tables)
@@ -89,6 +90,10 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md) · Changes: [CHANGELOG.md](CHANGELOG.
     - [Audit](#audit)
       - [GET `/teams/{id}/audit-log`](#get-teamsidaudit-log)
       - [GET `/me/audit-log`](#get-meaudit-log)
+    - [Devices](#devices)
+      - [POST `/me/devices`](#post-medevices)
+      - [GET `/me/devices`](#get-medevices)
+      - [DELETE `/me/devices/{token}`](#delete-medevicestoken)
   - [Testing](#testing)
     - [Unit tests](#unit-tests)
     - [Integration tests](#integration-tests)
@@ -118,7 +123,7 @@ DB_TYPE=mongo DATABASE_URI=mongodb://localhost:27017 DATABASE_NAME=todos make mi
 DB_TYPE=mongo DATABASE_URI=mongodb://localhost:27017 DATABASE_NAME=todos make run
 ```
 
-`FIREBASE_PROJECT_ID` is required in all modes: sign-in happens in Firebase Authentication (see [Signing in with Firebase](#signing-in-with-firebase)). `FIREBASE_CREDENTIALS_FILE` (a service account key) is optional and enables passkey sign-in. Without `SMTP_HOST`, team invitation emails are written to the log instead of being sent. `tests/api.http` walks through every endpoint.
+`FIREBASE_PROJECT_ID` is required in all modes: sign-in happens in Firebase Authentication (see [Signing in with Firebase](#signing-in-with-firebase)). `FIREBASE_CREDENTIALS_FILE` (a service account key) is optional and enables passkey sign-in and push notifications. Without `SMTP_HOST`, team invitation emails are written to the log instead of being sent. `tests/api.http` walks through every endpoint.
 
 ### Configuration
 
@@ -135,7 +140,7 @@ All settings are environment variables (a `.env` file in the working directory i
 | `DATABASE_NAME`                  | –                          | Database name (mongo)                                                                                             |
 | `MONGO_MIGRATIONS_CONFIG`        | `./cmd/migrate/mongo.yaml` | MongoDB migrator config                                                                                           |
 | `FIREBASE_PROJECT_ID`            | –                          | Firebase project whose ID tokens the API accepts (required)                                                       |
-| `FIREBASE_CREDENTIALS_FILE`      | –                          | Service account JSON key. Enables passkey sign-in (custom tokens) and deleting the Firebase user with the account |
+| `FIREBASE_CREDENTIALS_FILE`      | –                          | Service account JSON key. Enables passkey sign-in (custom tokens), push notifications (FCM) and deleting the Firebase user with the account |
 | `AUTH_REQUIRE_VERIFIED_EMAIL`    | `false`                    | Block the todos API until the email is verified                                                                   |
 | `AUTH_RATE_LIMIT_PER_MINUTE`     | `20`                       | Per-IP budget for the rate-limited auth endpoints                                                                 |
 | `AUTH_RATE_LIMIT_BURST`          | `10`                       | Burst on top of that budget                                                                                       |
@@ -149,7 +154,7 @@ All settings are environment variables (a `.env` file in the working directory i
 
 ## Architecture
 
-A **feature-based modular monolith**: `internal/modules/identity` (accounts of Firebase users, passkeys, authentication), `internal/modules/todos` (todos, projects, collections), `internal/modules/teams` (teams, roles, invitations) and `internal/modules/audit` (team and security logs), on top of a shared kernel in `internal/platform`. Inside each module, **Clean Architecture / Hexagonal** layering with **CQRS** in the application layer: `domain` → `application` (ports, plus `command/` for writes and `query/` for reads, one handler per use case) → `transport/httpapi` (driving: run a command, read the result with a query) and `adapters/` (driven: persistence, Firebase, WebAuthn, mail, other modules). Modules talk only through each other's public API, and only `cmd/api` knows the concrete adapters.
+A **feature-based modular monolith**: `internal/modules/identity` (accounts of Firebase users, passkeys, authentication), `internal/modules/todos` (todos, projects, collections), `internal/modules/teams` (teams, roles, invitations), `internal/modules/audit` (team and security logs) and `internal/modules/notifications` (devices and push notifications), on top of a shared kernel in `internal/platform`. Inside each module, **Clean Architecture / Hexagonal** layering with **CQRS** in the application layer: `domain` → `application` (ports, plus `command/` for writes and `query/` for reads, one handler per use case) → `transport/httpapi` (driving: run a command, read the result with a query) and `adapters/` (driven: persistence, Firebase, WebAuthn, mail, other modules). Modules talk only through each other's public API, and only `cmd/api` knows the concrete adapters.
 
 See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the layout, dependency rules, request lifecycle, transactions, persistence and testing strategy, and how to add a use case, module or storage backend.
 
@@ -335,6 +340,22 @@ Every change in a team is written to the **team audit log**, in the same transac
 
 An event records the actor, action, target, small `details` (a title, the changed fields, old and new role), the client IP and User-Agent, and the time. Personal records are not audited. Owners and admins read the team log with `GET /teams/{id}/audit-log`; everyone reads their own security log with `GET /me/audit-log`. A deleted account's security log is deleted with it.
 
+## Push notifications
+
+When a team's **owner or an admin** adds a task to a team project, everyone else in the team gets a push notification through **Firebase Cloud Messaging**: "New task in Platform: Bo added “Ship it”". Tasks members add, and personal tasks, notify nobody, and the person who added the task isn't notified.
+
+- **Devices**: after sign-in (and whenever FCM hands the app a new token), the client registers its FCM registration token with `POST /me/devices`, and removes it with `DELETE /me/devices/{token}` on sign-out. A user keeps up to 10 devices; registering more drops the least recently registered. A token registered by another user (someone else signed in on the device) moves to them.
+- **Payload**: `notification` has the title and body; `data` has `type` (`todo.created`), `teamId`, `projectId` and `todoId`, so the app can open the task.
+- **Delivery** happens after the task is saved, in the background: a slow or failing FCM never fails or slows adding a task, and failures are logged. Recipients are read from the team at send time, so removed members don't get notified. Tokens FCM reports as unregistered are forgotten. A crash between saving the task and sending loses that notification (there is no outbox yet).
+- **Setup**: sending needs `FIREBASE_CREDENTIALS_FILE` (a service account allowed to use the Firebase Cloud Messaging API). Without it, devices are still registered but nothing is sent. Deleting an account forgets its devices.
+
+```js
+import { getMessaging, getToken } from "firebase/messaging";
+
+const token = await getToken(getMessaging(app), { vapidKey: VAPID_KEY });
+await api.post("/me/devices", { token, platform: "web" });
+```
+
 ## Database Schema
 
 Both databases hold the same data; only naming differs (`snake_case` columns in PostgreSQL, `camelCase` fields in MongoDB). Single-use tokens (passkey challenges, team invitations) are never stored, only their SHA-256 hashes.
@@ -493,6 +514,16 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │   └── [Indexes]
     │       ├── [Partial Index] idx_audit_events_team (team_id, created_at DESC, id DESC)
     │       └── [Partial Index] idx_audit_events_user (user_id, created_at DESC, id DESC)
+    │
+    ├── devices
+    │   ├── token: text [PK] (FCM registration token)
+    │   ├── user_id: uuid (no FK: another module's ID)
+    │   ├── platform: text (CHECK android | ios | web)
+    │   ├── created_at: timestamptz
+    │   ├── updated_at: timestamptz (last registration)
+    │   │
+    │   └── [Indexes]
+    │       └── [Index] idx_devices_user_updated (user_id, updated_at)
     │
     ├── sessions (unused since Firebase; dropped in a later migration)
     │   ├── id: uuid [PK]
@@ -657,6 +688,16 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │   └── [Indexes]
     │       ├── [Index] { teamId: 1, createdAt: -1, _id: -1 }
     │       └── [Index] { userId: 1, createdAt: -1, _id: -1 }
+    │
+    ├── devices
+    │   ├── _id: string [PK] (FCM registration token)
+    │   ├── userId: objectId
+    │   ├── platform: string (android | ios | web)
+    │   ├── createdAt: ISODate
+    │   ├── updatedAt: ISODate (last registration)
+    │   │
+    │   └── [Indexes]
+    │       └── [Index] { userId: 1, updatedAt: 1 }
     │
     ├── sessions (unused since Firebase; removed in a later migration)
     │   ├── _id: objectId [PK]
@@ -1569,6 +1610,47 @@ Errors: `INSUFFICIENT_ROLE` (403); `TEAM_NOT_FOUND` (404).
 
 The caller's own security log. Events have `userId` set and `teamId` null; `actorId` is null when the actor is unknown (a failed passkey sign-in).
 
+### Devices
+
+Devices receive [push notifications](#push-notifications). Bearer.
+
+#### POST `/me/devices`
+
+Registers (or refreshes) the caller's FCM registration token. Call it after sign-in and whenever FCM issues a new token.
+
+Request
+
+```json
+{ "token": "fMEP0vJqS0yH0lJk7vRg:APA91bH...", "platform": "android" }
+```
+
+`platform` is `android`, `ios` or `web`.
+
+Response `200 OK`
+
+```json
+{
+  "token": "fMEP0vJqS0yH0lJk7vRg:APA91bH...",
+  "platform": "android",
+  "createdAt": "2026-11-07T10:30:00Z",
+  "updatedAt": "2026-11-07T18:02:11Z"
+}
+```
+
+Errors: `INVALID_DEVICE_TOKEN` (400) for an empty or malformed token; `INVALID_PLATFORM` (400).
+
+#### GET `/me/devices`
+
+Lists the caller's devices, least recently registered first, in the shape above.
+
+#### DELETE `/me/devices/{token}`
+
+Unregisters one of the caller's devices (e.g. on sign-out).
+
+Response `204 No Content`
+
+Errors: `DEVICE_NOT_FOUND` (404), also for another user's token.
+
 ## Testing
 
 ### Unit tests
@@ -1577,7 +1659,7 @@ The caller's own security log. Events have `userId` set and `teamId` null; `acto
 make test        # go test -race ./...
 ```
 
-Covers domains, commands and queries, adapters, middleware, migrations and codegen, plus an end-to-end suite (`cmd/api/app_test.go`, `organize_test.go`, `teams_test.go`) that drives every endpoint through the production router. Without database settings it runs on the memory backend and skips the database integration tests.
+Covers domains, commands and queries, adapters, middleware, migrations and codegen, plus an end-to-end suite (`cmd/api/app_test.go`, `organize_test.go`, `teams_test.go`, `passkeys_test.go`, `notifications_test.go`) that drives every endpoint through the production router. Without database settings it runs on the memory backend and skips the database integration tests.
 
 ### Integration tests
 
@@ -1597,3 +1679,5 @@ Every test gets its own freshly migrated database (`internal/platform/database/d
 
 - Caching and distributed tracing were deliberately left out: there is no measured need yet. Request IDs and structured access logs cover correlation for now.
 - A shared rate-limit store (e.g. Redis) once the API runs as several replicas; the current limiter counts per process.
+- An outbox for push notifications, so a crash right after a task is saved can't lose its notification; per-user notification preferences.
+- FCM's Admin SDK marks registration tokens as deprecated in favour of Firebase installation IDs (FIDs). Devices are registered by token today, which is what the client SDKs' `getToken()` returns; move to FIDs once the client SDKs hand them out for messaging.

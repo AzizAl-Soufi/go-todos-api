@@ -42,6 +42,7 @@ type Deps struct {
 	Todos        application.TodoGateway
 	Teams        application.TeamMemberships // nil: no teams to leave
 	Audit        application.AuditLog        // nil records nothing
+	Devices      application.Devices         // nil: no devices to forget
 	Tx           tx.Runner
 	Config       Config
 	Now          func() time.Time // nil means time.Now
@@ -56,7 +57,8 @@ func New(d Deps) *Module {
 	return &Module{
 		Commands: command.New(command.Deps{
 			Users: d.Users, Passkeys: d.Passkeys, Challenges: d.Challenges, RelyingParty: d.RelyingParty,
-			IDTokens: d.IDTokens, Firebase: d.Firebase, Todos: d.Todos, Teams: d.Teams, Audit: d.Audit,
+			IDTokens: d.IDTokens, Firebase: d.Firebase, Todos: d.Todos, Teams: d.Teams,
+			Audit: d.Audit, Devices: d.Devices,
 			Tx: d.Tx, Config: d.Config, Now: d.Now,
 		}),
 		Queries: query.New(query.Deps{Users: d.Users, Passkeys: d.Passkeys, IDTokens: d.IDTokens, Todos: d.Todos}),

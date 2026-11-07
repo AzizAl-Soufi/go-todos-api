@@ -205,6 +205,17 @@ Authorization: Bearer {{access}}
 DELETE {{base}}/teams/{{team.response.body.id}}
 Authorization: Bearer {{access}}
 
+### Register this device for push notifications (paste its FCM token)
+POST {{base}}/me/devices
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{"token": "PASTE-FCM-TOKEN-HERE", "platform": "web"}
+
+### Your devices
+GET {{base}}/me/devices
+Authorization: Bearer {{access}}
+
 ### Delete the account (and its Firebase user, with a service account configured)
 DELETE {{base}}/me
 Authorization: Bearer {{access}}

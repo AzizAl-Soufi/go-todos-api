@@ -14,6 +14,7 @@ How the Todos API is put together and why. Read this before adding a feature, a 
   - [todos](#todos)
   - [teams](#teams)
   - [audit](#audit)
+  - [notifications](#notifications)
   - [Talking across modules](#talking-across-modules)
 - [Platform (shared kernel)](#platform-shared-kernel)
 - [Authorization (teams and roles)](#authorization-teams-and-roles)
@@ -71,11 +72,13 @@ internal/
 │   │                         adapters/{persistence,auditgateway}/
 │   ├── teams/                teams, members, roles, invitations; same shape, plus adapters/
 │   │                         {mail,todosgateway,auditgateway}/
-│   └── audit/                append-only team audit log and personal security log; a leaf
-│                             module: nothing it depends on but platform
+│   ├── audit/                append-only team audit log and personal security log; a leaf
+│   │                         module: nothing it depends on but platform
+│   └── notifications/        devices (FCM tokens) and push notifications; a leaf module:
+│                             team rosters come through platform/access, adapters/fcm sends
 │
 └── platform/                 shared kernel: technical building blocks, no business concepts
-    ├── access/               roles, the Actor (caller + team roles), Resolver port, actor middleware
+    ├── access/               roles, the Actor (caller + team roles), Resolver and Directory ports, actor middleware
     ├── apperrors/            typed application errors (HTTP status + stable code)
     ├── auth/                 Principal, Authenticator port, bearer-token middleware
     ├── config/               env config (keys derived from struct tags)
@@ -232,6 +235,18 @@ An append-only log. A `domain.Event` belongs either to a team (the team audit lo
 
 Commands: `Record`, `DeleteUserLog`, `DeleteTeamLog`. Queries: `TeamLog` (owners and admins, checked with the caller's `access.Actor`) and `UserLog`. The module depends on nothing but `platform`: other modules call its public `Record` through their own `auditgateway`, which adds the client IP and User-Agent from the request context (`httpx.ClientInfo`).
 
+### notifications
+
+Push notifications through Firebase Cloud Messaging. A `domain.Device` is an FCM registration token of one user (a token registered again moves to whoever registered it; a user keeps at most 10). `domain.TodoCreated` holds the one rule set so far: a task added to a team project by the team's owner or an admin (`Notifies`) goes to every other member (`Recipients`), with the `Message` they see.
+
+| Port | Adapters |
+|------|----------|
+| `DeviceRepository` / `DeviceReader` | `memstore.Devices`, `mongostore.Devices`, `pgstore.Devices` |
+| `Pusher` (nil: sending off) | `fcm.Pusher` (Admin SDK multicast, 500 tokens per batch; reports dead tokens) |
+| `Directory` (team rosters) | `access.Directory`, implemented by the teams module |
+
+Commands: `RegisterDevice`, `UnregisterDevice`, `DeleteUserDevices`, `NotifyTodoCreated`. Queries: `ListDevices`. Notifications are side effects outside the database, so they never run inside the change's transaction: todos calls the `Notifier` port after `CreateTodo` committed, and the module's public `TodoCreated` hands the work to a dispatcher (a goroutine in production, in place in tests) with a context that outlives the request and a 30-second timeout. Failures are logged, never returned; tokens FCM rejects are deleted. Without an outbox a crash between commit and send loses that notification, which is acceptable for "new task" pushes.
+
 ### Talking across modules
 
 Modules never import each other's internals. When one needs another:
@@ -247,10 +262,13 @@ identity ──► audit     security log
 teams    ──► todos     team deletion deletes team data
 teams    ──► audit     team audit log
 todos    ──► audit     team audit log
+todos    ──► notifications   new team tasks
+identity ──► notifications   account deletion (forget devices)
 todos, audit ◄── platform/access ◄── teams (Resolver)
+notifications ◄── platform/access ◄── teams (Directory: team rosters)
 ```
 
-Every arrow points one way, so the graph has no cycles. The one thing todos and audit need from teams, the caller's memberships, doesn't go through a gateway: teams implements `access.Resolver`, the access middleware puts an `access.Actor` in the request context, and todos and audit only see that platform type. See [Authorization](#authorization-teams-and-roles).
+Every arrow points one way, so the graph has no cycles. The one thing todos and audit need from teams, the caller's memberships, doesn't go through a gateway: teams implements `access.Resolver`, the access middleware puts an `access.Actor` in the request context, and todos and audit only see that platform type. See [Authorization](#authorization-teams-and-roles). Notifications needs whole team rosters, which it gets the same way, through the `access.Directory` port that teams implements: a gateway to teams would close the cycle todos → notifications → teams → todos.
 
 ## Platform (shared kernel)
 
@@ -259,7 +277,7 @@ Every arrow points one way, so the graph has no cycles. The one thing todos and 
 | Package | Responsibility |
 |---------|----------------|
 | `apperrors` | Error type carrying an HTTP status, a stable `code` and a message; constructors such as `Validation`, `NotFound`, `Unauthorized`, `InternalWrap`; `NotFoundAs` / `UnresolvedAs` turn a repository's generic not-found into a specific error |
-| `access` | `Role` (owner, admin, member, viewer) and what each allows (`CanEdit`, `CanManage`, `Outranks`); `Actor` (caller + team roles) with `Require`; the `Resolver` port; `Middleware` (Principal → Actor) and `ForActor` |
+| `access` | `Role` (owner, admin, member, viewer) and what each allows (`CanEdit`, `CanManage`, `Outranks`); `Actor` (caller + team roles) with `Require`; the `Resolver` port (a user's memberships) and the `Directory` port (a team's roster), both implemented by teams; `Middleware` (Principal → Actor) and `ForActor` |
 | `auth` | `Principal` (the authenticated caller), the `Authenticator` port, the bearer-token middleware, `RequireVerifiedEmail`, and `ForUser` (an endpoint that receives the caller's user ID) |
 | `config` | Loads env / `.env`; every key is declared once as a struct tag with an optional default |
 | `database/*` | Connection clients, transaction runners, migrations, and `dbtest` throwaway databases for tests |
@@ -295,7 +313,9 @@ main.go   run(ctx)
         │     mongo    → connect, optional migrate, mongostores + mongodb.TxRunner
         ├── newSignIn(cfg)           Firebase client (FIREBASE_PROJECT_ID, optional service account) + WebAuthn relying party
         ├── newMailers(cfg)          one mail.Sender (SMTP if SMTP_HOST is set, else log) for every module
-        ├── wireModules(...)         in dependency order: audit → todos → teams → identity, gateways in between
+        ├── newPusher(cfg)           FCM when FIREBASE_CREDENTIALS_FILE is set, else nil (no pushes)
+        ├── wireModules(...)         in dependency order: audit → notifications → todos → teams → identity,
+        │                            gateways in between; notifications' Directory forwards to teams once built
         └── newRouter(cfg, modules)
 ```
 

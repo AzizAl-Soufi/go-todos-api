@@ -14,10 +14,13 @@ import (
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity"
 	identityaudit "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/auditgateway"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/firebase"
+	identitynotifications "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/notificationsgateway"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/passkeys"
 	identityteams "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/teamsgateway"
 	identitytodos "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/todosgateway"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications/adapters/fcm"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams"
 	teamsaudit "github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/adapters/auditgateway"
 	teamsmail "github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/adapters/mail"
@@ -25,6 +28,7 @@ import (
 	teamsapp "github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos"
 	todosaudit "github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/adapters/auditgateway"
+	todosnotifications "github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/adapters/notificationsgateway"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/auth"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/config"
@@ -53,15 +57,22 @@ func newApp(ctx context.Context, cfg *config.Config) (*app, error) {
 		return nil, err
 	}
 
-	modules := wireModules(store, signIn, newMailers(cfg), cfg)
+	pusher, err := newPusher(ctx, cfg)
+	if err != nil {
+		store.close()
+		return nil, err
+	}
+
+	modules := wireModules(store, signIn, push{pusher: pusher}, newMailers(cfg), cfg)
 	return &app{cfg: cfg, handler: newRouter(cfg, modules), close: store.close}, nil
 }
 
 type modules struct {
-	audit    *audit.Module
-	todos    *todos.Module
-	teams    *teams.Module
-	identity *identity.Module
+	audit         *audit.Module
+	notifications *notifications.Module
+	todos         *todos.Module
+	teams         *teams.Module
+	identity      *identity.Module
 }
 
 // mailers are the modules' email adapters.
@@ -102,13 +113,31 @@ func newSignIn(ctx context.Context, cfg *config.Config) (signIn, error) {
 // records into it, teams deletes team data in todos, identity reaches all of
 // them on account deletion. Team memberships flow to todos and audit through
 // platform/access (teams.Resolver), not through imports.
-func wireModules(store *storage, signIn signIn, mailer mailers, cfg *config.Config) modules {
+// push is how notifications are delivered: the FCM pusher (nil: off) and
+// how they run after the request (nil: a goroutine; tests run them in place).
+type push struct {
+	pusher   notifications.Pusher
+	dispatch func(func())
+}
+
+func wireModules(store *storage, signIn signIn, push push, mailer mailers, cfg *config.Config) modules {
 	auditModule := audit.New(audit.Deps{Events: store.events})
+	// notifications needs team rosters from teams, which is built after
+	// todos, which needs notifications: it gets a directory that forwards to
+	// teams once teams exists (before any request is served).
+	rosters := &forwardingDirectory{}
+	notificationsModule := notifications.New(notifications.Deps{
+		Devices:   store.devices,
+		Directory: rosters,
+		Pusher:    push.pusher,
+		Dispatch:  push.dispatch,
+	})
 	todosModule := todos.New(todos.Deps{
 		Todos:       store.todos,
 		Projects:    store.projects,
 		Collections: store.collections,
 		Audit:       todosaudit.New(auditModule),
+		Notifier:    todosnotifications.New(notificationsModule),
 		Tx:          store.tx,
 	})
 	teamsModule := teams.New(teams.Deps{
@@ -131,10 +160,36 @@ func wireModules(store *storage, signIn signIn, mailer mailers, cfg *config.Conf
 		Todos:        identitytodos.New(todosModule),
 		Teams:        identityteams.New(teamsModule),
 		Audit:        identityaudit.New(auditModule),
+		Devices:      identitynotifications.New(notificationsModule),
 		Tx:           store.tx,
 		Config:       identity.DefaultConfig(),
 	})
-	return modules{audit: auditModule, todos: todosModule, teams: teamsModule, identity: identityModule}
+	rosters.Directory = teamsModule.Directory()
+	return modules{
+		audit:         auditModule,
+		notifications: notificationsModule,
+		todos:         todosModule,
+		teams:         teamsModule,
+		identity:      identityModule,
+	}
+}
+
+// forwardingDirectory lets notifications be built before teams.
+type forwardingDirectory struct{ access.Directory }
+
+// newPusher sends push notifications with FCM when a Firebase service
+// account is configured; without one devices are still registered but
+// nothing is sent.
+func newPusher(ctx context.Context, cfg *config.Config) (notifications.Pusher, error) {
+	if cfg.Firebase.CredentialsFile == "" {
+		slog.Warn("FIREBASE_CREDENTIALS_FILE not set: push notifications are disabled")
+		return nil, nil
+	}
+	p, err := fcm.New(ctx, cfg.Firebase.ProjectID, cfg.Firebase.CredentialsFile)
+	if err != nil {
+		return nil, fmt.Errorf("initialize push notifications: %w", err)
+	}
+	return p, nil
 }
 
 // newRelyingParty configures passkeys for PASSKEY_RP_ID and PASSKEY_ORIGINS,
@@ -196,6 +251,7 @@ func newRouter(cfg *config.Config, m modules) http.Handler {
 	m.todos.RegisterRoutes(mux, protect)
 	m.teams.RegisterRoutes(mux, protect, limiter.Middleware)
 	m.audit.RegisterRoutes(mux, protect)
+	m.notifications.RegisterRoutes(mux, protect)
 
 	return httpx.Chain(httpx.JSONErrors(mux),
 		httpx.Recovery,

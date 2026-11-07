@@ -137,8 +137,8 @@ func (h LogoutAllHandler) Handle(ctx context.Context, cmd LogoutAll) error {
 // DeleteAccount removes the user and everything they own in one transaction
 // (where the database supports it), across modules: the user leaves their
 // teams (teams they own alone are deleted; owning a team with other members
-// blocks the deletion), and their personal todos, passkeys and security log
-// go too. Team records they created stay with the team. With a service
+// blocks the deletion), and their personal todos, passkeys, devices and
+// security log go too. Team records they created stay with the team. With a service
 // account the Firebase user is deleted afterwards; that can't be part of the
 // transaction, so a failure there is only logged.
 type DeleteAccount struct {
@@ -159,6 +159,7 @@ func (h DeleteAccountHandler) Handle(ctx context.Context, cmd DeleteAccount) err
 			func() error { return h.Todos.DeleteAllForUser(ctx, id) },
 			func() error { return h.Passkeys.DeleteAllForUser(ctx, id) },
 			func() error { return h.Challenges.DeleteForUser(ctx, id) },
+			func() error { return h.Devices.DeleteUserDevices(ctx, id) },
 			func() error { return h.Audit.DeleteUserLog(ctx, id) },
 			func() error { return h.Users.Delete(ctx, id) },
 		} {

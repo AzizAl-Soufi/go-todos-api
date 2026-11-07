@@ -39,6 +39,7 @@ type Deps struct {
 	Todos    application.TodoDeleter
 	Teams    application.TeamMemberships // nil: no teams to leave
 	Audit    application.AuditLog        // nil records nothing
+	Devices  application.Devices         // nil: no devices to forget
 	Tx       tx.Runner
 	Config   Config
 	// Now is the clock; nil means time.Now.
@@ -71,6 +72,9 @@ func New(d Deps) Handlers {
 	if d.Audit == nil {
 		d.Audit = noAudit{}
 	}
+	if d.Devices == nil {
+		d.Devices = noDevices{}
+	}
 	b := &base{Deps: d}
 	return Handlers{
 		SignIn: SignInHandler{b}, LogoutAll: LogoutAllHandler{b}, DeleteAccount: DeleteAccountHandler{b},
@@ -81,9 +85,12 @@ func New(d Deps) Handlers {
 }
 
 type (
-	noTeams struct{}
-	noAudit struct{}
+	noTeams   struct{}
+	noAudit   struct{}
+	noDevices struct{}
 )
+
+func (noDevices) DeleteUserDevices(context.Context, string) error { return nil }
 
 func (noTeams) RemoveUser(context.Context, string) error             { return nil }
 func (noAudit) Record(context.Context, application.AuditEntry) error { return nil }

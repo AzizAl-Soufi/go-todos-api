@@ -67,3 +67,14 @@ sql:
         sql_package: "pgx/v5"
         emit_interface: true
         emit_pointers_for_null_types: true
+
+  - engine: "postgresql"
+    schema: "./internal/platform/database/postgres/migrations"
+    queries: "./internal/modules/notifications/adapters/persistence/pgstore/queries.sql"
+    gen:
+      go:
+        package: "sqlcgen"
+        out: "./internal/modules/notifications/adapters/persistence/pgstore/sqlcgen"
+        sql_package: "pgx/v5"
+        emit_interface: true
+        emit_pointers_for_null_types: true

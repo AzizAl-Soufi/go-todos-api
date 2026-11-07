@@ -10,6 +10,7 @@ package application
 
 import (
 	"context"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
 	"time"
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/domain"
@@ -76,6 +77,21 @@ type AuditEntry struct {
 // AuditLog is how commands reach the audit module.
 type AuditLog interface {
 	Record(ctx context.Context, e AuditEntry) error
+}
+
+// NewTeamTodo is a todo just added to a team project, as the todos module
+// reports it to notifications.
+type NewTeamTodo struct {
+	TeamID, ProjectID, TodoID, Title string
+	ActorID, ActorName               string
+	ActorRole                        access.Role
+}
+
+// Notifier is how commands reach the notifications module. It is called
+// after the change is committed and never fails the command: delivery is
+// the notifier's business.
+type Notifier interface {
+	TodoCreated(ctx context.Context, t NewTeamTodo)
 }
 
 // ---- read side (queries) ----

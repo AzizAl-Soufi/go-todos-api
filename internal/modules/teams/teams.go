@@ -68,6 +68,9 @@ func New(d Deps) *Module {
 // Resolver loads a caller's memberships for access.Middleware.
 func (m *Module) Resolver() access.Resolver { return m.Queries.Memberships }
 
+// Directory looks up team rosters (access.Directory), e.g. for notifications.
+func (m *Module) Directory() access.Directory { return m.Queries.Roster }
+
 // RegisterRoutes mounts /teams/* and /invitations/*. protect must
 // authenticate the caller and resolve them into an access.Actor; limit
 // rate-limits the token endpoints.

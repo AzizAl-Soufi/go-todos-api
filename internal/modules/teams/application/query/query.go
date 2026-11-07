@@ -23,13 +23,14 @@ type Handlers struct {
 	ListInvitations ListInvitationsHandler
 	GetInvitation   GetInvitationHandler
 	Memberships     MembershipsHandler
+	Roster          RosterHandler
 }
 
 func New(d Deps) Handlers {
 	return Handlers{
 		ListTeams: ListTeamsHandler{d}, GetTeam: GetTeamHandler{d},
 		ListInvitations: ListInvitationsHandler{d}, GetInvitation: GetInvitationHandler{d},
-		Memberships: MembershipsHandler{d},
+		Memberships: MembershipsHandler{d}, Roster: RosterHandler{d},
 	}
 }
 
@@ -158,4 +159,26 @@ func (h MembershipsHandler) Memberships(ctx context.Context, userID string) (map
 		out[m.TeamID] = m.Role
 	}
 	return out, nil
+}
+
+// RosterHandler returns a team's name and members' roles; it implements
+// access.Directory for modules that address a whole team.
+type RosterHandler struct{ Deps }
+
+var _ access.Directory = RosterHandler{}
+
+func (h RosterHandler) Roster(ctx context.Context, teamID string) (access.Roster, error) {
+	team, err := h.Teams.Get(ctx, teamID)
+	if err != nil {
+		return access.Roster{}, apperrors.UnresolvedAs(err, access.ErrTeamNotFound)
+	}
+	list, err := h.Members.ListByTeam(ctx, teamID)
+	if err != nil {
+		return access.Roster{}, err
+	}
+	members := make(map[string]access.Role, len(list))
+	for _, m := range list {
+		members[m.UserID] = m.Role
+	}
+	return access.Roster{TeamID: team.ID, Name: team.Name, Members: members}, nil
 }

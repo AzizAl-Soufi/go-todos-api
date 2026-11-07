@@ -21,6 +21,7 @@ import (
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/domain"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/config"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/dbtest"
@@ -62,6 +63,7 @@ type testServer struct {
 	store    *storage
 	mailer   *captureMailer
 	firebase *fakeFirebase
+	pushes   *fakePusher
 }
 
 // newTestServer runs the API on a fake Firebase. Options mutate the config;
@@ -90,11 +92,17 @@ func newTestServer(t *testing.T, mutate ...func(*config.Config)) *testServer {
 		in.firebase = fb
 	}
 	store := testStorage(t)
-	mods := wireModules(store, in, mailers{teams: mailer}, cfg)
+	pushes := &fakePusher{}
+	var pusher notifications.Pusher
+	if cfg.Firebase.CredentialsFile != "" {
+		pusher = pushes
+	}
+	// Notifications run in place, so a test sees them when its request returns.
+	mods := wireModules(store, in, push{pusher: pusher, dispatch: func(f func()) { f() }}, mailers{teams: mailer}, cfg)
 
 	srv := httptest.NewServer(newRouter(cfg, mods))
 	t.Cleanup(srv.Close)
-	return &testServer{t: t, srv: srv, store: store, mailer: mailer, firebase: fb}
+	return &testServer{t: t, srv: srv, store: store, mailer: mailer, firebase: fb, pushes: pushes}
 }
 
 func noServiceAccount(c *config.Config) { c.Firebase.CredentialsFile = "" }
