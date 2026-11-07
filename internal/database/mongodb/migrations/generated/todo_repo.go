@@ -3,11 +3,11 @@ package generated
 
 import (
 	"context"
-	"errors"
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/database/mongodb"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/domain"
 	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/shared/errors"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/shared/ids"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -28,26 +28,17 @@ type mongoTodoRepo struct {
 
 // mongoTodo represents the database schema
 type mongoTodo struct {
-	ID bson.ObjectID `bson:"_id,omitempty"`
+	ID     bson.ObjectID `bson:"_id,omitempty"`
 	UserID bson.ObjectID `bson:"userId"`
-	Title string `bson:"title"`
-}
-
-// parseTodoID is a generated helper for string-to-ObjectID conversion
-func parseTodoID(id string) (bson.ObjectID, error) {
-	parsed, err := bson.ObjectIDFromHex(id)
-	if err != nil {
-		return bson.NilObjectID, apperrors.Validation("INVALID_ID", "invalid id format")
-	}
-	return parsed, nil
+	Title  string        `bson:"title"`
 }
 
 // toDomain maps the DB model to the Domain model
 func toDomainTodo(dbModel *mongoTodo) *domain.Todo {
 	return &domain.Todo{
-		ID: dbModel.ID.Hex(),
+		ID:     dbModel.ID.Hex(),
 		UserID: dbModel.UserID.Hex(),
-		Title: dbModel.Title,
+		Title:  dbModel.Title,
 	}
 }
 
@@ -67,7 +58,7 @@ func (r *mongoTodoRepo) EnsureIndexes(ctx context.Context) error {
 				{Key: "createdAt", Value: -1},
 			},
 			Options: options.Index().
-				SetName("idx_user_created"), // .SetBackground(true)
+				SetName("idx_user_created"),
 		},
 	}
 	_, err := r.coll.Indexes().CreateMany(ctx, indexes)
@@ -80,7 +71,7 @@ func (r *mongoTodoRepo) Create(ctx context.Context, item *domain.Todo) error {
 		Title: item.Title,
 	}
 	if item.ID != "" {
-		id, err := parseTodoID(item.ID)
+		id, err := ids.ObjectID(item.ID)
 		if err != nil {
 			return err
 		}
@@ -90,12 +81,12 @@ func (r *mongoTodoRepo) Create(ctx context.Context, item *domain.Todo) error {
 		item.ID = dbModel.ID.Hex() // Backfill the domain model
 	}
 	if item.UserID != "" {
-		id, err := parseTodoID(item.UserID)
+		id, err := ids.ObjectID(item.UserID)
 		if err != nil {
 			return err
 		}
 		dbModel.UserID = id
-	} 
+	}
 
 	_, err := r.coll.InsertOne(ctx, dbModel)
 	if err != nil {
@@ -108,37 +99,24 @@ func (r *mongoTodoRepo) Create(ctx context.Context, item *domain.Todo) error {
 }
 
 func (r *mongoTodoRepo) GetByID(ctx context.Context, id string) (*domain.Todo, error) {
-	parsedID, err := parseTodoID(id)
+	parsedID, err := ids.ObjectID(id)
 	if err != nil {
 		return nil, err
 	}
 
 	var dbModel mongoTodo
-	err = r.coll.FindOne(ctx, bson.M{"_id": parsedID}).Decode(&dbModel)
-	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, apperrors.ErrNotFound
-		}
-		return nil, err
+	if err := r.coll.FindOne(ctx, bson.M{"_id": parsedID}).Decode(&dbModel); err != nil {
+		return nil, mongodb.MapNotFound(err)
 	}
 
 	return toDomainTodo(&dbModel), nil
 }
 
 func (r *mongoTodoRepo) Delete(ctx context.Context, id string) error {
-	parsedID, err := parseTodoID(id)
+	parsedID, err := ids.ObjectID(id)
 	if err != nil {
 		return err
 	}
 
-	result, err := r.coll.DeleteOne(ctx, bson.M{"_id": parsedID})
-	if err != nil {
-		return err
-	}
-
-	if result.DeletedCount == 0 {
-		return apperrors.ErrNotFound
-	}
-
-	return nil
+	return mongodb.RequireDeleted(r.coll.DeleteOne(ctx, bson.M{"_id": parsedID}))
 }

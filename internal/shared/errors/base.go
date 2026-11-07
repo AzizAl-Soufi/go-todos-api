@@ -34,45 +34,54 @@ type (
 	InternalError     struct{ baseError }
 )
 
-func Validation(code, message string) *ValidationError {
-	return &ValidationError{baseError{status: http.StatusBadRequest, code: code, message: message}}
+func base(status int, code, message string) baseError {
+	return baseError{status: status, code: code, message: message}
 }
+
+func Validation(code, message string) *ValidationError {
+	return &ValidationError{base(http.StatusBadRequest, code, message)}
+}
+
 func Validationf(code, format string, args ...any) *ValidationError {
-	return &ValidationError{baseError{status: http.StatusBadRequest, code: code, message: fmt.Sprintf(format, args...)}}
+	return Validation(code, fmt.Sprintf(format, args...))
 }
 
 func NotFound(code, message string) *NotFoundError {
-	return &NotFoundError{baseError{status: http.StatusNotFound, code: code, message: message}}
+	return &NotFoundError{base(http.StatusNotFound, code, message)}
 }
 
 func NotFoundf(code, format string, args ...any) *NotFoundError {
-	return &NotFoundError{baseError{status: http.StatusNotFound, code: code, message: fmt.Sprintf(format, args...)}}
+	return NotFound(code, fmt.Sprintf(format, args...))
 }
 
 func Conflict(code, message string) *ConflictError {
-	return &ConflictError{baseError{status: http.StatusConflict, code: code, message: message}}
+	return &ConflictError{base(http.StatusConflict, code, message)}
 }
+
 func Conflictf(code, format string, args ...any) *ConflictError {
-	return &ConflictError{baseError{status: http.StatusConflict, code: code, message: fmt.Sprintf(format, args...)}}
+	return Conflict(code, fmt.Sprintf(format, args...))
 }
 
 func Unauthorized(code, message string) *UnauthorizedError {
-	return &UnauthorizedError{baseError{status: http.StatusUnauthorized, code: code, message: message}}
+	return &UnauthorizedError{base(http.StatusUnauthorized, code, message)}
 }
 
 func Unauthorizedf(code, format string, args ...any) *UnauthorizedError {
-	return &UnauthorizedError{baseError{status: http.StatusUnauthorized, code: code, message: fmt.Sprintf(format, args...)}}
+	return Unauthorized(code, fmt.Sprintf(format, args...))
 }
 
 func Forbidden(code, message string) *ForbiddenError {
-	return &ForbiddenError{baseError{status: http.StatusForbidden, code: code, message: message}}
+	return &ForbiddenError{base(http.StatusForbidden, code, message)}
 }
 
 func Internal(code, message string) *InternalError {
-	return &InternalError{baseError{status: http.StatusInternalServerError, code: code, message: message}}
+	return &InternalError{base(http.StatusInternalServerError, code, message)}
 }
+
 func InternalWrap(code, message string, err error) *InternalError {
-	return &InternalError{baseError{status: http.StatusInternalServerError, code: code, message: message, err: err}}
+	e := Internal(code, message)
+	e.err = err
+	return e
 }
 
 func From(err error) (AppError, bool) {

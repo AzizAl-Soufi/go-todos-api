@@ -33,6 +33,16 @@ var (
 		"invalid token type: expected refresh token",
 	)
 
+	ErrInvalidAccessTokenType = apperrors.Unauthorized(
+		"INVALID_TOKEN_TYPE",
+		"invalid token type: expected access token",
+	)
+
+	ErrMalformedAccessToken = apperrors.Unauthorized(
+		"MALFORMED_ACCESS_TOKEN",
+		"malformed access token",
+	)
+
 	ErrMissingAccessToken = apperrors.Unauthorized(
 		"MISSING_ACCESS_TOKEN",
 		"access token is missing",

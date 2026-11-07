@@ -8,7 +8,7 @@ mongodb:
   migrations:
     dir: "./internal/database/mongodb/migrations/versions"
   seeding:
-    dir: "./internal/database/mongodb/migrations/seeds"
+    dir: "./cmd/migration/seeds"
     files:
       - collection: "users"
         file: "users.json"

@@ -9,11 +9,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/AzizAl-Soufi/go-todos-api/internal/config"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/database/mongodb"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/database/postgres"
-	"github.com/AzizAl-Soufi/go-todos-api/internal/config"
-	"github.com/AzizAl-Soufi/go-todos-api/internal/shared/httpx"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/middleware"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/shared/httpx"
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/handler/v1"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/repository/todos"
@@ -71,7 +71,7 @@ func NewApplication(ctx context.Context, cfg *config.Config) (application, func(
 	case "postgres":
 		uri := dbCfg.DatabaseURI
 		if uri == "" {
-			log.Fatal("Set your databaase connection string in environment variables.")
+			log.Fatal("Set your database connection string in environment variables.")
 		}
 
 		db, err := postgres.New(ctx, (&dbCfg).DatabaseURI)
@@ -118,8 +118,7 @@ func NewApplication(ctx context.Context, cfg *config.Config) (application, func(
 
 func (app *application) initialize() http.Handler {
 	r := http.NewServeMux()
-	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-
+	r.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
 	})
 
@@ -138,23 +137,25 @@ func (app *application) initialize() http.Handler {
 	protectedRouter.HandleFunc("DELETE /user", usersHandler.Delete)
 	protectedRouter.HandleFunc("GET /overview", usersHandler.GetOverview)
 	protectedRouter.HandleFunc("POST /todos", todosHandler.Create)
-	protectedRouter.HandleFunc("GET /todos", todosHandler.GettAll)
+	protectedRouter.HandleFunc("GET /todos", todosHandler.GetAll)
 	protectedRouter.HandleFunc("GET /todos/{id}", todosHandler.Get)
 	protectedRouter.HandleFunc("PUT /todos/{id}", todosHandler.Update)
 	protectedRouter.HandleFunc("DELETE /todos/{id}", todosHandler.Delete)
 
 	r.Handle("/", app.jwt.RequireAuth(protectedRouter))
-	return httpx.Recovery(r)
+	return httpx.Recovery(httpx.LimitBody(httpx.DefaultMaxBodyBytes, r))
 }
 
 func (app *application) run(ctx context.Context, h http.Handler) error {
 	port := fmt.Sprintf(":%v", app.config.App.Port)
 	server := &http.Server{
-		Addr:         port,
-		Handler:      h,
-		WriteTimeout: time.Second * 30,
-		ReadTimeout:  time.Second * 10,
-		IdleTimeout:  time.Minute,
+		Addr:              port,
+		Handler:           h,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      time.Second * 30,
+		ReadTimeout:       time.Second * 10,
+		IdleTimeout:       time.Minute,
+		MaxHeaderBytes:    1 << 16,
 	}
 
 	slog.Info("Server has started", "addr", port)

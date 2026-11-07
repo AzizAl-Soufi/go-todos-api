@@ -1,7 +1,11 @@
 # syntax=docker/dockerfile:1
 
 # build
-FROM --platform=$BUILDPLATFORM golang:1.27.3 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27 AS build
+
+# The exact Go version comes from the toolchain directive in go.mod (the
+# official image defaults to GOTOOLCHAIN=local, which would ignore it).
+ENV GOTOOLCHAIN=auto CGO_ENABLED=0
 
 WORKDIR /src
 
@@ -15,10 +19,10 @@ ARG TARGETARCH
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w" -o /out/api ./cmd && \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w" -o /out/migrate ./cmd/migration
+    for bin in api:./cmd migrate:./cmd/migration; do \
+      GOOS=$TARGETOS GOARCH=$TARGETARCH \
+        go build -trimpath -ldflags="-s -w" -o "/out/${bin%%:*}" "${bin#*:}" || exit 1; \
+    done
 
 # runtime
 FROM gcr.io/distroless/static-debian12:nonroot

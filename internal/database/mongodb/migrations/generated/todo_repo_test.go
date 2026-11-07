@@ -2,34 +2,13 @@ package generated
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/domain"
 	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/shared/errors"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
-
-func assertInvalidID(t *testing.T, err error) {
-	t.Helper()
-	ae, ok := apperrors.From(err)
-	if !ok || ae.Code() != "INVALID_ID" {
-		t.Fatalf("err = %v, want INVALID_ID validation error", err)
-	}
-}
-
-func TestParseTodoID(t *testing.T) {
-	oid := bson.NewObjectID()
-	got, err := parseTodoID(oid.Hex())
-	if err != nil || got != oid {
-		t.Fatalf("parseTodoID = %v, %v", got, err)
-	}
-
-	got, err = parseTodoID("bad")
-	assertInvalidID(t, err)
-	if got != bson.NilObjectID {
-		t.Fatalf("got %v, want NilObjectID", got)
-	}
-}
 
 func TestToDomainTodo(t *testing.T) {
 	id, userID := bson.NewObjectID(), bson.NewObjectID()
@@ -44,10 +23,16 @@ func TestToDomainTodo(t *testing.T) {
 func TestRepo_RejectsInvalidIDsBeforeQuerying(t *testing.T) {
 	repo := &mongoTodoRepo{} // nil coll: reaching the DB would panic
 	ctx := context.Background()
+	_, getErr := repo.GetByID(ctx, "bad")
 
-	assertInvalidID(t, repo.Create(ctx, &domain.Todo{ID: "bad"}))
-	assertInvalidID(t, repo.Create(ctx, &domain.Todo{UserID: "bad"}))
-	_, err := repo.GetByID(ctx, "bad")
-	assertInvalidID(t, err)
-	assertInvalidID(t, repo.Delete(ctx, "bad"))
+	for name, err := range map[string]error{
+		"Create bad id":   repo.Create(ctx, &domain.Todo{ID: "bad"}),
+		"Create bad user": repo.Create(ctx, &domain.Todo{UserID: "bad"}),
+		"GetByID":         getErr,
+		"Delete":          repo.Delete(ctx, "bad"),
+	} {
+		if !errors.Is(err, apperrors.ErrInvalidID) {
+			t.Errorf("%s: err = %v, want ErrInvalidID", name, err)
+		}
+	}
 }

@@ -36,3 +36,19 @@ func TestMemoryClient_ConcurrentAccess(t *testing.T) {
 		t.Fatalf("Data[42].N = %d, want 42", c.Data["42"].N)
 	}
 }
+
+func TestClone(t *testing.T) {
+	if Clone[item](nil) != nil {
+		t.Fatal("Clone(nil) should be nil")
+	}
+
+	orig := &item{N: 1}
+	c := Clone(orig)
+	if c == orig || *c != *orig {
+		t.Fatalf("Clone = %p %+v, want a distinct copy of %p %+v", c, *c, orig, *orig)
+	}
+	c.N = 2
+	if orig.N != 1 {
+		t.Fatal("mutating the clone changed the original")
+	}
+}

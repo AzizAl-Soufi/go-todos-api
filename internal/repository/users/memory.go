@@ -21,15 +21,6 @@ func NewInMemoryUsersRepository() UsersRepository {
 		},
 	}
 }
-func cloneUser(user *domain.User) *domain.User {
-	if user == nil {
-		return nil
-	}
-
-	clone := *user
-	return &clone
-}
-
 func (r *inMemoryUsersRepo) getUser(id string) (*domain.User, error) {
 	r.Mu.RLock()
 	defer r.Mu.RUnlock()
@@ -39,7 +30,7 @@ func (r *inMemoryUsersRepo) getUser(id string) (*domain.User, error) {
 		return nil, apperrors.ErrNotFound
 	}
 
-	return cloneUser(userData), nil
+	return inmem.Clone(userData), nil
 }
 
 func (r *inMemoryUsersRepo) Register(_ context.Context, user *domain.UserDTO) (*domain.User, error) {
@@ -47,8 +38,7 @@ func (r *inMemoryUsersRepo) Register(_ context.Context, user *domain.UserDTO) (*
 	defer r.Mu.Unlock()
 	for _, existingUser := range r.Data {
 		if existingUser.Email == user.Email {
-			existingUser.IsNew = false
-			return cloneUser(existingUser), nil
+			return inmem.Clone(existingUser), nil
 		}
 	}
 
@@ -62,7 +52,7 @@ func (r *inMemoryUsersRepo) Register(_ context.Context, user *domain.UserDTO) (*
 
 	// IsNew describes this Register call only; it must not be persisted,
 	// otherwise later lookups would still report the user as new.
-	created := cloneUser(newUser)
+	created := inmem.Clone(newUser)
 	created.IsNew = true
 	return created, nil
 }

@@ -22,20 +22,11 @@ func NewInMemoryTodosRepository() TodosRepository {
 	}
 }
 
-func cloneTodo(todo *domain.Todo) *domain.Todo {
-	if todo == nil {
-		return nil
-	}
-
-	clone := *todo
-	return &clone
-}
-
 func (r *inMemoryTodosRepo) Create(_ context.Context, userID string, todo *domain.Todo) error {
 	r.Mu.Lock()
 	defer r.Mu.Unlock()
 
-	stored := cloneTodo(todo)
+	stored := inmem.Clone(todo)
 	stored.UserID = userID
 	if stored.ID == "" {
 		stored.ID = bson.NewObjectID().Hex()
@@ -79,7 +70,7 @@ func (r *inMemoryTodosRepo) GetByID(_ context.Context, id string) (*domain.Todo,
 		return nil, apperrors.ErrNotFound
 	}
 
-	return cloneTodo(todo), nil
+	return inmem.Clone(todo), nil
 }
 
 func (r *inMemoryTodosRepo) Get(_ context.Context, id string, userID string) (*domain.Todo, error) {
@@ -91,7 +82,7 @@ func (r *inMemoryTodosRepo) Get(_ context.Context, id string, userID string) (*d
 		return nil, apperrors.ErrNotFound
 	}
 
-	return cloneTodo(todo), nil
+	return inmem.Clone(todo), nil
 }
 
 func (r *inMemoryTodosRepo) Delete(_ context.Context, todoId string, userId string) error {
@@ -118,20 +109,7 @@ func (r *inMemoryTodosRepo) GetAll(_ context.Context, userID string) ([]*domain.
 	todos := make([]*domain.Todo, 0, len(r.Data))
 	for _, t := range r.Data {
 		if t.UserID == userID {
-			todos = append(todos, cloneTodo(t))
-		}
-	}
-	return todos, nil
-}
-
-func (r *inMemoryTodosRepo) GetByUserID(_ context.Context, id string) ([]*domain.Todo, error) {
-	r.Mu.RLock()
-	defer r.Mu.RUnlock()
-
-	todos := make([]*domain.Todo, 0)
-	for _, t := range r.Data {
-		if t.UserID == id {
-			todos = append(todos, cloneTodo(t))
+			todos = append(todos, inmem.Clone(t))
 		}
 	}
 	return todos, nil

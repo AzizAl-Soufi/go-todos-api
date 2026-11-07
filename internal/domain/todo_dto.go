@@ -22,21 +22,33 @@ var ErrInvalidRequestTitleValue apperrors.AppError = apperrors.Validation(
 )
 
 func ValidateCreateDTO(r *http.Request) (*CreateTodoDTO, error) {
-	var dto CreateTodoDTO
-	if err := json.NewDecoder(r.Body).Decode(&dto); err != nil {
-		return nil, apperrors.ErrInvalidRequestBody
-	}
 	defer r.Body.Close()
 
-	dto.Title = strings.TrimSpace(dto.Title)
-	if dto.Title == "" {
-		return nil, apperrors.Validation(
-			"INVALID_TITLE",
-			"invalid title value",
-		)
+	var dto CreateTodoDTO
+	err := json.NewDecoder(r.Body).Decode(&dto)
+	if err != nil {
+		return nil, apperrors.ErrInvalidRequestBody
+	}
+
+	if dto.Title, err = normalizeTitle(dto.Title); err != nil {
+		return nil, err
 	}
 
 	return &dto, nil
+}
+
+// normalizeTitle trims a title and rejects it if nothing is left.
+func normalizeTitle(title string) (string, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return "", ErrInvalidRequestTitleValue
+	}
+	return title, nil
+}
+
+// isJSONNull reports whether a raw JSON value is the literal null.
+func isJSONNull(v json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(v), []byte("null"))
 }
 
 type UpdateTodoDTO struct {
@@ -45,25 +57,22 @@ type UpdateTodoDTO struct {
 }
 
 func ValidateUpdateTodoDTO(r *http.Request) (*UpdateTodoDTO, error) {
+	defer r.Body.Close()
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		return nil, apperrors.ErrInvalidRequestBody
 	}
-	defer r.Body.Close()
 
+	// Decode into raw fields first: a pointer field can't tell "absent" from "null".
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+	if err := json.Unmarshal(body, &fields); err != nil || len(fields) == 0 {
 		return nil, apperrors.ErrInvalidRequestBody
 	}
-
-	if len(fields) == 0 {
-		return nil, apperrors.ErrInvalidRequestBody
-	}
-
-	if value, ok := fields["title"]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+	if v, ok := fields["title"]; ok && isJSONNull(v) {
 		return nil, ErrInvalidRequestTitleValue
 	}
-	if value, ok := fields["completed"]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+	if v, ok := fields["completed"]; ok && isJSONNull(v) {
 		return nil, apperrors.ErrInvalidRequestValue
 	}
 
@@ -73,10 +82,11 @@ func ValidateUpdateTodoDTO(r *http.Request) (*UpdateTodoDTO, error) {
 	}
 
 	if dto.Title != nil {
-		*dto.Title = strings.TrimSpace(*dto.Title)
-		if *dto.Title == "" {
-			return nil, ErrInvalidRequestTitleValue
+		title, err := normalizeTitle(*dto.Title)
+		if err != nil {
+			return nil, err
 		}
+		dto.Title = &title
 	}
 
 	return &dto, nil

@@ -2,13 +2,7 @@ package middleware
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
-	"io"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,45 +12,13 @@ import (
 	"time"
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/config"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/testutil"
 	"github.com/golang-jwt/jwt/v5"
 )
 
-func TestMain(m *testing.M) {
-	// RequireAuth logs every parse error; keep test output readable.
-	log.SetOutput(io.Discard)
-	os.Exit(m.Run())
-}
-
-// writeKeyPair generates an RSA key pair and writes it as PEM files.
-func writeKeyPair(t *testing.T, dir string) (privPath, pubPath string) {
-	t.Helper()
-
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
-
-	privPath = filepath.Join(dir, "private.pem")
-	privPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-	if err := os.WriteFile(privPath, privPEM, 0o600); err != nil {
-		t.Fatalf("write private key: %v", err)
-	}
-
-	pubBytes, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
-	if err != nil {
-		t.Fatalf("marshal public key: %v", err)
-	}
-	pubPath = filepath.Join(dir, "public.pem")
-	if err := os.WriteFile(pubPath, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubBytes}), 0o600); err != nil {
-		t.Fatalf("write public key: %v", err)
-	}
-
-	return privPath, pubPath
-}
-
 func newTestMiddleware(t *testing.T) *JWTMiddleware {
 	t.Helper()
-	priv, pub := writeKeyPair(t, t.TempDir())
+	priv, pub := testutil.WriteRSAKeyFiles(t, testutil.NewRSAKey(t))
 	m, err := NewJWTMiddleware(&config.JWTConfig{PrivateKeyPath: priv, PublicKeyPath: pub})
 	if err != nil {
 		t.Fatalf("NewJWTMiddleware: %v", err)
@@ -75,6 +37,20 @@ func signClaims(t *testing.T, m *JWTMiddleware, claims *JWTCustomClaims) string 
 
 var testUser = NewAuthorization("user-1", "Alice", "alice@example.com")
 
+// hs256Refresh returns an otherwise-valid refresh token signed with HS256.
+func hs256Refresh(t *testing.T) string {
+	t.Helper()
+	s, err := jwt.NewWithClaims(jwt.SigningMethodHS256, &JWTCustomClaims{
+		RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))},
+		TokenType:        TypeRefreshToken,
+		CustomerInfo:     testUser,
+	}).SignedString([]byte("guessable-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
 func TestNewAuthorization(t *testing.T) {
 	a := NewAuthorization("id", "name", "email")
 	if a.ID != "id" || a.Name != "name" || a.Email != "email" {
@@ -84,7 +60,7 @@ func TestNewAuthorization(t *testing.T) {
 
 func TestNewJWTMiddleware_Errors(t *testing.T) {
 	dir := t.TempDir()
-	priv, pub := writeKeyPair(t, dir)
+	priv, pub := testutil.WriteRSAKeyFiles(t, testutil.NewRSAKey(t))
 	garbage := filepath.Join(dir, "garbage.pem")
 	if err := os.WriteFile(garbage, []byte("not a key"), 0o600); err != nil {
 		t.Fatal(err)
@@ -185,6 +161,7 @@ func TestValidateRefreshToken(t *testing.T) {
 		want  error
 	}{
 		{"access token rejected", pair.AccessToken, ErrInvalidRefreshTokenType},
+		{"HS256 algorithm", hs256Refresh(t), ErrExpiredRefreshToken},
 		{"expired", expired, ErrExpiredRefreshToken},
 		{"wrong signing key", otherPair.RefreshToken, ErrExpiredRefreshToken},
 		{"malformed", "not.a.jwt", ErrExpiredRefreshToken},
@@ -252,17 +229,34 @@ func TestRequireAuth_Rejections(t *testing.T) {
 		TokenType:        TypeAuthToken,
 	})
 
+	// Tokens using an algorithm other than RS256 must be rejected outright.
+	validClaims := &JWTCustomClaims{
+		RegisteredClaims: jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute))},
+		TokenType:        TypeAuthToken,
+		CustomerInfo:     testUser,
+	}
+	hs256, err := jwt.NewWithClaims(jwt.SigningMethodHS256, validClaims).SignedString([]byte("guessable-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsigned, err := jwt.NewWithClaims(jwt.SigningMethodNone, validClaims).SignedString(jwt.UnsafeAllowNoneSignatureType)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	tests := []struct {
 		name        string
 		header      string
 		wantMessage string
 	}{
-		{"missing header", "", ErrMissingAuthHeader.Error()},
-		{"malformed token", "Bearer not-a-jwt", jwt.ErrTokenMalformed.Error()},
-		{"expired token", "Bearer " + expired, ErrExpiredAccessToken.Error()},
-		{"wrong signing key", "Bearer " + otherPair.AccessToken, ErrMissingAuthHeader.Error()},
-		{"refresh token used as access", "Bearer " + pair.RefreshToken, ErrInvalidRefreshTokenType.Error()},
-		{"missing customer info", "Bearer " + noCustomer, ErrInvalidRefreshTokenType.Error()},
+		{"missing header", "", ErrMissingAuthHeader.Message()},
+		{"malformed token", "Bearer not-a-jwt", ErrMalformedAccessToken.Message()},
+		{"expired token", "Bearer " + expired, ErrExpiredAccessToken.Message()},
+		{"wrong signing key", "Bearer " + otherPair.AccessToken, ErrInvalidAccessToken.Message()},
+		{"HS256 algorithm", "Bearer " + hs256, ErrInvalidAccessToken.Message()},
+		{"none algorithm", "Bearer " + unsigned, ErrInvalidAccessToken.Message()},
+		{"refresh token used as access", "Bearer " + pair.RefreshToken, ErrInvalidAccessTokenType.Message()},
+		{"missing customer info", "Bearer " + noCustomer, ErrInvalidAccessTokenType.Message()},
 	}
 
 	for _, tt := range tests {

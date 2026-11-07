@@ -1,7 +1,9 @@
 package migrations
 
 import (
+	"bytes"
 	"fmt"
+	"go/format"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +15,6 @@ package {{.Package}}
 
 import (
 	"context"
-	"errors"
 {{- if .NeedsTime}}
 	"time"
 {{- end}}
@@ -21,6 +22,7 @@ import (
 	"github.com/AzizAl-Soufi/go-todos-api/internal/database/mongodb"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/domain"
 	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/shared/errors"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/shared/ids"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -44,15 +46,6 @@ type mongo{{.StructName}} struct {
 {{- range .Fields}}
 	{{.Name}} {{.DBType}} ` + "`bson:\"{{.Bson}}\"`" + `
 {{- end}}
-}
-
-// parse{{.StructName}}ID is a generated helper for string-to-ObjectID conversion
-func parse{{.StructName}}ID(id string) (bson.ObjectID, error) {
-	parsed, err := bson.ObjectIDFromHex(id)
-	if err != nil {
-		return bson.NilObjectID, apperrors.Validation("INVALID_ID", "invalid id format")
-	}
-	return parsed, nil
 }
 
 // toDomain maps the DB model to the Domain model
@@ -111,7 +104,7 @@ func (r *mongo{{.StructName}}Repo) Create(ctx context.Context, item *domain.{{.S
 {{- range .Fields}}
 	{{- if .IsID}}
 	if item.{{.Name}} != "" {
-		id, err := parse{{$.StructName}}ID(item.{{.Name}})
+		id, err := ids.ObjectID(item.{{.Name}})
 		if err != nil {
 			return err
 		}
@@ -134,39 +127,26 @@ func (r *mongo{{.StructName}}Repo) Create(ctx context.Context, item *domain.{{.S
 }
 
 func (r *mongo{{.StructName}}Repo) GetByID(ctx context.Context, id string) (*domain.{{.StructName}}, error) {
-	parsedID, err := parse{{.StructName}}ID(id)
+	parsedID, err := ids.ObjectID(id)
 	if err != nil {
 		return nil, err
 	}
 
 	var dbModel mongo{{.StructName}}
-	err = r.coll.FindOne(ctx, bson.M{"_id": parsedID}).Decode(&dbModel)
-	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, apperrors.ErrNotFound
-		}
-		return nil, err
+	if err := r.coll.FindOne(ctx, bson.M{"_id": parsedID}).Decode(&dbModel); err != nil {
+		return nil, mongodb.MapNotFound(err)
 	}
 
 	return toDomain{{.StructName}}(&dbModel), nil
 }
 
 func (r *mongo{{.StructName}}Repo) Delete(ctx context.Context, id string) error {
-	parsedID, err := parse{{.StructName}}ID(id)
+	parsedID, err := ids.ObjectID(id)
 	if err != nil {
 		return err
 	}
 
-	result, err := r.coll.DeleteOne(ctx, bson.M{"_id": parsedID})
-	if err != nil {
-		return err
-	}
-
-	if result.DeletedCount == 0 {
-		return apperrors.ErrNotFound
-	}
-
-	return nil
+	return mongodb.RequireDeleted(r.coll.DeleteOne(ctx, bson.M{"_id": parsedID}))
 }
 `
 
@@ -219,11 +199,6 @@ func GenerateQueries(config *MigrationConfig) error {
 		filename := fmt.Sprintf("%s_repo.go", strings.ToLower(schema.Struct))
 		fullPath := filepath.Join(outDir, filename)
 
-		file, err := os.Create(fullPath)
-		if err != nil {
-			return err
-		}
-
 		data := RepoData{
 			Package:        config.MongoDB.Gen.Package,
 			Struct:         schema.Struct,
@@ -235,12 +210,20 @@ func GenerateQueries(config *MigrationConfig) error {
 			NeedsTime:      fieldsNeedTime(schema.Fields),
 		}
 
-		if err := tmpl.Execute(file, data); err != nil {
-			file.Close()
+		// Render and gofmt in memory first, so a template bug fails generation
+		// instead of leaving a broken or half-written file behind.
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, data); err != nil {
+			return fmt.Errorf("render %s: %w", filename, err)
+		}
+		src, err := format.Source(buf.Bytes())
+		if err != nil {
+			return fmt.Errorf("generated %s is not valid Go: %w", filename, err)
+		}
+		if err := os.WriteFile(fullPath, src, 0o644); err != nil {
 			return err
 		}
-		file.Close()
-		fmt.Printf("Generated staff-level repository for %s at %s\n", schema.Struct, fullPath)
+		fmt.Printf("Generated repository for %s at %s\n", schema.Struct, fullPath)
 	}
 
 	return nil

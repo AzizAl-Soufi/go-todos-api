@@ -3,8 +3,8 @@ package service
 import (
 	"context"
 
-	"github.com/AzizAl-Soufi/go-todos-api/internal/middleware"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/domain"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/middleware"
 )
 
 type UsersService interface {

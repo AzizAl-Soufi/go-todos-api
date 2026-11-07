@@ -15,4 +15,9 @@ var (
 		"INVALID_ENTITY",
 		"invalid entity",
 	)
+
+	ErrInvalidID = Validation(
+		"INVALID_ID",
+		"invalid id format",
+	)
 )

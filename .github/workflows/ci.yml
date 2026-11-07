@@ -21,7 +21,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.27.3"
+          # Single source of truth: the toolchain directive in go.mod.
+          go-version-file: go.mod
 
       - name: Verify modules
         run: go mod verify
@@ -50,9 +51,9 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          # Keep in sync with the tests job: govulncheck also reports
-          # standard-library vulnerabilities for the Go version it runs with.
-          go-version: "1.27.3"
+          # govulncheck also reports standard-library vulnerabilities for the
+          # Go version it runs with, so use the same go.mod toolchain.
+          go-version-file: go.mod
 
       # Fails only on vulnerabilities reachable from this module's code.
       - name: Run govulncheck

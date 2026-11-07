@@ -3,6 +3,7 @@ package migrations
 import (
 	"errors"
 	"fmt"
+	"go/format"
 	"go/parser"
 	"go/token"
 	"os"
@@ -369,9 +370,13 @@ func TestGenerateQueries(t *testing.T) {
 		".SetSparse(true)",
 		"item.ID = dbModel.ID.Hex() // Backfill the domain model",
 	} {
-		if !strings.Contains(widget, want) {
+		// Compare with whitespace collapsed: gofmt aligns fields and comments.
+		if !strings.Contains(collapseSpace(widget), collapseSpace(want)) {
 			t.Errorf("widget_repo.go missing %q", want)
 		}
+	}
+	if formatted, err := format.Source([]byte(widget)); err != nil || string(formatted) != widget {
+		t.Error("widget_repo.go is not gofmt-formatted")
 	}
 
 	if strings.Contains(widget, `"time"`) {
@@ -442,6 +447,8 @@ func TestGenerateQueries_Errors(t *testing.T) {
 		t.Error("expected error for a missing schema dir")
 	}
 }
+
+func collapseSpace(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 func readAndParse(t *testing.T, path string) string {
 	t.Helper()

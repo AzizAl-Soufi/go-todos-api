@@ -5,7 +5,6 @@ import (
 	"crypto/rsa"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"time"
@@ -57,13 +56,13 @@ type JWTMiddleware struct {
 }
 
 func NewJWTMiddleware(cfg *config.JWTConfig) (*JWTMiddleware, error) {
-	middlware := &JWTMiddleware{}
+	m := &JWTMiddleware{}
 
 	signBytes, err := os.ReadFile(cfg.PrivateKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("could not read private key: %w", err)
 	}
-	middlware.signKey, err = jwt.ParseRSAPrivateKeyFromPEM(signBytes)
+	m.signKey, err = jwt.ParseRSAPrivateKeyFromPEM(signBytes)
 	if err != nil {
 		return nil, fmt.Errorf("could not parse private key: %w", err)
 	}
@@ -72,55 +71,57 @@ func NewJWTMiddleware(cfg *config.JWTConfig) (*JWTMiddleware, error) {
 	if err != nil {
 		return nil, fmt.Errorf("could not read public key: %w", err)
 	}
-	middlware.verifyKey, err = jwt.ParseRSAPublicKeyFromPEM(verifyBytes)
+	m.verifyKey, err = jwt.ParseRSAPublicKeyFromPEM(verifyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("could not parse public key: %w", err)
 	}
 
-	return middlware, nil
+	return m, nil
 }
 
-func (middlware *JWTMiddleware) GenerateTokenPair(user *Authorization) (*TokenPair, error) {
-	accessTokenClaims := &JWTCustomClaims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Minute)),
-		},
-		TokenType:    TypeAuthToken,
-		ID:           user.ID,
-		CustomerInfo: user,
-	}
-	accessToken := jwt.NewWithClaims(jwt.SigningMethodRS256, accessTokenClaims)
-	accessTokenString, err := accessToken.SignedString(middlware.signKey)
+const (
+	accessTokenTTL  = 15 * time.Minute
+	refreshTokenTTL = 7 * 24 * time.Hour
+)
+
+func (m *JWTMiddleware) GenerateTokenPair(user *Authorization) (*TokenPair, error) {
+	access, err := m.signToken(user, TypeAuthToken, accessTokenTTL)
 	if err != nil {
 		return nil, err
 	}
-
-	refreshTokenClaims := &JWTCustomClaims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour)),
-		},
-		TokenType:    TypeRefreshToken,
-		ID:           user.ID,
-		CustomerInfo: user,
-	}
-	refreshToken := jwt.NewWithClaims(jwt.SigningMethodRS256, refreshTokenClaims)
-	refreshTokenString, err := refreshToken.SignedString(middlware.signKey)
+	refresh, err := m.signToken(user, TypeRefreshToken, refreshTokenTTL)
 	if err != nil {
 		return nil, err
 	}
-
-	return &TokenPair{
-		AccessToken:  accessTokenString,
-		RefreshToken: refreshTokenString,
-	}, nil
+	return &TokenPair{AccessToken: access, RefreshToken: refresh}, nil
 }
 
-func (middlware *JWTMiddleware) ValidateRefreshToken(tokenString string) (*JWTCustomClaims, error) {
+func (m *JWTMiddleware) signToken(user *Authorization, tokenType string, ttl time.Duration) (string, error) {
+	now := time.Now()
+	claims := &JWTCustomClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+		},
+		TokenType:    tokenType,
+		ID:           user.ID,
+		CustomerInfo: user,
+	}
+	return jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(m.signKey)
+}
+
+// newParser only accepts RS256, so a token can never pick its own algorithm.
+func newParser() *jwt.Parser {
+	return jwt.NewParser(jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}))
+}
+
+func (m *JWTMiddleware) keyFunc(*jwt.Token) (any, error) {
+	return m.verifyKey, nil
+}
+
+func (m *JWTMiddleware) ValidateRefreshToken(tokenString string) (*JWTCustomClaims, error) {
 	claims := &JWTCustomClaims{}
-	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (any, error) {
-		return middlware.verifyKey, nil
-	})
+	token, err := newParser().ParseWithClaims(tokenString, claims, m.keyFunc)
 
 	if err != nil || !token.Valid {
 		return nil, ErrExpiredRefreshToken
@@ -140,40 +141,53 @@ func (m *JWTMiddleware) RequireAuth(next http.Handler) http.Handler {
 		token, err := request.ParseFromRequest(
 			r,
 			request.AuthorizationHeaderExtractor,
-			func(token *jwt.Token) (any, error) {
-				return m.verifyKey, nil
-			},
+			m.keyFunc,
 			request.WithClaims(claims),
+			request.WithParser(newParser()),
 		)
 
 		if err != nil {
-			log.Printf("err : %v", err)
-			message := ErrMissingAuthHeader.Error()
-			switch {
-			case errors.Is(err, jwt.ErrTokenExpired), errors.Is(err, jwt.ErrTokenInvalidClaims):
-				message = ErrExpiredAccessToken.Error()
-			case errors.Is(err, jwt.ErrTokenInvalidId):
-				message = jwt.ErrTokenInvalidId.Error()
-			case errors.Is(err, jwt.ErrTokenMalformed):
-				message = jwt.ErrTokenMalformed.Error()
-			}
-			httpx.RespondError(w, http.StatusUnauthorized, message)
+			httpx.RespondErr(w, r, accessTokenError(err))
 			return
 		}
 
 		if token == nil || !token.Valid {
-			httpx.RespondError(w, http.StatusUnauthorized, ErrExpiredAccessToken.Error())
+			httpx.RespondErr(w, r, ErrInvalidAccessToken)
 			return
 		}
 
 		if claims.TokenType != TypeAuthToken || claims.CustomerInfo == nil {
-			httpx.RespondError(w, http.StatusUnauthorized, ErrInvalidRefreshTokenType.Error())
+			httpx.RespondErr(w, r, ErrInvalidAccessTokenType)
 			return
 		}
 
 		ctx := context.WithValue(r.Context(), authContextKey, claims.CustomerInfo)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// accessTokenError maps a token parsing failure to the error reported to the client.
+func accessTokenError(err error) error {
+	switch {
+	case errors.Is(err, request.ErrNoTokenInRequest):
+		return ErrMissingAuthHeader
+	case errors.Is(err, jwt.ErrTokenExpired):
+		return ErrExpiredAccessToken
+	case errors.Is(err, jwt.ErrTokenMalformed):
+		return ErrMalformedAccessToken
+	default: // bad signature, disallowed algorithm, invalid claims, ...
+		return ErrInvalidAccessToken
+	}
+}
+
+// AuthorizationFrom returns the authenticated caller stored by RequireAuth, or
+// ErrUnauthorizedContext when the request did not pass through it.
+func AuthorizationFrom(ctx context.Context) (*Authorization, error) {
+	auth, ok := GetAuthorization(ctx)
+	if !ok {
+		return nil, ErrUnauthorizedContext
+	}
+	return auth, nil
 }
 
 func GetAuthorization(ctx context.Context) (*Authorization, bool) {

@@ -218,17 +218,6 @@ func TestInMemoryTodos_ExtraLookups(t *testing.T) {
 	if _, err := repo.GetByID(ctx, "missing"); !errors.Is(err, apperrors.ErrNotFound) {
 		t.Fatalf("GetByID(missing) err = %v, want ErrNotFound", err)
 	}
-
-	list, err := repo.GetByUserID(ctx, "u1")
-	if err != nil || len(list) != 1 {
-		t.Fatalf("GetByUserID = %v, %v", list, err)
-	}
-}
-
-func TestCloneTodo_Nil(t *testing.T) {
-	if cloneTodo(nil) != nil {
-		t.Fatal("cloneTodo(nil) should be nil")
-	}
 }
 
 func TestInMemoryTodos_ConcurrentAccess(t *testing.T) {

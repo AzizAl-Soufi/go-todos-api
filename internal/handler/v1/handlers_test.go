@@ -165,7 +165,7 @@ func TestTodosHandler_Create(t *testing.T) {
 	t.Run("plain error from service", func(t *testing.T) {
 		svc := &fakeTodosService{err: errPlain}
 		rec := serve(t, "POST /todos", NewTodosHandler(svc).Create, "POST", "/todos", `{"title":"x"}`)
-		assertError(t, rec, http.StatusInternalServerError, errPlain.Error())
+		assertError(t, rec, http.StatusInternalServerError, "internal server error")
 	})
 }
 
@@ -191,7 +191,7 @@ func TestTodosHandler_Get(t *testing.T) {
 	t.Run("plain error", func(t *testing.T) {
 		svc := &fakeTodosService{err: errPlain}
 		rec := serve(t, "GET /todos/{id}", NewTodosHandler(svc).Get, "GET", "/todos/abc", "")
-		assertError(t, rec, http.StatusInternalServerError, errPlain.Error())
+		assertError(t, rec, http.StatusInternalServerError, "internal server error")
 	})
 }
 
@@ -229,7 +229,7 @@ func TestTodosHandler_Update(t *testing.T) {
 	t.Run("service plain error", func(t *testing.T) {
 		svc := &fakeTodosService{err: errPlain}
 		rec := serve(t, "PATCH /todos/{id}", NewTodosHandler(svc).Update, "PATCH", "/todos/abc", `{"completed":true}`)
-		assertError(t, rec, http.StatusInternalServerError, errPlain.Error())
+		assertError(t, rec, http.StatusInternalServerError, "internal server error")
 	})
 }
 
@@ -258,14 +258,14 @@ func TestTodosHandler_Delete(t *testing.T) {
 	t.Run("plain error", func(t *testing.T) {
 		svc := &fakeTodosService{err: errPlain}
 		rec := serve(t, "DELETE /todos/{id}", NewTodosHandler(svc).Delete, "DELETE", "/todos/abc", "")
-		assertError(t, rec, http.StatusInternalServerError, errPlain.Error())
+		assertError(t, rec, http.StatusInternalServerError, "internal server error")
 	})
 }
 
 func TestTodosHandler_GetAll(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		svc := &fakeTodosService{todos: []*domain.Todo{{ID: "1"}, {ID: "2"}}}
-		rec := serve(t, "GET /todos", NewTodosHandler(svc).GettAll, "GET", "/todos", "")
+		rec := serve(t, "GET /todos", NewTodosHandler(svc).GetAll, "GET", "/todos", "")
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", rec.Code)
@@ -277,14 +277,14 @@ func TestTodosHandler_GetAll(t *testing.T) {
 
 	t.Run("app error", func(t *testing.T) {
 		svc := &fakeTodosService{err: middleware.ErrUnauthorizedContext}
-		rec := serve(t, "GET /todos", NewTodosHandler(svc).GettAll, "GET", "/todos", "")
+		rec := serve(t, "GET /todos", NewTodosHandler(svc).GetAll, "GET", "/todos", "")
 		assertError(t, rec, http.StatusUnauthorized, middleware.ErrUnauthorizedContext.Message())
 	})
 
 	t.Run("plain error", func(t *testing.T) {
 		svc := &fakeTodosService{err: errPlain}
-		rec := serve(t, "GET /todos", NewTodosHandler(svc).GettAll, "GET", "/todos", "")
-		assertError(t, rec, http.StatusInternalServerError, errPlain.Error())
+		rec := serve(t, "GET /todos", NewTodosHandler(svc).GetAll, "GET", "/todos", "")
+		assertError(t, rec, http.StatusInternalServerError, "internal server error")
 	})
 }
 
@@ -328,7 +328,7 @@ func TestUsersHandler_Register(t *testing.T) {
 	t.Run("plain error", func(t *testing.T) {
 		svc := &fakeUsersService{err: errPlain}
 		rec := serve(t, "POST /users", NewUsersHandler(svc).Register, "POST", "/users", `{"name":"A","email":"a@b.com"}`)
-		assertError(t, rec, http.StatusInternalServerError, errPlain.Error())
+		assertError(t, rec, http.StatusInternalServerError, "internal server error")
 	})
 }
 
@@ -366,7 +366,7 @@ func TestUsersHandler_RefreshToken(t *testing.T) {
 	t.Run("plain error", func(t *testing.T) {
 		svc := &fakeUsersService{err: errPlain}
 		rec := serve(t, "POST /refresh", NewUsersHandler(svc).RefreshToken, "POST", "/refresh", `{"refresh_token":"r1"}`)
-		assertError(t, rec, http.StatusInternalServerError, errPlain.Error())
+		assertError(t, rec, http.StatusInternalServerError, "internal server error")
 	})
 }
 
@@ -402,7 +402,7 @@ func TestUsersHandler_OverviewEndpoints(t *testing.T) {
 		t.Run(tt.name+"/plain error", func(t *testing.T) {
 			svc := &fakeUsersService{err: errPlain}
 			rec := serve(t, "GET /me", tt.handler(NewUsersHandler(svc)), "GET", "/me", "")
-			assertError(t, rec, http.StatusInternalServerError, errPlain.Error())
+			assertError(t, rec, http.StatusInternalServerError, "internal server error")
 		})
 	}
 }
@@ -428,6 +428,6 @@ func TestUsersHandler_Delete(t *testing.T) {
 	t.Run("plain error", func(t *testing.T) {
 		svc := &fakeUsersService{err: errPlain}
 		rec := serve(t, "DELETE /me", NewUsersHandler(svc).Delete, "DELETE", "/me", "")
-		assertError(t, rec, http.StatusInternalServerError, errPlain.Error())
+		assertError(t, rec, http.StatusInternalServerError, "internal server error")
 	})
 }

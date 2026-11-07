@@ -2,17 +2,15 @@ package todos
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/database/mongodb"
-	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/shared/errors"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/domain"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/shared/ids"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
-// private struct implementing domain.TodosRepository
 type mongoTodoRepo struct {
 	coll *mongo.Collection
 }
@@ -25,16 +23,13 @@ type mongoTodo struct {
 	CreatedAt time.Time     `bson:"createdAt,omitempty"`
 }
 
-func parseTodoID(id string) (bson.ObjectID, error) {
-	parsed, err := bson.ObjectIDFromHex(id)
-	if err != nil {
-		return bson.NilObjectID, apperrors.Validation("INVALID_ID", "invalid id format")
-	}
-	return parsed, nil
-}
-
 func toDomainTodo(todo *mongoTodo) *domain.Todo {
 	return &domain.Todo{ID: todo.ID.Hex(), UserID: todo.UserID.Hex(), Title: todo.Title, Completed: todo.Completed, CreatedAt: todo.CreatedAt}
+}
+
+// ownedBy filters a single todo by its ID and owner.
+func ownedBy(id, userID bson.ObjectID) bson.M {
+	return bson.M{"_id": id, "userId": userID}
 }
 
 func NewMongoTodosRepository(db mongodb.MongoDBClient) TodosRepository {
@@ -43,110 +38,71 @@ func NewMongoTodosRepository(db mongodb.MongoDBClient) TodosRepository {
 	}
 }
 
-func (r *mongoTodoRepo) Create(ctx context.Context, userId string, todo *domain.Todo) error {
-	userObjectID, err := parseTodoID(userId)
+func (r *mongoTodoRepo) Create(ctx context.Context, userID string, todo *domain.Todo) error {
+	todoOID, userOID, err := ids.ObjectIDPair(todo.ID, userID)
 	if err != nil {
 		return err
 	}
-	todoObjectID, err := parseTodoID(todo.ID)
-	if err != nil {
-		return err
-	}
-	stored := &mongoTodo{ID: todoObjectID, UserID: userObjectID, Title: todo.Title, Completed: todo.Completed, CreatedAt: todo.CreatedAt}
 
-	_, err = r.coll.InsertOne(ctx, stored)
+	_, err = r.coll.InsertOne(ctx, &mongoTodo{
+		ID:        todoOID,
+		UserID:    userOID,
+		Title:     todo.Title,
+		Completed: todo.Completed,
+		CreatedAt: todo.CreatedAt,
+	})
 	return err
 }
 
-func (r *mongoTodoRepo) Update(ctx context.Context, id string, userId string, dto *domain.UpdateTodoDTO) error {
-	idObjectID, err := parseTodoID(id)
+func (r *mongoTodoRepo) Update(ctx context.Context, id, userID string, dto *domain.UpdateTodoDTO) error {
+	todoOID, userOID, err := ids.ObjectIDPair(id, userID)
 	if err != nil {
 		return err
 	}
-	userObjectID, err := parseTodoID(userId)
-	if err != nil {
-		return err
-	}
-	updateFields := bson.M{}
 
+	set := bson.M{}
 	if dto.Title != nil {
-		updateFields["title"] = *dto.Title
+		set["title"] = *dto.Title
 	}
-
 	if dto.Completed != nil {
-		updateFields["completed"] = *dto.Completed
+		set["completed"] = *dto.Completed
 	}
-
-	if len(updateFields) == 0 {
+	if len(set) == 0 {
 		return nil
 	}
 
-	_, err = r.coll.UpdateOne(
-		ctx,
-		bson.M{"_id": idObjectID, "userId": userObjectID},
-		bson.M{"$set": updateFields},
-	)
-
-	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return apperrors.ErrNotFound
-		}
-
-		return err
-	}
-
-	return nil
+	_, err = r.coll.UpdateOne(ctx, ownedBy(todoOID, userOID), bson.M{"$set": set})
+	return mongodb.MapNotFound(err)
 }
 
-func (r *mongoTodoRepo) Get(ctx context.Context, id string, userId string) (*domain.Todo, error) {
-	idObjectID, err := parseTodoID(id)
+func (r *mongoTodoRepo) Get(ctx context.Context, id, userID string) (*domain.Todo, error) {
+	todoOID, userOID, err := ids.ObjectIDPair(id, userID)
 	if err != nil {
 		return nil, err
 	}
-	userObjectID, err := parseTodoID(userId)
-	if err != nil {
-		return nil, err
-	}
+
 	var todo mongoTodo
-
-	err = r.coll.FindOne(ctx, bson.M{"_id": idObjectID, "userId": userObjectID}).Decode(&todo)
-	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, apperrors.ErrNotFound
-		}
-		return nil, err
+	if err := r.coll.FindOne(ctx, ownedBy(todoOID, userOID)).Decode(&todo); err != nil {
+		return nil, mongodb.MapNotFound(err)
 	}
-
 	return toDomainTodo(&todo), nil
 }
 
-func (r *mongoTodoRepo) Delete(ctx context.Context, todoId string, userId string) error {
-	todoObjectID, err := parseTodoID(todoId)
+func (r *mongoTodoRepo) Delete(ctx context.Context, id, userID string) error {
+	todoOID, userOID, err := ids.ObjectIDPair(id, userID)
 	if err != nil {
 		return err
 	}
-	userObjectID, err := parseTodoID(userId)
-	if err != nil {
-		return err
-	}
-	result, err := r.coll.DeleteOne(ctx, bson.M{"_id": todoObjectID, "userId": userObjectID})
-	if err != nil {
-		return err
-	}
-
-	if result.DeletedCount == 0 {
-		return apperrors.ErrNotFound
-	}
-
-	return nil
+	return mongodb.RequireDeleted(r.coll.DeleteOne(ctx, ownedBy(todoOID, userOID)))
 }
 
-func (r *mongoTodoRepo) GetAll(ctx context.Context, userId string) ([]*domain.Todo, error) {
-	userObjectID, err := parseTodoID(userId)
+func (r *mongoTodoRepo) GetAll(ctx context.Context, userID string) ([]*domain.Todo, error) {
+	userOID, err := ids.ObjectID(userID)
 	if err != nil {
 		return nil, err
 	}
-	cursor, err := r.coll.Find(ctx, bson.M{"userId": userObjectID})
+
+	cursor, err := r.coll.Find(ctx, bson.M{"userId": userOID})
 	if err != nil {
 		return nil, err
 	}
@@ -157,30 +113,17 @@ func (r *mongoTodoRepo) GetAll(ctx context.Context, userId string) ([]*domain.To
 		return nil, err
 	}
 
-	if todos == nil {
-		return []*domain.Todo{}, nil
-	}
-
-	domainTodos := make([]*domain.Todo, 0, len(todos))
+	result := make([]*domain.Todo, 0, len(todos))
 	for _, todo := range todos {
-		domainTodos = append(domainTodos, toDomainTodo(todo))
+		result = append(result, toDomainTodo(todo))
 	}
-	return domainTodos, nil
+	return result, nil
 }
 
-func (r *mongoTodoRepo) DeleteByUserID(ctx context.Context, userId string) error {
-	userObjectID, err := parseTodoID(userId)
+func (r *mongoTodoRepo) DeleteByUserID(ctx context.Context, userID string) error {
+	userOID, err := ids.ObjectID(userID)
 	if err != nil {
 		return err
 	}
-	result, err := r.coll.DeleteMany(ctx, bson.M{"userId": userObjectID})
-	if err != nil {
-		return err
-	}
-
-	if result.DeletedCount == 0 {
-		return apperrors.ErrNotFound
-	}
-
-	return nil
+	return mongodb.RequireDeleted(r.coll.DeleteMany(ctx, bson.M{"userId": userOID}))
 }

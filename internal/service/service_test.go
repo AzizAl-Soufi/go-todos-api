@@ -2,14 +2,9 @@ package service
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 
@@ -18,39 +13,22 @@ import (
 	"github.com/AzizAl-Soufi/go-todos-api/internal/middleware"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/repository/todos"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/repository/users"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/testutil"
 )
 
 // testKey is generated once per test binary; RSA key generation is slow and
 // tests must not depend on the (gitignored) keys in secrets/.
-var testKey = sync.OnceValues(func() (*rsa.PrivateKey, error) {
-	return rsa.GenerateKey(rand.Reader, 2048)
-})
+var (
+	testKeyOnce sync.Once
+	testKey     *rsa.PrivateKey
+)
 
 func newTestJWTMiddleware(t *testing.T) *middleware.JWTMiddleware {
 	t.Helper()
 
-	key, err := testKey()
-	if err != nil {
-		t.Fatalf("generate rsa key: %v", err)
-	}
-	pubDER, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
-	if err != nil {
-		t.Fatalf("marshal public key: %v", err)
-	}
-
-	dir := t.TempDir()
-	jwtCfg := &config.JWTConfig{
-		PrivateKeyPath: filepath.Join(dir, "private.pem"),
-		PublicKeyPath:  filepath.Join(dir, "public.pem"),
-	}
-	privPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})
-	if err := os.WriteFile(jwtCfg.PrivateKeyPath, privPEM, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(jwtCfg.PublicKeyPath, pubPEM, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	testKeyOnce.Do(func() { testKey = testutil.NewRSAKey(t) })
+	priv, pub := testutil.WriteRSAKeyFiles(t, testKey)
+	jwtCfg := &config.JWTConfig{PrivateKeyPath: priv, PublicKeyPath: pub}
 
 	jwt, err := middleware.NewJWTMiddleware(jwtCfg)
 	if err != nil {

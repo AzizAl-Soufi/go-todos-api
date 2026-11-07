@@ -80,7 +80,7 @@ No token versioning, rotation, blacklist, or logout endpoint.
 | DELETE | `/user` | Yes | `UsersHandler.Delete` |
 | GET | `/overview` | Yes | `UsersHandler.GetOverview` |
 | POST | `/todos` | Yes | `TodosHandler.Create` |
-| GET | `/todos` | Yes | `TodosHandler.GettAll` |
+| GET | `/todos` | Yes | `TodosHandler.GetAll` |
 | GET | `/todos/{id}` | Yes | `TodosHandler.Get` |
 | PUT | `/todos/{id}` | Yes | `TodosHandler.Update` |
 | DELETE | `/todos/{id}` | Yes | `TodosHandler.Delete` |

@@ -128,12 +128,6 @@ func TestInMemoryUsers_Delete(t *testing.T) {
 	}
 }
 
-func TestCloneUser_Nil(t *testing.T) {
-	if cloneUser(nil) != nil {
-		t.Fatal("cloneUser(nil) should be nil")
-	}
-}
-
 func TestInMemoryUsers_ConcurrentRegisterSameEmail(t *testing.T) {
 	ctx := context.Background()
 	repo := NewInMemoryUsersRepository()

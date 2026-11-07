@@ -5,9 +5,9 @@ import (
 	"time"
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/domain"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/middleware"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/repository/todos"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/repository/users"
-	"github.com/AzizAl-Soufi/go-todos-api/internal/middleware"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -20,95 +20,68 @@ func NewTodosService(repo todos.TodosRepository, usersRepo users.UsersRepository
 	return &todoService{repo: repo, usersRepo: usersRepo}
 }
 
-func (s *todoService) getAuthenticatedUser(ctx context.Context) (*domain.User, error) {
-	claims, ok := middleware.GetAuthorization(ctx)
-	if !ok {
-		return nil, middleware.ErrUnauthorizedContext
-	}
-
-	authenticatedUser, err := s.usersRepo.Auth(ctx, claims.ID)
+// currentUserID resolves the caller and confirms the account still exists.
+func (s *todoService) currentUserID(ctx context.Context) (string, error) {
+	claims, err := middleware.AuthorizationFrom(ctx)
 	if err != nil {
-		return nil, middleware.ErrUnauthorized
+		return "", err
 	}
-
-	return authenticatedUser, nil
+	user, err := s.usersRepo.Auth(ctx, claims.ID)
+	if err != nil {
+		return "", middleware.ErrUnauthorized
+	}
+	return user.ID, nil
 }
 
-func (s *todoService) CreateTodo(ctx context.Context, todo *domain.CreateTodoDTO) (*domain.Todo, error) {
-
-	user, err := s.getAuthenticatedUser(ctx)
+func (s *todoService) CreateTodo(ctx context.Context, dto *domain.CreateTodoDTO) (*domain.Todo, error) {
+	userID, err := s.currentUserID(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	newTodo := &domain.Todo{
+	todo := &domain.Todo{
 		ID:        bson.NewObjectID().Hex(),
-		UserID:    user.ID,
-		Title:     todo.Title,
-		Completed: false,
+		UserID:    userID,
+		Title:     dto.Title,
 		CreatedAt: time.Now().UTC(),
 	}
-
-	// Persist using the interface
-	err = s.repo.Create(ctx, user.ID, newTodo)
-	if err != nil {
+	if err := s.repo.Create(ctx, userID, todo); err != nil {
 		return nil, err
 	}
-
-	return newTodo, nil
+	return todo, nil
 }
 
 func (s *todoService) GetTodo(ctx context.Context, id string) (*domain.Todo, error) {
-	user, err := s.getAuthenticatedUser(ctx)
+	userID, err := s.currentUserID(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	todo, err := s.repo.Get(ctx, id, user.ID)
-	if err != nil {
-		return nil, err
-	}
-
-	return todo, nil
+	return s.repo.Get(ctx, id, userID)
 }
 
 func (s *todoService) UpdateTodo(ctx context.Context, id string, params *domain.UpdateTodoDTO) (*domain.Todo, error) {
-	user, err := s.getAuthenticatedUser(ctx)
+	userID, err := s.currentUserID(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	err = s.repo.Update(ctx, id, user.ID, params)
-	if err != nil {
+	if err := s.repo.Update(ctx, id, userID, params); err != nil {
 		return nil, err
 	}
-
-	todo, err := s.repo.Get(ctx, id, user.ID)
-	if err != nil {
-		return nil, err
-	}
-
-	return todo, nil
+	return s.repo.Get(ctx, id, userID)
 }
 
 func (s *todoService) DeleteTodo(ctx context.Context, id string) error {
-	user, err := s.getAuthenticatedUser(ctx)
+	userID, err := s.currentUserID(ctx)
 	if err != nil {
 		return err
 	}
-
-	if err := s.repo.Delete(ctx, id, user.ID); err != nil {
-		return err
-	}
-
-	return nil
+	return s.repo.Delete(ctx, id, userID)
 }
 
 func (s *todoService) GetTodos(ctx context.Context) ([]*domain.Todo, error) {
-	user, err := s.getAuthenticatedUser(ctx)
+	userID, err := s.currentUserID(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return s.repo.GetAll(ctx, user.ID)
+	return s.repo.GetAll(ctx, userID)
 }
