@@ -5,8 +5,10 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/domain"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/opaque"
 )
 
 // Register creates an account, starts a session and emails a verification
@@ -40,7 +42,10 @@ func (h RegisterHandler) Handle(ctx context.Context, cmd Register) (Credentials,
 			return err
 		}
 		link, err = h.issueToken(ctx, h.Verifications, user.ID, h.Config.VerificationTTL, h.Config.VerificationURL)
-		return err
+		if err != nil {
+			return err
+		}
+		return h.record(ctx, user.ID, "user.registered", nil)
 	})
 	if err != nil {
 		return Credentials{}, err
@@ -64,9 +69,20 @@ func (h LoginHandler) Handle(ctx context.Context, cmd Login) (Credentials, error
 		return Credentials{}, err
 	}
 	if err := h.checkPassword(user, cmd.Password, domain.ErrInvalidCredentials); err != nil {
+		if user != nil { // the account owner should see attempts on it
+			if err := h.Audit.Record(ctx, application.AuditEntry{UserID: user.ID, Action: "session.login_failed"}); err != nil {
+				return Credentials{}, err
+			}
+		}
 		return Credentials{}, err
 	}
-	tokens, err := h.startSession(ctx, user, "")
+	var tokens Tokens
+	err = h.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		if tokens, err = h.startSession(ctx, user, ""); err != nil {
+			return err
+		}
+		return h.record(ctx, user.ID, "session.login", nil)
+	})
 	if err != nil {
 		return Credentials{}, err
 	}
@@ -82,7 +98,7 @@ type Refresh struct {
 type RefreshHandler struct{ *base }
 
 func (h RefreshHandler) Handle(ctx context.Context, cmd Refresh) (Tokens, error) {
-	sess, err := h.Sessions.FindByTokenHash(ctx, hashToken(cmd.RefreshToken))
+	sess, err := h.Sessions.FindByTokenHash(ctx, opaque.Hash(cmd.RefreshToken))
 	if err != nil {
 		return Tokens{}, apperrors.NotFoundAs(err, domain.ErrInvalidRefreshToken)
 	}
@@ -117,7 +133,13 @@ func (h RefreshHandler) Handle(ctx context.Context, cmd Refresh) (Tokens, error)
 
 func (h RefreshHandler) revokeFamilyAfterReuse(ctx context.Context, sess *domain.Session) error {
 	slog.Warn("refresh token reuse detected; revoking session family", "user_id", sess.UserID, "family_id", sess.FamilyID)
-	if err := h.Sessions.RevokeFamily(ctx, sess.FamilyID, h.Now()); err != nil {
+	err := h.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		if err := h.Sessions.RevokeFamily(ctx, sess.FamilyID, h.Now()); err != nil {
+			return err
+		}
+		return h.Audit.Record(ctx, application.AuditEntry{UserID: sess.UserID, Action: "session.refresh_reuse_detected"})
+	})
+	if err != nil {
 		return err
 	}
 	return domain.ErrRefreshTokenReused
@@ -132,14 +154,19 @@ type Logout struct {
 type LogoutHandler struct{ *base }
 
 func (h LogoutHandler) Handle(ctx context.Context, cmd Logout) error {
-	sess, err := h.Sessions.FindByTokenHash(ctx, hashToken(cmd.RefreshToken))
+	sess, err := h.Sessions.FindByTokenHash(ctx, opaque.Hash(cmd.RefreshToken))
 	if errors.Is(err, apperrors.ErrNotFound) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	return h.Sessions.RevokeFamily(ctx, sess.FamilyID, h.Now())
+	return h.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		if err := h.Sessions.RevokeFamily(ctx, sess.FamilyID, h.Now()); err != nil {
+			return err
+		}
+		return h.record(ctx, sess.UserID, "session.logout", nil)
+	})
 }
 
 // LogoutAll revokes every session and, by bumping the token version, every
@@ -155,12 +182,18 @@ func (h LogoutAllHandler) Handle(ctx context.Context, cmd LogoutAll) error {
 		if err := h.Users.IncrementTokenVersion(ctx, cmd.UserID); err != nil {
 			return err
 		}
-		return h.Sessions.RevokeAllForUser(ctx, cmd.UserID, h.Now())
+		if err := h.Sessions.RevokeAllForUser(ctx, cmd.UserID, h.Now()); err != nil {
+			return err
+		}
+		return h.record(ctx, cmd.UserID, "session.logout_all", nil)
 	})
 }
 
 // DeleteAccount removes the user and everything they own in one transaction
-// (where the database supports it), across the identity and todos modules.
+// (where the database supports it), across modules: the user leaves their
+// teams (teams they own alone are deleted; owning a team with other members
+// blocks the deletion), and their personal todos and security log go too.
+// Team records they created stay with the team.
 type DeleteAccount struct {
 	UserID string
 }
@@ -171,10 +204,12 @@ func (h DeleteAccountHandler) Handle(ctx context.Context, cmd DeleteAccount) err
 	id := cmd.UserID
 	return h.Tx.WithinTx(ctx, func(ctx context.Context) error {
 		for _, step := range []func() error{
+			func() error { return h.Teams.RemoveUser(ctx, id) },
 			func() error { return h.Todos.DeleteAllForUser(ctx, id) },
 			func() error { return h.Sessions.DeleteAllForUser(ctx, id) },
 			func() error { return h.Verifications.DeleteForUser(ctx, id) },
 			func() error { return h.PasswordResets.DeleteForUser(ctx, id) },
+			func() error { return h.Audit.DeleteUserLog(ctx, id) },
 			func() error { return h.Users.Delete(ctx, id) },
 		} {
 			if err := step(); err != nil {

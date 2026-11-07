@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/security"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/config"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/dbtest"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/testutil"
@@ -27,9 +28,25 @@ import (
 
 // captureMailer records email links instead of sending them.
 type captureMailer struct {
-	mu     sync.Mutex
-	links  map[string]string // email -> latest verification link
-	resets map[string]string // email -> latest password reset link
+	mu      sync.Mutex
+	links   map[string]string // email -> latest verification link
+	resets  map[string]string // email -> latest password reset link
+	invites map[string]string // email -> latest team invitation link
+}
+
+func (m *captureMailer) SendInvitation(_ context.Context, to, _, _ string, _ access.Role, link string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.invites[to] = link
+	return nil
+}
+
+// inviteToken returns the token of the latest invitation sent to email.
+func (m *captureMailer) inviteToken(t *testing.T, email string) string {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return linkToken(t, m.invites[email])
 }
 
 func (m *captureMailer) SendVerificationEmail(_ context.Context, to, _, link string) error {
@@ -97,9 +114,9 @@ func newTestServer(t *testing.T, mutate ...func(*config.Config)) *testServer {
 		m(cfg)
 	}
 
-	mailer := &captureMailer{links: map[string]string{}, resets: map[string]string{}}
+	mailer := &captureMailer{links: map[string]string{}, resets: map[string]string{}, invites: map[string]string{}}
 	tokens := security.NewJWT(testutil.NewRSAKey(t), time.Minute)
-	mods := wireModules(testStorage(t), security.NewBcryptHasher(bcrypt.MinCost), tokens, mailer, cfg)
+	mods := wireModules(testStorage(t), security.NewBcryptHasher(bcrypt.MinCost), tokens, mailers{identity: mailer, teams: mailer}, cfg)
 
 	srv := httptest.NewServer(newRouter(cfg, mods))
 	t.Cleanup(srv.Close)

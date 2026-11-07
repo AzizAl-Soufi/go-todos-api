@@ -1,9 +1,7 @@
 package pgstore_test
 
 import (
-	"context"
 	"testing"
-	"time"
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/adapters/persistence/pgstore"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/adapters/persistence/storetest"
@@ -22,19 +20,9 @@ func TestContract(t *testing.T) {
 			Collections: pgstore.NewCollections(pool),
 			Tx:          postgres.NewTxRunner(pool),
 			AtomicTx:    true,
-			// Records reference users(id), so owners must exist. The todos
-			// module doesn't own users, so the row is inserted directly.
-			NewUser: func(t *testing.T) string {
-				t.Helper()
-				var id uuid.UUID
-				err := pool.QueryRow(context.Background(),
-					"INSERT INTO users (name, email, created_at) VALUES ('Owner', $1, $2) RETURNING id",
-					uuid.NewString()+"@example.com", time.Now()).Scan(&id)
-				if err != nil {
-					t.Fatalf("insert owner: %v", err)
-				}
-				return id.String()
-			},
+			// User and team IDs are plain references (no foreign keys).
+			NewUser:   func(*testing.T) string { return uuid.NewString() },
+			NewID:     uuid.NewString,
 			MissingID: uuid.NewString(),
 		}
 	})

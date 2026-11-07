@@ -33,11 +33,12 @@ func ParseSort(s string) (Sort, error) {
 	return "", ErrInvalidSort
 }
 
-// Query selects and orders a user's todos. Zero values don't filter. It is the
+// Query selects and orders the todos in scope. Zero values don't filter. It is the
 // single definition of filter semantics: the memory store applies it
 // directly, and the database stores translate it (the store contract tests
 // check they agree).
 type Query struct {
+	OwnerFilter
 	// ProjectID limits to one project; Inbox limits to todos without one.
 	ProjectID string
 	Inbox     bool
@@ -59,7 +60,8 @@ type Query struct {
 
 func (q Query) Matches(t *Todo) bool {
 	switch {
-	case q.ProjectID != "" && t.ProjectID != q.ProjectID,
+	case !q.OwnerFilter.Matches(t.TeamID),
+		q.ProjectID != "" && t.ProjectID != q.ProjectID,
 		q.Inbox && t.ProjectID != "",
 		t.ProjectID != "" && slices.Contains(q.ExcludeProjectIDs, t.ProjectID),
 		len(q.Statuses) > 0 && !slices.Contains(q.Statuses, t.Status),

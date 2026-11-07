@@ -10,7 +10,7 @@
 //	application/command/   write use cases, one handler per command
 //	application/query/     read use cases, one handler per query
 //	transport/             driving adapters (HTTP)
-//	adapters/              driven adapters (persistence, security, mail, todos gateway)
+//	adapters/              driven adapters (persistence, security, mail, todos, teams and audit gateways)
 package identity
 
 import (
@@ -41,6 +41,8 @@ type Deps struct {
 	Tokens         application.AccessTokens
 	Mailer         application.Mailer
 	Todos          application.TodoGateway
+	Teams          application.TeamMemberships // nil: no teams to leave
+	Audit          application.AuditLog        // nil records nothing
 	Tx             tx.Runner
 	Config         Config
 	Now            func() time.Time // nil means time.Now
@@ -55,7 +57,8 @@ func New(d Deps) *Module {
 	return &Module{
 		Commands: command.New(command.Deps{
 			Users: d.Users, Sessions: d.Sessions, Verifications: d.Verifications, PasswordResets: d.PasswordResets,
-			Hasher: d.Hasher, Tokens: d.Tokens, Mailer: d.Mailer, Todos: d.Todos, Tx: d.Tx, Config: d.Config, Now: d.Now,
+			Hasher: d.Hasher, Tokens: d.Tokens, Mailer: d.Mailer, Todos: d.Todos, Teams: d.Teams, Audit: d.Audit,
+			Tx: d.Tx, Config: d.Config, Now: d.Now,
 		}),
 		Queries: query.New(query.Deps{Users: d.Users, Tokens: d.Tokens, Todos: d.Todos}),
 	}

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"log/slog"
+	"net"
 	"net/http"
 	"regexp"
 	"time"
@@ -78,4 +79,41 @@ func AccessLog(next http.Handler) http.Handler {
 			"request_id", RequestIDFrom(r.Context()),
 		)
 	})
+}
+
+// Client describes who sent a request, for audit trails.
+type Client struct {
+	IP        string
+	UserAgent string
+}
+
+type clientKey struct{}
+
+// maxUserAgent bounds what is kept of the User-Agent header.
+const maxUserAgent = 256
+
+// ClientInfo stores the caller's IP (from RemoteAddr; X-Forwarded-For is
+// deliberately not trusted) and User-Agent in the context.
+func ClientInfo(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			ip = r.RemoteAddr
+		}
+		ua := r.UserAgent()
+		if len(ua) > maxUserAgent {
+			ua = ua[:maxUserAgent]
+		}
+		next.ServeHTTP(w, r.WithContext(WithClient(r.Context(), Client{IP: ip, UserAgent: ua})))
+	})
+}
+
+func WithClient(ctx context.Context, c Client) context.Context {
+	return context.WithValue(ctx, clientKey{}, c)
+}
+
+// ClientFrom returns the client stored by ClientInfo (zero outside requests).
+func ClientFrom(ctx context.Context) Client {
+	c, _ := ctx.Value(clientKey{}).(Client)
+	return c
 }

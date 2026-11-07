@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/domain"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 )
@@ -24,8 +25,10 @@ func (h VerifyEmailHandler) Handle(ctx context.Context, cmd VerifyEmail) error {
 	if err != nil {
 		return err
 	}
-	err = h.Users.MarkEmailVerified(ctx, v.UserID, h.Now())
-	return apperrors.NotFoundAs(err, domain.ErrInvalidVerificationToken)
+	if err := h.Users.MarkEmailVerified(ctx, v.UserID, h.Now()); err != nil {
+		return apperrors.NotFoundAs(err, domain.ErrInvalidVerificationToken)
+	}
+	return h.record(ctx, v.UserID, "email.verified", nil)
 }
 
 // ResendVerification emails a fresh link, invalidating the previous one.
@@ -68,6 +71,10 @@ func (h RequestPasswordResetHandler) Handle(ctx context.Context, cmd RequestPass
 	}
 	link, err := h.issueToken(ctx, h.PasswordResets, user.ID, h.Config.PasswordResetTTL, h.Config.PasswordResetURL)
 	if err != nil {
+		return err
+	}
+	// Unauthenticated: the requester may not be the account owner.
+	if err := h.Audit.Record(ctx, application.AuditEntry{UserID: user.ID, Action: "password.reset_requested"}); err != nil {
 		return err
 	}
 
@@ -115,7 +122,10 @@ func (h ResetPasswordHandler) Handle(ctx context.Context, cmd ResetPassword) err
 		if err := h.Users.MarkEmailVerified(ctx, reset.UserID, h.Now()); err != nil {
 			return err
 		}
-		return h.Verifications.DeleteForUser(ctx, reset.UserID)
+		if err := h.Verifications.DeleteForUser(ctx, reset.UserID); err != nil {
+			return err
+		}
+		return h.record(ctx, reset.UserID, "password.reset", nil)
 	})
 }
 
@@ -155,8 +165,10 @@ func (h ChangePasswordHandler) Handle(ctx context.Context, cmd ChangePassword) (
 		if err != nil {
 			return err
 		}
-		tokens, err = h.startSession(ctx, updated, "")
-		return err
+		if tokens, err = h.startSession(ctx, updated, ""); err != nil {
+			return err
+		}
+		return h.record(ctx, user.ID, "password.changed", nil)
 	})
 	return tokens, err
 }

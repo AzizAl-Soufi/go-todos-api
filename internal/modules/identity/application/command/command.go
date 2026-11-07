@@ -6,10 +6,6 @@ package command
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/url"
@@ -19,6 +15,7 @@ import (
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/domain"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/opaque"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/tx"
 	"github.com/google/uuid"
 )
@@ -53,6 +50,8 @@ type Deps struct {
 	Tokens         application.AccessTokenIssuer
 	Mailer         application.Mailer
 	Todos          application.TodoDeleter
+	Teams          application.TeamMemberships // nil: no teams to leave
+	Audit          application.AuditLog        // nil records nothing
 	Tx             tx.Runner
 	Config         Config
 	// Now is the clock; nil means time.Now.
@@ -81,6 +80,12 @@ func New(d Deps) Handlers {
 	if d.Now == nil {
 		d.Now = time.Now
 	}
+	if d.Teams == nil {
+		d.Teams = noTeams{}
+	}
+	if d.Audit == nil {
+		d.Audit = noAudit{}
+	}
 	b := &base{Deps: d}
 	return Handlers{
 		Register: RegisterHandler{b}, Login: LoginHandler{b}, Refresh: RefreshHandler{b},
@@ -89,6 +94,20 @@ func New(d Deps) Handlers {
 		RequestPasswordReset: RequestPasswordResetHandler{b}, ResetPassword: ResetPasswordHandler{b},
 		ChangePassword: ChangePasswordHandler{b}, DeleteAccount: DeleteAccountHandler{b},
 	}
+}
+
+type (
+	noTeams struct{}
+	noAudit struct{}
+)
+
+func (noTeams) RemoveUser(context.Context, string) error             { return nil }
+func (noAudit) Record(context.Context, application.AuditEntry) error { return nil }
+func (noAudit) DeleteUserLog(context.Context, string) error          { return nil }
+
+// record writes a security event about userID, done by userID itself.
+func (b *base) record(ctx context.Context, userID, action string, details map[string]string) error {
+	return b.Audit.Record(ctx, application.AuditEntry{UserID: userID, ActorID: userID, Action: action, Details: details})
 }
 
 // Tokens is the credential pair issued on registration, login, refresh and
@@ -121,7 +140,7 @@ func (b *base) startSession(ctx context.Context, user *domain.User, familyID str
 	if familyID == "" {
 		familyID = uuid.NewString()
 	}
-	refresh, refreshHash, err := newOpaqueToken()
+	refresh, refreshHash, err := opaque.New()
 	if err != nil {
 		return Tokens{}, err
 	}
@@ -143,7 +162,7 @@ func (b *base) startSession(ctx context.Context, user *domain.User, familyID str
 // pending one, and returns the link (linkBase?token=...) to email.
 func (b *base) issueToken(ctx context.Context, repo application.OneTimeTokenRepository, userID string, ttl time.Duration, linkBase string) (string, error) {
 	now := b.Now()
-	token, hash, err := newOpaqueToken()
+	token, hash, err := opaque.New()
 	if err != nil {
 		return "", err
 	}
@@ -160,7 +179,7 @@ func (b *base) consumeToken(ctx context.Context, repo application.OneTimeTokenRe
 	if token == "" {
 		return nil, invalid
 	}
-	t, err := repo.Consume(ctx, hashToken(token))
+	t, err := repo.Consume(ctx, opaque.Hash(token))
 	if err != nil {
 		return nil, apperrors.NotFoundAs(err, invalid)
 	}
@@ -225,20 +244,4 @@ func (b *base) sendVerification(ctx context.Context, user *domain.User, link str
 	if err := b.Mailer.SendVerificationEmail(ctx, user.Email, user.Name, link); err != nil {
 		slog.Error("failed to send verification email", "user_id", user.ID, "error", err)
 	}
-}
-
-// newOpaqueToken returns a random URL-safe token and its SHA-256 hex digest.
-// Only the digest is stored, so a database leak does not expose usable tokens.
-func newOpaqueToken() (token, hash string, err error) {
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return "", "", apperrors.InternalWrap("RANDOM_FAILED", "failed to generate token", err)
-	}
-	token = base64.RawURLEncoding.EncodeToString(raw)
-	return token, hashToken(token), nil
-}
-
-func hashToken(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
 }

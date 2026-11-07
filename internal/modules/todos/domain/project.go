@@ -51,8 +51,21 @@ type MetaChanges struct {
 	Archived    *bool
 }
 
-func (c MetaChanges) Empty() bool {
-	return c.Name == nil && c.Description == nil && c.Icon == nil && c.Color == nil && c.Archived == nil
+func (c MetaChanges) Empty() bool { return len(c.Fields()) == 0 }
+
+// Fields names the fields c changes, in API spelling (for the audit log).
+func (c MetaChanges) Fields() []string {
+	var out []string
+	for name, set := range map[string]bool{
+		"name": c.Name != nil, "description": c.Description != nil, "icon": c.Icon != nil,
+		"color": c.Color != nil, "archived": c.Archived != nil,
+	} {
+		if set {
+			out = append(out, name)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // NewMeta builds the Meta of a new project or collection from the fields set
@@ -120,8 +133,11 @@ func (m *Meta) Apply(c MetaChanges, now time.Time) error {
 
 // Project is a list of todos (like a Google Tasks list or a Notion page).
 type Project struct {
-	ID     string
+	ID string
+	// UserID is the creator; for a personal project also its owner.
 	UserID string
+	// TeamID is the owning team; "" is personal. It never changes.
+	TeamID string
 	// CollectionID is the collection the project is filed under; "" is none.
 	CollectionID string
 	Meta
@@ -130,7 +146,8 @@ type Project struct {
 // Collection groups projects (e.g. "Work", "Personal").
 type Collection struct {
 	ID     string
-	UserID string
+	UserID string // the creator; for a personal collection also its owner
+	TeamID string // the owning team; "" is personal. It never changes.
 	Meta
 }
 
@@ -154,12 +171,23 @@ func (f ArchiveFilter) Matches(m Meta) bool {
 	}
 }
 
-// ProjectFilter selects a user's projects.
+// ProjectFilter selects projects in scope.
 type ProjectFilter struct {
+	OwnerFilter
 	CollectionID string // "" means any collection (or none)
 	Archive      ArchiveFilter
 }
 
 func (f ProjectFilter) Matches(p *Project) bool {
-	return f.Archive.Matches(p.Meta) && (f.CollectionID == "" || p.CollectionID == f.CollectionID)
+	return f.OwnerFilter.Matches(p.TeamID) && f.Archive.Matches(p.Meta) && (f.CollectionID == "" || p.CollectionID == f.CollectionID)
+}
+
+// CollectionFilter selects collections in scope.
+type CollectionFilter struct {
+	OwnerFilter
+	Archive ArchiveFilter
+}
+
+func (f CollectionFilter) Matches(c *Collection) bool {
+	return f.OwnerFilter.Matches(c.TeamID) && f.Archive.Matches(c.Meta)
 }

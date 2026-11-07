@@ -26,6 +26,7 @@ func TestContract(t *testing.T) {
 			Tx:          runner,
 			AtomicTx:    !standalone,
 			NewUser:     func(*testing.T) string { return bson.NewObjectID().Hex() },
+			NewID:       func() string { return bson.NewObjectID().Hex() },
 			MissingID:   bson.NewObjectID().Hex(),
 		}
 	})

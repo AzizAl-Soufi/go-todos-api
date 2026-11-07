@@ -8,7 +8,7 @@ import (
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/application/command"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/application/query"
-	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/auth"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/httpx"
 )
 
@@ -17,10 +17,11 @@ type handler struct {
 	qry query.Handlers
 }
 
-// Register mounts the routes; protect must authenticate the caller.
+// Register mounts the routes; protect must authenticate the caller and
+// resolve them into an access.Actor.
 func Register(mux *http.ServeMux, cmd command.Handlers, qry query.Handlers, protect httpx.Middleware) {
 	h := handler{cmd: cmd, qry: qry}
-	routes := map[string]func(r *http.Request, userID string) (int, any, error){
+	routes := map[string]func(r *http.Request, a access.Actor) (int, any, error){
 		"POST /todos":        h.createTodo,
 		"GET /todos":         h.listTodos,
 		"GET /todos/{id}":    h.getTodo,
@@ -41,7 +42,7 @@ func Register(mux *http.ServeMux, cmd command.Handlers, qry query.Handlers, prot
 		"DELETE /collections/{id}": h.deleteCollection,
 	}
 	for pattern, fn := range routes {
-		mux.Handle(pattern, protect(auth.ForUser(fn)))
+		mux.Handle(pattern, protect(access.ForActor(fn)))
 	}
 }
 

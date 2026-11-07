@@ -16,14 +16,21 @@ type Querier interface {
 	// projects
 	CreateProject(ctx context.Context, arg CreateProjectParams) (Project, error)
 	// Queries owned by the todos module. Regenerate with `make sqlc`.
+	//
+	// Scope (domain.Scope): a row is visible to @user_id when it is their
+	// personal row (team_id IS NULL) or belongs to one of @team_ids:
+	//   ((team_id IS NULL AND user_id = @user_id) OR team_id = ANY(@team_ids::uuid[]))
 	// todos
 	CreateTodo(ctx context.Context, arg CreateTodoParams) (Todo, error)
 	DeleteCollection(ctx context.Context, arg DeleteCollectionParams) (int64, error)
+	DeleteCollectionsByTeam(ctx context.Context, teamID *uuid.UUID) error
 	DeleteCollectionsByUser(ctx context.Context, userID uuid.UUID) error
 	DeleteProject(ctx context.Context, arg DeleteProjectParams) (int64, error)
+	DeleteProjectsByTeam(ctx context.Context, teamID *uuid.UUID) error
 	DeleteProjectsByUser(ctx context.Context, userID uuid.UUID) error
 	DeleteTodo(ctx context.Context, arg DeleteTodoParams) (int64, error)
 	DeleteTodosByProject(ctx context.Context, arg DeleteTodosByProjectParams) error
+	DeleteTodosByTeam(ctx context.Context, teamID *uuid.UUID) error
 	DeleteTodosByUser(ctx context.Context, userID uuid.UUID) error
 	DetachCollection(ctx context.Context, arg DetachCollectionParams) error
 	GetCollection(ctx context.Context, arg GetCollectionParams) (Collection, error)

@@ -21,41 +21,55 @@ import (
 
 func invalidIDCases(todos application.TodoStore, projects application.ProjectStore, collections application.CollectionStore, valid, foreign string) map[string]func() error {
 	ctx := context.Background()
+	scope := func(userID string) domain.Scope { return domain.Scope{UserID: userID} }
 	project := func(id, user, collection string) *domain.Project {
 		return &domain.Project{ID: id, UserID: user, CollectionID: collection}
 	}
 	return map[string]func() error{
-		"Create todo bad user":     func() error { return todos.Create(ctx, &domain.Todo{UserID: "bad"}) },
-		"Create todo bad project":  func() error { return todos.Create(ctx, &domain.Todo{UserID: valid, ProjectID: "bad"}) },
-		"Get todo bad id":          func() error { _, err := todos.Get(ctx, valid, "bad"); return err },
-		"Get todo bad user":        func() error { _, err := todos.Get(ctx, "bad", valid); return err },
-		"Get todo other id format": func() error { _, err := todos.Get(ctx, valid, foreign); return err },
-		"Update todo bad id":       func() error { return todos.Update(ctx, &domain.Todo{ID: "bad", UserID: valid}) },
-		"Delete todo bad user":     func() error { return todos.Delete(ctx, "bad", valid) },
-		"List bad user":            func() error { _, err := todos.List(ctx, "bad", domain.Query{}); return err },
-		"List bad project filter":  func() error { _, err := todos.List(ctx, valid, domain.Query{ProjectID: "bad"}); return err },
-		"List bad excluded project": func() error {
-			_, err := todos.List(ctx, valid, domain.Query{ExcludeProjectIDs: []string{"bad"}})
+		"Create todo bad user":    func() error { return todos.Create(ctx, &domain.Todo{UserID: "bad"}) },
+		"Create todo bad project": func() error { return todos.Create(ctx, &domain.Todo{UserID: valid, ProjectID: "bad"}) },
+		"Get todo bad id":         func() error { _, err := todos.Get(ctx, scope(valid), "bad"); return err },
+		"Get todo bad user":       func() error { _, err := todos.Get(ctx, scope("bad"), valid); return err },
+		"Get todo bad team": func() error {
+			_, err := todos.Get(ctx, domain.Scope{UserID: valid, TeamIDs: []string{"bad"}}, valid)
 			return err
 		},
-		"Progress bad user":       func() error { _, err := todos.Progress(ctx, "bad", time.Now()); return err },
-		"DeleteByProject bad id":  func() error { return todos.DeleteByProject(ctx, valid, "bad") },
+		"Get todo other id format": func() error { _, err := todos.Get(ctx, scope(valid), foreign); return err },
+		"Update todo bad id":       func() error { return todos.Update(ctx, scope(valid), &domain.Todo{ID: "bad", UserID: valid}) },
+		"Create todo bad team":     func() error { return todos.Create(ctx, &domain.Todo{UserID: valid, TeamID: "bad"}) },
+		"Delete todo bad user":     func() error { return todos.Delete(ctx, scope("bad"), valid) },
+		"List bad user":            func() error { _, err := todos.List(ctx, scope("bad"), domain.Query{}); return err },
+		"List bad team filter": func() error {
+			_, err := todos.List(ctx, scope(valid), domain.Query{OwnerFilter: domain.OwnerFilter{TeamID: "bad"}})
+			return err
+		},
+		"List bad project filter": func() error { _, err := todos.List(ctx, scope(valid), domain.Query{ProjectID: "bad"}); return err },
+		"List bad excluded project": func() error {
+			_, err := todos.List(ctx, scope(valid), domain.Query{ExcludeProjectIDs: []string{"bad"}})
+			return err
+		},
+		"Progress bad user":       func() error { _, err := todos.Progress(ctx, scope("bad"), time.Now()); return err },
+		"DeleteByProject bad id":  func() error { return todos.DeleteByProject(ctx, scope(valid), "bad") },
+		"DeleteByTeam todos":      func() error { return todos.DeleteByTeam(ctx, "bad") },
 		"DeleteByUser todos":      func() error { return todos.DeleteByUser(ctx, "bad") },
 		"Create project bad user": func() error { return projects.Create(ctx, project("", "bad", "")) },
 		"Create project bad coll": func() error { return projects.Create(ctx, project("", valid, "bad")) },
-		"Get project bad id":      func() error { _, err := projects.Get(ctx, valid, "bad"); return err },
-		"Update project bad id":   func() error { return projects.Update(ctx, project("bad", valid, "")) },
-		"Delete project bad id":   func() error { return projects.Delete(ctx, valid, "bad") },
+		"Get project bad id":      func() error { _, err := projects.Get(ctx, scope(valid), "bad"); return err },
+		"Update project bad id":   func() error { return projects.Update(ctx, scope(valid), project("bad", valid, "")) },
+		"Delete project bad id":   func() error { return projects.Delete(ctx, scope(valid), "bad") },
 		"List projects bad coll": func() error {
-			_, err := projects.List(ctx, valid, domain.ProjectFilter{CollectionID: "bad"})
+			_, err := projects.List(ctx, scope(valid), domain.ProjectFilter{CollectionID: "bad"})
 			return err
 		},
-		"DetachCollection bad id":    func() error { return projects.DetachCollection(ctx, valid, "bad") },
+		"DetachCollection bad id":    func() error { return projects.DetachCollection(ctx, scope(valid), "bad") },
+		"DeleteByTeam projects":      func() error { return projects.DeleteByTeam(ctx, "bad") },
 		"DeleteByUser projects":      func() error { return projects.DeleteByUser(ctx, "bad") },
 		"Create collection bad user": func() error { return collections.Create(ctx, &domain.Collection{UserID: "bad"}) },
-		"Get collection bad id":      func() error { _, err := collections.Get(ctx, valid, "bad"); return err },
-		"Delete collection bad id":   func() error { return collections.Delete(ctx, valid, "bad") },
-		"List collections bad user":  func() error { _, err := collections.List(ctx, "bad", domain.ActiveOnly); return err },
+		"Get collection bad id":      func() error { _, err := collections.Get(ctx, scope(valid), "bad"); return err },
+		"Delete collection bad id":   func() error { return collections.Delete(ctx, scope(valid), "bad") },
+		"Create collection bad team": func() error { return collections.Create(ctx, &domain.Collection{UserID: valid, TeamID: "bad"}) },
+		"DeleteByTeam collections":   func() error { return collections.DeleteByTeam(ctx, "bad") },
+		"List collections bad user":  func() error { _, err := collections.List(ctx, scope("bad"), domain.CollectionFilter{}); return err },
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 
 	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // MapErr translates pgx.ErrNoRows into apperrors.ErrNotFound and wraps any
@@ -30,4 +31,10 @@ func RequireAffected(op string, rows int64, err error) error {
 		return apperrors.ErrNotFound
 	}
 	return nil
+}
+
+// IsUniqueViolation reports a unique-constraint violation (SQLSTATE 23505).
+func IsUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

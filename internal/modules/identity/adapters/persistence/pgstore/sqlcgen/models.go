@@ -10,6 +10,20 @@ import (
 	"github.com/google/uuid"
 )
 
+type AuditEvent struct {
+	ID         uuid.UUID
+	TeamID     *uuid.UUID
+	UserID     *uuid.UUID
+	ActorID    *uuid.UUID
+	Action     string
+	TargetType string
+	TargetID   string
+	Details    []byte
+	Ip         string
+	UserAgent  string
+	CreatedAt  time.Time
+}
+
 type Collection struct {
 	ID          uuid.UUID
 	UserID      uuid.UUID
@@ -20,6 +34,7 @@ type Collection struct {
 	ArchivedAt  *time.Time
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	TeamID      *uuid.UUID
 }
 
 type EmailVerification struct {
@@ -47,6 +62,7 @@ type Project struct {
 	ArchivedAt   *time.Time
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+	TeamID       *uuid.UUID
 }
 
 type Session struct {
@@ -57,6 +73,33 @@ type Session struct {
 	ExpiresAt time.Time
 	RevokedAt *time.Time
 	CreatedAt time.Time
+}
+
+type Team struct {
+	ID        uuid.UUID
+	Name      string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type TeamInvitation struct {
+	ID        uuid.UUID
+	TeamID    uuid.UUID
+	Email     string
+	Role      string
+	InvitedBy uuid.UUID
+	TokenHash string
+	ExpiresAt time.Time
+	CreatedAt time.Time
+}
+
+type TeamMember struct {
+	TeamID   uuid.UUID
+	UserID   uuid.UUID
+	Name     string
+	Email    string
+	Role     string
+	JoinedAt time.Time
 }
 
 type Todo struct {
@@ -72,6 +115,7 @@ type Todo struct {
 	DueAt       *time.Time
 	CompletedAt *time.Time
 	UpdatedAt   time.Time
+	TeamID      *uuid.UUID
 }
 
 type User struct {

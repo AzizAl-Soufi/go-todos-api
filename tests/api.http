@@ -152,6 +152,77 @@ Content-Type: application/json
 
 {"current_password": "correct horse battery", "new_password": "a brand new password"}
 
+### ---- Teams ----
+
+### Create a team (you become its owner)
+# @name team
+POST {{base}}/teams
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{"name": "Platform"}
+
+### List your teams
+GET {{base}}/teams
+Authorization: Bearer {{access}}
+
+### Get the team with its members
+GET {{base}}/teams/{{team.response.body.id}}
+Authorization: Bearer {{access}}
+
+### Invite someone (with SMTP unset the invitation link is logged)
+POST {{base}}/teams/{{team.response.body.id}}/invitations
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{"email": "teammate@example.com", "role": "member"}
+
+### List pending invitations
+GET {{base}}/teams/{{team.response.body.id}}/invitations
+Authorization: Bearer {{access}}
+
+### Accept an invitation (signed in as the invited email; paste the token from the logged link)
+POST {{base}}/invitations/accept
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{"token": "PASTE-INVITATION-TOKEN-HERE"}
+
+### Create a team project
+# @name teamProject
+POST {{base}}/projects
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{"name": "Launch", "icon": "🚀", "teamId": "{{team.response.body.id}}"}
+
+### Add a todo to the team project (it belongs to the team)
+POST {{base}}/todos
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{"title": "Ship it", "projectId": "{{teamProject.response.body.id}}", "priority": "high"}
+
+### Only the team's todos
+GET {{base}}/todos?team={{team.response.body.id}}
+Authorization: Bearer {{access}}
+
+### Only personal todos
+GET {{base}}/todos?team=personal
+Authorization: Bearer {{access}}
+
+### Team audit log (owners and admins), newest first
+GET {{base}}/teams/{{team.response.body.id}}/audit-log?limit=20
+Authorization: Bearer {{access}}
+
+### Your security log
+GET {{base}}/me/audit-log
+Authorization: Bearer {{access}}
+
+### Delete the team with all its content
+DELETE {{base}}/teams/{{team.response.body.id}}
+Authorization: Bearer {{access}}
+
 ### Forgot password (always 202; with SMTP unset the reset link is logged)
 POST {{base}}/auth/password/forgot
 Content-Type: application/json

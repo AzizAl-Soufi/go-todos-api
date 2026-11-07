@@ -14,13 +14,14 @@ import (
 
 const createCollection = `-- name: CreateCollection :one
 
-INSERT INTO collections (user_id, name, description, icon, color, archived_at, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, user_id, name, description, icon, color, archived_at, created_at, updated_at
+INSERT INTO collections (user_id, team_id, name, description, icon, color, archived_at, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, user_id, name, description, icon, color, archived_at, created_at, updated_at, team_id
 `
 
 type CreateCollectionParams struct {
 	UserID      uuid.UUID
+	TeamID      *uuid.UUID
 	Name        string
 	Description string
 	Icon        string
@@ -34,6 +35,7 @@ type CreateCollectionParams struct {
 func (q *Queries) CreateCollection(ctx context.Context, arg CreateCollectionParams) (Collection, error) {
 	row := q.db.QueryRow(ctx, createCollection,
 		arg.UserID,
+		arg.TeamID,
 		arg.Name,
 		arg.Description,
 		arg.Icon,
@@ -53,19 +55,21 @@ func (q *Queries) CreateCollection(ctx context.Context, arg CreateCollectionPara
 		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TeamID,
 	)
 	return i, err
 }
 
 const createProject = `-- name: CreateProject :one
 
-INSERT INTO projects (user_id, collection_id, name, description, icon, color, archived_at, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-RETURNING id, user_id, collection_id, name, description, icon, color, archived_at, created_at, updated_at
+INSERT INTO projects (user_id, team_id, collection_id, name, description, icon, color, archived_at, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+RETURNING id, user_id, collection_id, name, description, icon, color, archived_at, created_at, updated_at, team_id
 `
 
 type CreateProjectParams struct {
 	UserID       uuid.UUID
+	TeamID       *uuid.UUID
 	CollectionID *uuid.UUID
 	Name         string
 	Description  string
@@ -80,6 +84,7 @@ type CreateProjectParams struct {
 func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (Project, error) {
 	row := q.db.QueryRow(ctx, createProject,
 		arg.UserID,
+		arg.TeamID,
 		arg.CollectionID,
 		arg.Name,
 		arg.Description,
@@ -101,6 +106,7 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TeamID,
 	)
 	return i, err
 }
@@ -108,13 +114,14 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 const createTodo = `-- name: CreateTodo :one
 
 
-INSERT INTO todos (user_id, project_id, title, notes, status, priority, tags, due_at, completed_at, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-RETURNING id, user_id, title, created_at, project_id, notes, status, priority, tags, due_at, completed_at, updated_at
+INSERT INTO todos (user_id, team_id, project_id, title, notes, status, priority, tags, due_at, completed_at, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+RETURNING id, user_id, title, created_at, project_id, notes, status, priority, tags, due_at, completed_at, updated_at, team_id
 `
 
 type CreateTodoParams struct {
 	UserID      uuid.UUID
+	TeamID      *uuid.UUID
 	ProjectID   *uuid.UUID
 	Title       string
 	Notes       string
@@ -128,10 +135,17 @@ type CreateTodoParams struct {
 }
 
 // Queries owned by the todos module. Regenerate with `make sqlc`.
+//
+// Scope (domain.Scope): a row is visible to @user_id when it is their
+// personal row (team_id IS NULL) or belongs to one of @team_ids:
+//
+//	((team_id IS NULL AND user_id = @user_id) OR team_id = ANY(@team_ids::uuid[]))
+//
 // todos
 func (q *Queries) CreateTodo(ctx context.Context, arg CreateTodoParams) (Todo, error) {
 	row := q.db.QueryRow(ctx, createTodo,
 		arg.UserID,
+		arg.TeamID,
 		arg.ProjectID,
 		arg.Title,
 		arg.Notes,
@@ -157,29 +171,41 @@ func (q *Queries) CreateTodo(ctx context.Context, arg CreateTodoParams) (Todo, e
 		&i.DueAt,
 		&i.CompletedAt,
 		&i.UpdatedAt,
+		&i.TeamID,
 	)
 	return i, err
 }
 
 const deleteCollection = `-- name: DeleteCollection :execrows
-DELETE FROM collections WHERE id = $1 AND user_id = $2
+DELETE FROM collections
+WHERE id = $1 AND ((team_id IS NULL AND user_id = $2) OR team_id = ANY($3::uuid[]))
 `
 
 type DeleteCollectionParams struct {
-	ID     uuid.UUID
-	UserID uuid.UUID
+	ID         uuid.UUID
+	ScopeUser  uuid.UUID
+	ScopeTeams []uuid.UUID
 }
 
 func (q *Queries) DeleteCollection(ctx context.Context, arg DeleteCollectionParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteCollection, arg.ID, arg.UserID)
+	result, err := q.db.Exec(ctx, deleteCollection, arg.ID, arg.ScopeUser, arg.ScopeTeams)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
 }
 
+const deleteCollectionsByTeam = `-- name: DeleteCollectionsByTeam :exec
+DELETE FROM collections WHERE team_id = $1
+`
+
+func (q *Queries) DeleteCollectionsByTeam(ctx context.Context, teamID *uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteCollectionsByTeam, teamID)
+	return err
+}
+
 const deleteCollectionsByUser = `-- name: DeleteCollectionsByUser :exec
-DELETE FROM collections WHERE user_id = $1
+DELETE FROM collections WHERE user_id = $1 AND team_id IS NULL
 `
 
 func (q *Queries) DeleteCollectionsByUser(ctx context.Context, userID uuid.UUID) error {
@@ -188,24 +214,35 @@ func (q *Queries) DeleteCollectionsByUser(ctx context.Context, userID uuid.UUID)
 }
 
 const deleteProject = `-- name: DeleteProject :execrows
-DELETE FROM projects WHERE id = $1 AND user_id = $2
+DELETE FROM projects
+WHERE id = $1 AND ((team_id IS NULL AND user_id = $2) OR team_id = ANY($3::uuid[]))
 `
 
 type DeleteProjectParams struct {
-	ID     uuid.UUID
-	UserID uuid.UUID
+	ID         uuid.UUID
+	ScopeUser  uuid.UUID
+	ScopeTeams []uuid.UUID
 }
 
 func (q *Queries) DeleteProject(ctx context.Context, arg DeleteProjectParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteProject, arg.ID, arg.UserID)
+	result, err := q.db.Exec(ctx, deleteProject, arg.ID, arg.ScopeUser, arg.ScopeTeams)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
 }
 
+const deleteProjectsByTeam = `-- name: DeleteProjectsByTeam :exec
+DELETE FROM projects WHERE team_id = $1
+`
+
+func (q *Queries) DeleteProjectsByTeam(ctx context.Context, teamID *uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteProjectsByTeam, teamID)
+	return err
+}
+
 const deleteProjectsByUser = `-- name: DeleteProjectsByUser :exec
-DELETE FROM projects WHERE user_id = $1
+DELETE FROM projects WHERE user_id = $1 AND team_id IS NULL
 `
 
 func (q *Queries) DeleteProjectsByUser(ctx context.Context, userID uuid.UUID) error {
@@ -214,16 +251,18 @@ func (q *Queries) DeleteProjectsByUser(ctx context.Context, userID uuid.UUID) er
 }
 
 const deleteTodo = `-- name: DeleteTodo :execrows
-DELETE FROM todos WHERE id = $1 AND user_id = $2
+DELETE FROM todos
+WHERE id = $1 AND ((team_id IS NULL AND user_id = $2) OR team_id = ANY($3::uuid[]))
 `
 
 type DeleteTodoParams struct {
-	ID     uuid.UUID
-	UserID uuid.UUID
+	ID         uuid.UUID
+	ScopeUser  uuid.UUID
+	ScopeTeams []uuid.UUID
 }
 
 func (q *Queries) DeleteTodo(ctx context.Context, arg DeleteTodoParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteTodo, arg.ID, arg.UserID)
+	result, err := q.db.Exec(ctx, deleteTodo, arg.ID, arg.ScopeUser, arg.ScopeTeams)
 	if err != nil {
 		return 0, err
 	}
@@ -231,21 +270,32 @@ func (q *Queries) DeleteTodo(ctx context.Context, arg DeleteTodoParams) (int64, 
 }
 
 const deleteTodosByProject = `-- name: DeleteTodosByProject :exec
-DELETE FROM todos WHERE user_id = $1 AND project_id = $2
+DELETE FROM todos
+WHERE project_id = $1 AND ((team_id IS NULL AND user_id = $2) OR team_id = ANY($3::uuid[]))
 `
 
 type DeleteTodosByProjectParams struct {
-	UserID    uuid.UUID
-	ProjectID *uuid.UUID
+	ProjectID  *uuid.UUID
+	ScopeUser  uuid.UUID
+	ScopeTeams []uuid.UUID
 }
 
 func (q *Queries) DeleteTodosByProject(ctx context.Context, arg DeleteTodosByProjectParams) error {
-	_, err := q.db.Exec(ctx, deleteTodosByProject, arg.UserID, arg.ProjectID)
+	_, err := q.db.Exec(ctx, deleteTodosByProject, arg.ProjectID, arg.ScopeUser, arg.ScopeTeams)
+	return err
+}
+
+const deleteTodosByTeam = `-- name: DeleteTodosByTeam :exec
+DELETE FROM todos WHERE team_id = $1
+`
+
+func (q *Queries) DeleteTodosByTeam(ctx context.Context, teamID *uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteTodosByTeam, teamID)
 	return err
 }
 
 const deleteTodosByUser = `-- name: DeleteTodosByUser :exec
-DELETE FROM todos WHERE user_id = $1
+DELETE FROM todos WHERE user_id = $1 AND team_id IS NULL
 `
 
 func (q *Queries) DeleteTodosByUser(ctx context.Context, userID uuid.UUID) error {
@@ -254,30 +304,34 @@ func (q *Queries) DeleteTodosByUser(ctx context.Context, userID uuid.UUID) error
 }
 
 const detachCollection = `-- name: DetachCollection :exec
-UPDATE projects SET collection_id = NULL WHERE user_id = $1 AND collection_id = $2
+UPDATE projects SET collection_id = NULL
+WHERE collection_id = $1 AND ((team_id IS NULL AND user_id = $2) OR team_id = ANY($3::uuid[]))
 `
 
 type DetachCollectionParams struct {
-	UserID       uuid.UUID
 	CollectionID *uuid.UUID
+	ScopeUser    uuid.UUID
+	ScopeTeams   []uuid.UUID
 }
 
 func (q *Queries) DetachCollection(ctx context.Context, arg DetachCollectionParams) error {
-	_, err := q.db.Exec(ctx, detachCollection, arg.UserID, arg.CollectionID)
+	_, err := q.db.Exec(ctx, detachCollection, arg.CollectionID, arg.ScopeUser, arg.ScopeTeams)
 	return err
 }
 
 const getCollection = `-- name: GetCollection :one
-SELECT id, user_id, name, description, icon, color, archived_at, created_at, updated_at FROM collections WHERE id = $1 AND user_id = $2
+SELECT id, user_id, name, description, icon, color, archived_at, created_at, updated_at, team_id FROM collections
+WHERE id = $1 AND ((team_id IS NULL AND user_id = $2) OR team_id = ANY($3::uuid[]))
 `
 
 type GetCollectionParams struct {
-	ID     uuid.UUID
-	UserID uuid.UUID
+	ID         uuid.UUID
+	ScopeUser  uuid.UUID
+	ScopeTeams []uuid.UUID
 }
 
 func (q *Queries) GetCollection(ctx context.Context, arg GetCollectionParams) (Collection, error) {
-	row := q.db.QueryRow(ctx, getCollection, arg.ID, arg.UserID)
+	row := q.db.QueryRow(ctx, getCollection, arg.ID, arg.ScopeUser, arg.ScopeTeams)
 	var i Collection
 	err := row.Scan(
 		&i.ID,
@@ -289,21 +343,24 @@ func (q *Queries) GetCollection(ctx context.Context, arg GetCollectionParams) (C
 		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TeamID,
 	)
 	return i, err
 }
 
 const getProject = `-- name: GetProject :one
-SELECT id, user_id, collection_id, name, description, icon, color, archived_at, created_at, updated_at FROM projects WHERE id = $1 AND user_id = $2
+SELECT id, user_id, collection_id, name, description, icon, color, archived_at, created_at, updated_at, team_id FROM projects
+WHERE id = $1 AND ((team_id IS NULL AND user_id = $2) OR team_id = ANY($3::uuid[]))
 `
 
 type GetProjectParams struct {
-	ID     uuid.UUID
-	UserID uuid.UUID
+	ID         uuid.UUID
+	ScopeUser  uuid.UUID
+	ScopeTeams []uuid.UUID
 }
 
 func (q *Queries) GetProject(ctx context.Context, arg GetProjectParams) (Project, error) {
-	row := q.db.QueryRow(ctx, getProject, arg.ID, arg.UserID)
+	row := q.db.QueryRow(ctx, getProject, arg.ID, arg.ScopeUser, arg.ScopeTeams)
 	var i Project
 	err := row.Scan(
 		&i.ID,
@@ -316,21 +373,24 @@ func (q *Queries) GetProject(ctx context.Context, arg GetProjectParams) (Project
 		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.TeamID,
 	)
 	return i, err
 }
 
 const getTodo = `-- name: GetTodo :one
-SELECT id, user_id, title, created_at, project_id, notes, status, priority, tags, due_at, completed_at, updated_at FROM todos WHERE id = $1 AND user_id = $2
+SELECT id, user_id, title, created_at, project_id, notes, status, priority, tags, due_at, completed_at, updated_at, team_id FROM todos
+WHERE id = $1 AND ((team_id IS NULL AND user_id = $2) OR team_id = ANY($3::uuid[]))
 `
 
 type GetTodoParams struct {
-	ID     uuid.UUID
-	UserID uuid.UUID
+	ID         uuid.UUID
+	ScopeUser  uuid.UUID
+	ScopeTeams []uuid.UUID
 }
 
 func (q *Queries) GetTodo(ctx context.Context, arg GetTodoParams) (Todo, error) {
-	row := q.db.QueryRow(ctx, getTodo, arg.ID, arg.UserID)
+	row := q.db.QueryRow(ctx, getTodo, arg.ID, arg.ScopeUser, arg.ScopeTeams)
 	var i Todo
 	err := row.Scan(
 		&i.ID,
@@ -345,24 +405,36 @@ func (q *Queries) GetTodo(ctx context.Context, arg GetTodoParams) (Todo, error) 
 		&i.DueAt,
 		&i.CompletedAt,
 		&i.UpdatedAt,
+		&i.TeamID,
 	)
 	return i, err
 }
 
 const listCollections = `-- name: ListCollections :many
-SELECT id, user_id, name, description, icon, color, archived_at, created_at, updated_at FROM collections
-WHERE user_id = $1
-  AND ($2::int = 2 OR (archived_at IS NOT NULL) = ($2::int = 1))
+SELECT id, user_id, name, description, icon, color, archived_at, created_at, updated_at, team_id FROM collections
+WHERE ((team_id IS NULL AND user_id = $1) OR team_id = ANY($2::uuid[]))
+  AND (NOT $3::boolean OR team_id IS NULL)
+  AND ($4::uuid IS NULL OR team_id = $4::uuid)
+  AND ($5::int = 2 OR (archived_at IS NOT NULL) = ($5::int = 1))
 ORDER BY created_at, id
 `
 
 type ListCollectionsParams struct {
-	UserID  uuid.UUID
-	Archive int32
+	ScopeUser  uuid.UUID
+	ScopeTeams []uuid.UUID
+	Personal   bool
+	TeamID     *uuid.UUID
+	Archive    int32
 }
 
 func (q *Queries) ListCollections(ctx context.Context, arg ListCollectionsParams) ([]Collection, error) {
-	rows, err := q.db.Query(ctx, listCollections, arg.UserID, arg.Archive)
+	rows, err := q.db.Query(ctx, listCollections,
+		arg.ScopeUser,
+		arg.ScopeTeams,
+		arg.Personal,
+		arg.TeamID,
+		arg.Archive,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -380,6 +452,7 @@ func (q *Queries) ListCollections(ctx context.Context, arg ListCollectionsParams
 			&i.ArchivedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TeamID,
 		); err != nil {
 			return nil, err
 		}
@@ -392,22 +465,34 @@ func (q *Queries) ListCollections(ctx context.Context, arg ListCollectionsParams
 }
 
 const listProjects = `-- name: ListProjects :many
-SELECT id, user_id, collection_id, name, description, icon, color, archived_at, created_at, updated_at FROM projects
-WHERE user_id = $1
-  AND ($2::uuid IS NULL OR collection_id = $2::uuid)
-  AND ($3::int = 2 OR (archived_at IS NOT NULL) = ($3::int = 1))
+SELECT id, user_id, collection_id, name, description, icon, color, archived_at, created_at, updated_at, team_id FROM projects
+WHERE ((team_id IS NULL AND user_id = $1) OR team_id = ANY($2::uuid[]))
+  AND (NOT $3::boolean OR team_id IS NULL)
+  AND ($4::uuid IS NULL OR team_id = $4::uuid)
+  AND ($5::uuid IS NULL OR collection_id = $5::uuid)
+  AND ($6::int = 2 OR (archived_at IS NOT NULL) = ($6::int = 1))
 ORDER BY created_at, id
 `
 
 type ListProjectsParams struct {
-	UserID       uuid.UUID
+	ScopeUser    uuid.UUID
+	ScopeTeams   []uuid.UUID
+	Personal     bool
+	TeamID       *uuid.UUID
 	CollectionID *uuid.UUID
 	Archive      int32
 }
 
 // archive: 0 active only, 1 archived only, 2 any (domain.ArchiveFilter).
 func (q *Queries) ListProjects(ctx context.Context, arg ListProjectsParams) ([]Project, error) {
-	rows, err := q.db.Query(ctx, listProjects, arg.UserID, arg.CollectionID, arg.Archive)
+	rows, err := q.db.Query(ctx, listProjects,
+		arg.ScopeUser,
+		arg.ScopeTeams,
+		arg.Personal,
+		arg.TeamID,
+		arg.CollectionID,
+		arg.Archive,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -426,6 +511,7 @@ func (q *Queries) ListProjects(ctx context.Context, arg ListProjectsParams) ([]P
 			&i.ArchivedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TeamID,
 		); err != nil {
 			return nil, err
 		}
@@ -438,29 +524,34 @@ func (q *Queries) ListProjects(ctx context.Context, arg ListProjectsParams) ([]P
 }
 
 const listTodos = `-- name: ListTodos :many
-SELECT id, user_id, title, created_at, project_id, notes, status, priority, tags, due_at, completed_at, updated_at FROM todos
-WHERE user_id = $1
-  AND ($2::uuid IS NULL OR project_id = $2::uuid)
-  AND (NOT $3::boolean OR project_id IS NULL)
-  AND (project_id IS NULL OR NOT (project_id = ANY($4::uuid[])))
-  AND (cardinality($5::text[]) = 0 OR status = ANY($5::text[]))
-  AND (cardinality($6::smallint[]) = 0 OR priority = ANY($6::smallint[]))
-  AND ($7::text = '' OR $7::text = ANY(tags))
-  AND ($8::timestamptz IS NULL OR due_at < $8::timestamptz)
-  AND ($9::timestamptz IS NULL OR due_at >= $9::timestamptz)
-  AND ($10::timestamptz IS NULL
-       OR (due_at < $10::timestamptz AND status NOT IN ('done', 'cancelled')))
-  AND ($11::text = '' OR title ILIKE $11::text OR notes ILIKE $11::text)
+SELECT id, user_id, title, created_at, project_id, notes, status, priority, tags, due_at, completed_at, updated_at, team_id FROM todos
+WHERE ((team_id IS NULL AND user_id = $1) OR team_id = ANY($2::uuid[]))
+  AND (NOT $3::boolean OR team_id IS NULL)
+  AND ($4::uuid IS NULL OR team_id = $4::uuid)
+  AND ($5::uuid IS NULL OR project_id = $5::uuid)
+  AND (NOT $6::boolean OR project_id IS NULL)
+  AND (project_id IS NULL OR NOT (project_id = ANY($7::uuid[])))
+  AND (cardinality($8::text[]) = 0 OR status = ANY($8::text[]))
+  AND (cardinality($9::smallint[]) = 0 OR priority = ANY($9::smallint[]))
+  AND ($10::text = '' OR $10::text = ANY(tags))
+  AND ($11::timestamptz IS NULL OR due_at < $11::timestamptz)
+  AND ($12::timestamptz IS NULL OR due_at >= $12::timestamptz)
+  AND ($13::timestamptz IS NULL
+       OR (due_at < $13::timestamptz AND status NOT IN ('done', 'cancelled')))
+  AND ($14::text = '' OR title ILIKE $14::text OR notes ILIKE $14::text)
 ORDER BY
-  CASE WHEN $12::text = 'priority' THEN priority END DESC,
-  CASE WHEN $12::text IN ('due', 'priority') THEN due_at END ASC NULLS LAST,
-  CASE WHEN $12::text = 'updated' THEN updated_at END DESC,
+  CASE WHEN $15::text = 'priority' THEN priority END DESC,
+  CASE WHEN $15::text IN ('due', 'priority') THEN due_at END ASC NULLS LAST,
+  CASE WHEN $15::text = 'updated' THEN updated_at END DESC,
   created_at DESC,
   id DESC
 `
 
 type ListTodosParams struct {
-	UserID          uuid.UUID
+	ScopeUser       uuid.UUID
+	ScopeTeams      []uuid.UUID
+	Personal        bool
+	TeamID          *uuid.UUID
 	ProjectID       *uuid.UUID
 	Inbox           bool
 	ExcludeProjects []uuid.UUID
@@ -478,7 +569,10 @@ type ListTodosParams struct {
 // mirror domain.Query (the store contract tests check they agree).
 func (q *Queries) ListTodos(ctx context.Context, arg ListTodosParams) ([]Todo, error) {
 	rows, err := q.db.Query(ctx, listTodos,
-		arg.UserID,
+		arg.ScopeUser,
+		arg.ScopeTeams,
+		arg.Personal,
+		arg.TeamID,
 		arg.ProjectID,
 		arg.Inbox,
 		arg.ExcludeProjects,
@@ -511,6 +605,7 @@ func (q *Queries) ListTodos(ctx context.Context, arg ListTodosParams) ([]Todo, e
 			&i.DueAt,
 			&i.CompletedAt,
 			&i.UpdatedAt,
+			&i.TeamID,
 		); err != nil {
 			return nil, err
 		}
@@ -526,13 +621,14 @@ const todoProgress = `-- name: TodoProgress :many
 SELECT project_id, status, count(*)::int AS total,
        (count(*) FILTER (WHERE due_at < $1 AND status NOT IN ('done', 'cancelled')))::int AS overdue
 FROM todos
-WHERE user_id = $2
+WHERE ((team_id IS NULL AND user_id = $2) OR team_id = ANY($3::uuid[]))
 GROUP BY project_id, status
 `
 
 type TodoProgressParams struct {
-	Now    *time.Time
-	UserID uuid.UUID
+	Now        *time.Time
+	ScopeUser  uuid.UUID
+	ScopeTeams []uuid.UUID
 }
 
 type TodoProgressRow struct {
@@ -543,7 +639,7 @@ type TodoProgressRow struct {
 }
 
 func (q *Queries) TodoProgress(ctx context.Context, arg TodoProgressParams) ([]TodoProgressRow, error) {
-	rows, err := q.db.Query(ctx, todoProgress, arg.Now, arg.UserID)
+	rows, err := q.db.Query(ctx, todoProgress, arg.Now, arg.ScopeUser, arg.ScopeTeams)
 	if err != nil {
 		return nil, err
 	}
@@ -571,7 +667,7 @@ const updateCollection = `-- name: UpdateCollection :execrows
 UPDATE collections
 SET name = $1, description = $2, icon = $3, color = $4,
     archived_at = $5, updated_at = $6
-WHERE id = $7 AND user_id = $8
+WHERE id = $7 AND ((team_id IS NULL AND user_id = $8) OR team_id = ANY($9::uuid[]))
 `
 
 type UpdateCollectionParams struct {
@@ -582,7 +678,8 @@ type UpdateCollectionParams struct {
 	ArchivedAt  *time.Time
 	UpdatedAt   time.Time
 	ID          uuid.UUID
-	UserID      uuid.UUID
+	ScopeUser   uuid.UUID
+	ScopeTeams  []uuid.UUID
 }
 
 func (q *Queries) UpdateCollection(ctx context.Context, arg UpdateCollectionParams) (int64, error) {
@@ -594,7 +691,8 @@ func (q *Queries) UpdateCollection(ctx context.Context, arg UpdateCollectionPara
 		arg.ArchivedAt,
 		arg.UpdatedAt,
 		arg.ID,
-		arg.UserID,
+		arg.ScopeUser,
+		arg.ScopeTeams,
 	)
 	if err != nil {
 		return 0, err
@@ -606,7 +704,7 @@ const updateProject = `-- name: UpdateProject :execrows
 UPDATE projects
 SET collection_id = $1, name = $2, description = $3, icon = $4,
     color = $5, archived_at = $6, updated_at = $7
-WHERE id = $8 AND user_id = $9
+WHERE id = $8 AND ((team_id IS NULL AND user_id = $9) OR team_id = ANY($10::uuid[]))
 `
 
 type UpdateProjectParams struct {
@@ -618,7 +716,8 @@ type UpdateProjectParams struct {
 	ArchivedAt   *time.Time
 	UpdatedAt    time.Time
 	ID           uuid.UUID
-	UserID       uuid.UUID
+	ScopeUser    uuid.UUID
+	ScopeTeams   []uuid.UUID
 }
 
 func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (int64, error) {
@@ -631,7 +730,8 @@ func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (i
 		arg.ArchivedAt,
 		arg.UpdatedAt,
 		arg.ID,
-		arg.UserID,
+		arg.ScopeUser,
+		arg.ScopeTeams,
 	)
 	if err != nil {
 		return 0, err
@@ -641,13 +741,15 @@ func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (i
 
 const updateTodo = `-- name: UpdateTodo :execrows
 UPDATE todos
-SET project_id = $1, title = $2, notes = $3, status = $4,
-    priority = $5, tags = $6, due_at = $7,
-    completed_at = $8, updated_at = $9
-WHERE id = $10 AND user_id = $11
+SET user_id = $1, team_id = $2, project_id = $3, title = $4,
+    notes = $5, status = $6, priority = $7, tags = $8, due_at = $9,
+    completed_at = $10, updated_at = $11
+WHERE id = $12 AND ((team_id IS NULL AND user_id = $13) OR team_id = ANY($14::uuid[]))
 `
 
 type UpdateTodoParams struct {
+	UserID      uuid.UUID
+	TeamID      *uuid.UUID
 	ProjectID   *uuid.UUID
 	Title       string
 	Notes       string
@@ -658,11 +760,14 @@ type UpdateTodoParams struct {
 	CompletedAt *time.Time
 	UpdatedAt   time.Time
 	ID          uuid.UUID
-	UserID      uuid.UUID
+	ScopeUser   uuid.UUID
+	ScopeTeams  []uuid.UUID
 }
 
 func (q *Queries) UpdateTodo(ctx context.Context, arg UpdateTodoParams) (int64, error) {
 	result, err := q.db.Exec(ctx, updateTodo,
+		arg.UserID,
+		arg.TeamID,
 		arg.ProjectID,
 		arg.Title,
 		arg.Notes,
@@ -673,7 +778,8 @@ func (q *Queries) UpdateTodo(ctx context.Context, arg UpdateTodoParams) (int64, 
 		arg.CompletedAt,
 		arg.UpdatedAt,
 		arg.ID,
-		arg.UserID,
+		arg.ScopeUser,
+		arg.ScopeTeams,
 	)
 	if err != nil {
 		return 0, err

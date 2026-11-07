@@ -85,8 +85,12 @@ func (p Priority) String() string {
 }
 
 type Todo struct {
-	ID     string
+	ID string
+	// UserID is the creator; for a personal todo also its owner.
 	UserID string
+	// TeamID is the team the todo belongs to through its project; "" is
+	// personal. Inbox todos are always personal.
+	TeamID string
 	// ProjectID is the project (list) the todo belongs to; "" is the inbox.
 	ProjectID   string
 	Title       string
@@ -157,9 +161,21 @@ type Changes struct {
 	Completed *bool
 }
 
-func (c Changes) Empty() bool {
-	return c.Title == nil && c.Notes == nil && c.Status == nil && c.Priority == nil && c.Tags == nil &&
-		!c.DueAt.Set && !c.ProjectID.Set && c.Completed == nil
+func (c Changes) Empty() bool { return len(c.Fields()) == 0 }
+
+// Fields names the fields c changes, in API spelling (for the audit log).
+func (c Changes) Fields() []string {
+	var out []string
+	for name, set := range map[string]bool{
+		"title": c.Title != nil, "notes": c.Notes != nil, "status": c.Status != nil || c.Completed != nil,
+		"priority": c.Priority != nil, "tags": c.Tags != nil, "dueAt": c.DueAt.Set, "projectId": c.ProjectID.Set,
+	} {
+		if set {
+			out = append(out, name)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // Apply validates and applies c to t at time now. On error t is unchanged.

@@ -1,6 +1,6 @@
 # Todos Stateless API
 
-Go HTTP API for organizing todos, like Google Tasks with a touch of Notion: todos live in **projects** (lists), projects can be grouped into **collections**, and every todo has a status, priority, deadline, notes and tags. Built as a **feature-based modular monolith** with **Clean Architecture / Hexagonal (ports & adapters)** inside each module. Pluggable storage: memory, MongoDB, PostgreSQL. Password auth with reset and change, RS256 access tokens, rotating refresh tokens, email verification. No ORM.
+Go HTTP API for organizing todos, like Google Tasks with a touch of Notion: todos live in **projects** (lists), projects can be grouped into **collections**, and every todo has a status, priority, deadline, notes and tags. **Teams** share projects with roles (owner, admin, member, viewer) and email invitations, and an **audit log** records team activity and account security. Built as a **feature-based modular monolith** with **Clean Architecture / Hexagonal (ports & adapters)** inside each module. Pluggable storage: memory, MongoDB, PostgreSQL. Password auth with reset and change, RS256 access tokens, rotating refresh tokens, email verification. No ORM.
 
 Design: [ARCHITECTURE.md](ARCHITECTURE.md) · Changes: [CHANGELOG.md](CHANGELOG.md)
 
@@ -21,6 +21,11 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md) · Changes: [CHANGELOG.md](CHANGELOG.
   - [Todo fields](#todo-fields)
   - [Archiving](#archiving)
   - [Progress](#progress)
+- [Teams and Roles](#teams-and-roles)
+  - [Teams and team content](#teams-and-team-content)
+  - [Roles](#roles)
+  - [Invitation flow](#invitation-flow)
+  - [Audit logs](#audit-logs)
 - [Database Schema](#database-schema)
   - [Enums](#enums)
   - [PostgreSQL tables](#postgresql-tables)
@@ -68,6 +73,24 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md) · Changes: [CHANGELOG.md](CHANGELOG.
     - [GET `/collections/{id}`](#get-collectionsid)
     - [PATCH `/collections/{id}`](#patch-collectionsid)
     - [DELETE `/collections/{id}`](#delete-collectionsid)
+  - [Teams](#teams)
+    - [POST `/teams`](#post-teams)
+    - [GET `/teams`](#get-teams)
+    - [GET `/teams/{id}`](#get-teamsid)
+    - [PATCH `/teams/{id}`](#patch-teamsid)
+    - [DELETE `/teams/{id}`](#delete-teamsid)
+    - [PATCH `/teams/{id}/members/{userId}`](#patch-teamsidmembersuserid)
+    - [DELETE `/teams/{id}/members/{userId}`](#delete-teamsidmembersuserid)
+    - [POST `/teams/{id}/transfer-ownership`](#post-teamsidtransfer-ownership)
+  - [Invitations](#invitations)
+    - [POST `/teams/{id}/invitations`](#post-teamsidinvitations)
+    - [GET `/teams/{id}/invitations`](#get-teamsidinvitations)
+    - [DELETE `/teams/{id}/invitations/{invitationId}`](#delete-teamsidinvitationsinvitationid)
+    - [POST `/invitations/accept`](#post-invitationsaccept)
+    - [POST `/invitations/decline`](#post-invitationsdecline)
+  - [Audit](#audit)
+    - [GET `/teams/{id}/audit-log`](#get-teamsidaudit-log)
+    - [GET `/me/audit-log`](#get-meaudit-log)
 - [Testing](#testing)
   - [Unit tests](#unit-tests)
   - [Integration tests](#integration-tests)
@@ -126,7 +149,7 @@ All settings are environment variables (a `.env` file in the working directory i
 
 ## Architecture
 
-A **feature-based modular monolith**: `internal/modules/identity` (accounts, passwords, sessions, email verification, authentication) and `internal/modules/todos`, on top of a shared kernel in `internal/platform`. Inside each module, **Clean Architecture / Hexagonal** layering with **CQRS** in the application layer: `domain` → `application` (ports, plus `command/` for writes and `query/` for reads, one handler per use case) → `transport/httpapi` (driving: run a command, read the result with a query) and `adapters/` (driven: persistence, security, mail, other modules). Modules talk only through each other's public API, and only `cmd/api` knows the concrete adapters.
+A **feature-based modular monolith**: `internal/modules/identity` (accounts, passwords, sessions, email verification, authentication), `internal/modules/todos` (todos, projects, collections), `internal/modules/teams` (teams, roles, invitations) and `internal/modules/audit` (team and security logs), on top of a shared kernel in `internal/platform`. Inside each module, **Clean Architecture / Hexagonal** layering with **CQRS** in the application layer: `domain` → `application` (ports, plus `command/` for writes and `query/` for reads, one handler per use case) → `transport/httpapi` (driving: run a command, read the result with a query) and `adapters/` (driven: persistence, security, mail, other modules). Modules talk only through each other's public API, and only `cmd/api` knows the concrete adapters.
 
 See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the layout, dependency rules, request lifecycle, transactions, persistence and testing strategy, and how to add a use case, module or storage backend.
 
@@ -179,7 +202,7 @@ Inbox                                  todos without a project
 - A **collection** groups projects, like a folder or a Notion teamspace. A project belongs to at most one collection.
 - Projects and collections have a `name`, `description`, `icon` (usually an emoji) and `color`.
 - **Deleting a project deletes its todos**, atomically. **Deleting a collection keeps its projects**; they are simply no longer filed under it.
-- Everything is private to its owner. Referencing another user's project or collection answers `PROJECT_NOT_FOUND` / `COLLECTION_NOT_FOUND`, exactly as if it didn't exist.
+- Everything is private to its owner, or shared with a team (see [Teams and Roles](#teams-and-roles)). Referencing a project or collection you can't reach answers `PROJECT_NOT_FOUND` / `COLLECTION_NOT_FOUND`, exactly as if it didn't exist.
 
 ### Todo fields
 
@@ -217,6 +240,63 @@ Every project and collection response carries a `progress` summary of its todos:
 
 `percentDone` is `done / (total - cancelled)`, rounded down, so cancelled todos don't count as remaining work. A collection's progress adds up its active projects.
 
+## Teams and Roles
+
+### Teams and team content
+
+A **team** shares projects, collections and their todos among its members, like a Notion teamspace. Everyone keeps a private space next to their teams:
+
+```
+Ann's view
+├── Personal                           only Ann sees these
+│   ├── Inbox
+│   └── Project "Groceries"
+└── Team "Platform"                    every member sees these
+    └── Collection "Roadmap"
+        └── Project "Launch"
+            └── todo: Ship it          belongs to the team
+```
+
+- Create a team project or collection by sending `"teamId"` on `POST /projects` or `POST /collections`. Without it, they are personal. The team is fixed at creation (`TEAM_IMMUTABLE` on `PATCH`).
+- A todo belongs to the team of its project. The inbox is always personal: moving a team todo to the inbox (`"projectId": null`) or to a personal project makes it the mover's personal todo, and moving a todo into a team project hands it to that team.
+- A project and its collection always belong to the same team, or are both personal (`TEAM_MISMATCH`).
+- `GET /todos`, `/projects` and `/collections` list personal **and** team records; `?team={teamId}` keeps one team's, `?team=personal` only personal ones. Responses carry `teamId` (`null` when personal) and `userId` (the creator).
+- Records of teams you're not in look exactly like missing ones (`NOT_FOUND`, `PROJECT_NOT_FOUND`, `TEAM_NOT_FOUND`, …). Memberships are read on every request, so a removed member loses access at once.
+- Deleting a team deletes its projects, collections, todos, invitations and audit log. Deleting your account keeps the team records you created, with the team.
+
+### Roles
+
+| Role | Can |
+|------|-----|
+| `owner` | Everything an admin can, plus delete the team and transfer ownership. Exactly one per team |
+| `admin` | Invite and remove people, change roles, rename the team, delete team projects and collections, read the team audit log |
+| `member` | Create and edit team projects, collections and todos, delete todos |
+| `viewer` | Read only |
+
+Owners and admins only act on people **strictly below** them, and only hand out roles strictly below their own: an admin manages members and viewers; the owner also manages admins. Ownership is never assigned, only transferred (`POST /teams/{id}/transfer-ownership`); the previous owner becomes an admin. The owner can't leave without transferring ownership or deleting the team, and can't delete their account while they own a team with other members (`OWNS_TEAMS`); teams they own alone are deleted with the account.
+
+### Invitation flow
+
+1. An owner or admin invites an email address with a role: `POST /teams/{id}/invitations`. The email contains a link `APP_BASE_URL/invitations/accept?token=…` (logged instead of sent when SMTP isn't configured), valid for 7 days.
+2. The invitee signs in (or registers) **with that email address** and calls `POST /invitations/accept` with the token, or `POST /invitations/decline`.
+3. Each token works once. Inviting the same address again replaces the pending invitation (the old link stops working); owners and admins can list (`GET /teams/{id}/invitations`) and revoke them.
+
+The client page behind the link should sign the user in and post the token. Members are shown with the name and email they joined with.
+
+### Audit logs
+
+Every change in a team is written to the **team audit log**, in the same transaction as the change: team, membership, role, invitation and ownership changes, and creating, updating and deleting team projects, collections and todos. Each user also has a **security log** about their account: registration, logins (and failed login attempts), logouts, refresh-token reuse, email verification, password reset requests, resets and changes.
+
+| Area | Actions |
+|------|---------|
+| Team | `team.created`, `team.renamed`, `team.ownership_transferred` |
+| Members | `member.joined`, `member.role_changed`, `member.removed`, `member.left` |
+| Invitations | `invitation.created`, `invitation.revoked`, `invitation.declined` |
+| Content | `project.*`, `collection.*`, `todo.*` with `created`, `updated`, `deleted` |
+| Security | `user.registered`, `session.login`, `session.login_failed`, `session.logout`, `session.logout_all`, `session.refresh_reuse_detected`, `email.verified`, `password.reset_requested`, `password.reset`, `password.changed` |
+
+An event records the actor, action, target, small `details` (a title, the changed fields, old and new role), the client IP and User-Agent, and the time. Personal records are not audited. Owners and admins read the team log with `GET /teams/{id}/audit-log`; everyone reads their own security log with `GET /me/audit-log`. A deleted account's security log is deleted with it.
+
 ## Database Schema
 
 Both databases hold the same data; only naming differs (`snake_case` columns in PostgreSQL, `camelCase` fields in MongoDB). Tokens are never stored, only their SHA-256 hashes. Every user owns at most one pending email verification and one pending password reset.
@@ -238,6 +318,12 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │   ├── 2 medium
     │   ├── 3 high
     │   └── 4 urgent
+    │
+    ├── Role (team_members.role, team_invitations.role)
+    │   ├── owner   (never in an invitation)
+    │   ├── admin
+    │   ├── member
+    │   └── viewer
     │
     └── Color (projects.color, collections.color)
         ├── default
@@ -268,7 +354,8 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │
     ├── collections
     │   ├── id: uuid [PK]
-    │   ├── user_id: uuid [FK → users.id, ON DELETE CASCADE]
+    │   ├── user_id: uuid (creator; owner when personal)
+    │   ├── team_id: uuid (nullable: personal)
     │   ├── name: text
     │   ├── description: text (default '')
     │   ├── icon: text (default '')
@@ -278,11 +365,13 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │   ├── updated_at: timestamptz
     │   │
     │   └── [Indexes]
-    │       └── [Index] idx_collections_user_created (user_id, created_at)
+    │       ├── [Index] idx_collections_user_created (user_id, created_at)
+    │       └── [Partial Index] idx_collections_team_created (team_id, created_at) WHERE team_id IS NOT NULL
     │
     ├── projects
     │   ├── id: uuid [PK]
-    │   ├── user_id: uuid [FK → users.id, ON DELETE CASCADE]
+    │   ├── user_id: uuid (creator; owner when personal)
+    │   ├── team_id: uuid (nullable: personal; fixed at creation)
     │   ├── collection_id: uuid (nullable) [FK → collections.id, ON DELETE SET NULL]
     │   ├── name: text
     │   ├── description: text (default '')
@@ -294,11 +383,13 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │   │
     │   └── [Indexes]
     │       ├── [Index] idx_projects_user_created (user_id, created_at)
+    │       ├── [Partial Index] idx_projects_team_created (team_id, created_at) WHERE team_id IS NOT NULL
     │       └── [Index] idx_projects_collection (collection_id)
     │
     ├── todos
     │   ├── id: uuid [PK]
-    │   ├── user_id: uuid [FK → users.id, ON DELETE CASCADE]
+    │   ├── user_id: uuid (creator; owner when personal)
+    │   ├── team_id: uuid (nullable: personal; the project's team)
     │   ├── project_id: uuid (nullable: inbox) [FK → projects.id, ON DELETE CASCADE]
     │   ├── title: text
     │   ├── notes: text (default '')
@@ -314,7 +405,55 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │       ├── [Index] idx_todos_user_created (user_id, created_at DESC)
     │       ├── [Index] idx_todos_project (project_id)
     │       ├── [Index] idx_todos_user_due (user_id, due_at)
+    │       ├── [Partial Index] idx_todos_team (team_id) WHERE team_id IS NOT NULL
     │       └── [GIN Index] idx_todos_tags (tags)
+    │
+    ├── teams
+    │   ├── id: uuid [PK]
+    │   ├── name: text
+    │   ├── created_at: timestamptz
+    │   └── updated_at: timestamptz
+    │
+    ├── team_members
+    │   ├── team_id: uuid [PK] [FK → teams.id, ON DELETE CASCADE]
+    │   ├── user_id: uuid [PK]
+    │   ├── name: text (as when they joined)
+    │   ├── email: text (as when they joined)
+    │   ├── role: text (enum Role, CHECK)
+    │   ├── joined_at: timestamptz
+    │   │
+    │   └── [Indexes]
+    │       └── [Index] idx_team_members_user (user_id)
+    │
+    ├── team_invitations
+    │   ├── id: uuid [PK]
+    │   ├── team_id: uuid [FK → teams.id, ON DELETE CASCADE]
+    │   ├── email: text
+    │   ├── role: text (enum Role without owner, CHECK)
+    │   ├── invited_by: uuid
+    │   ├── token_hash: text [UNIQUE]
+    │   ├── expires_at: timestamptz
+    │   ├── created_at: timestamptz
+    │   │
+    │   └── [Constraints]
+    │       └── [Unique] (team_id, email)
+    │
+    ├── audit_events
+    │   ├── id: uuid [PK]
+    │   ├── team_id: uuid (nullable: a security event)
+    │   ├── user_id: uuid (nullable: a team event; CHECK exactly one is set)
+    │   ├── actor_id: uuid (nullable: unknown)
+    │   ├── action: text
+    │   ├── target_type: text (default '')
+    │   ├── target_id: text (default '')
+    │   ├── details: jsonb (string values, default '{}')
+    │   ├── ip: text (default '')
+    │   ├── user_agent: text (default '')
+    │   ├── created_at: timestamptz
+    │   │
+    │   └── [Indexes]
+    │       ├── [Partial Index] idx_audit_events_team (team_id, created_at DESC, id DESC)
+    │       └── [Partial Index] idx_audit_events_user (user_id, created_at DESC, id DESC)
     │
     ├── sessions
     │   ├── id: uuid [PK]
@@ -361,7 +500,8 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │
     ├── collections
     │   ├── _id: objectId [PK]
-    │   ├── userId: objectId [FK → users._id]
+    │   ├── userId: objectId (creator; owner when personal)
+    │   ├── teamId: objectId (null or absent: personal)
     │   ├── name: string
     │   ├── description: string
     │   ├── icon: string
@@ -371,21 +511,25 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │   ├── updatedAt: ISODate
     │   │
     │   └── [Indexes]
-    │       └── [Index] { userId: 1, createdAt: 1 }
+    │       ├── [Index] { userId: 1, createdAt: 1 }
+    │       └── [Index] { teamId: 1, createdAt: 1 }
     │
     ├── projects
     │   ├── _id: objectId [PK]
-    │   ├── userId: objectId [FK → users._id]
+    │   ├── userId: objectId (creator; owner when personal)
+    │   ├── teamId: objectId (null or absent: personal)
     │   ├── collectionId: objectId (nullable) [FK → collections._id]
     │   ├── name, description, icon, color, archivedAt, createdAt, updatedAt (as collections)
     │   │
     │   └── [Indexes]
     │       ├── [Index] { userId: 1, createdAt: 1 }
+    │       ├── [Index] { teamId: 1, createdAt: 1 }
     │       └── [Index] { collectionId: 1 }
     │
     ├── todos
     │   ├── _id: objectId [PK]
-    │   ├── userId: objectId [FK → users._id]
+    │   ├── userId: objectId (creator; owner when personal)
+    │   ├── teamId: objectId (null or absent: personal)
     │   ├── projectId: objectId (nullable: inbox) [FK → projects._id]
     │   ├── title: string
     │   ├── notes: string
@@ -401,7 +545,54 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │       ├── [Index] { userId: 1, createdAt: -1 }
     │       ├── [Index] { userId: 1, projectId: 1 }
     │       ├── [Index] { userId: 1, dueAt: 1 }
-    │       └── [Index] { userId: 1, tags: 1 }
+    │       ├── [Index] { userId: 1, tags: 1 }
+    │       └── [Index] { teamId: 1, projectId: 1 }
+    │
+    ├── teams
+    │   ├── _id: objectId [PK]
+    │   ├── name: string
+    │   ├── createdAt: ISODate
+    │   └── updatedAt: ISODate
+    │
+    ├── team_members
+    │   ├── _id: objectId [PK]
+    │   ├── teamId: objectId [FK → teams._id]
+    │   ├── userId: objectId
+    │   ├── name, email: string (as when they joined)
+    │   ├── role: string (enum Role)
+    │   ├── joinedAt: ISODate
+    │   │
+    │   └── [Indexes]
+    │       ├── [Unique Index] { teamId: 1, userId: 1 }
+    │       └── [Index] { userId: 1 }
+    │
+    ├── team_invitations
+    │   ├── _id: objectId [PK]
+    │   ├── teamId: objectId [FK → teams._id]
+    │   ├── email: string
+    │   ├── role: string (enum Role without owner)
+    │   ├── invitedBy: objectId
+    │   ├── tokenHash: string
+    │   ├── expiresAt: ISODate
+    │   ├── createdAt: ISODate
+    │   │
+    │   └── [Indexes]
+    │       ├── [Unique Index] { tokenHash: 1 }
+    │       └── [Unique Index] { teamId: 1, email: 1 }
+    │
+    ├── audit_events
+    │   ├── _id: objectId [PK]
+    │   ├── teamId: objectId (null: a security event)
+    │   ├── userId: objectId (null: a team event)
+    │   ├── actorId: objectId (null: unknown)
+    │   ├── action, targetType, targetId: string
+    │   ├── details: { string: string }
+    │   ├── ip, userAgent: string
+    │   ├── createdAt: ISODate
+    │   │
+    │   └── [Indexes]
+    │       ├── [Index] { teamId: 1, createdAt: -1, _id: -1 }
+    │       └── [Index] { userId: 1, createdAt: -1, _id: -1 }
     │
     ├── sessions
     │   ├── _id: objectId [PK]
@@ -444,7 +635,7 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
         └── applied_at: ISODate
 ```
 
-MongoDB doesn't enforce the `[FK]` references; the application does (deleting a project deletes its todos, deleting a collection detaches its projects, deleting an account removes everything), in one transaction on a replica set.
+MongoDB doesn't enforce the `[FK]` references; the application does (deleting a project deletes its todos, deleting a collection detaches its projects, deleting a team or an account removes what belongs to it), in one transaction on a replica set. In both databases, IDs that point into another module (users, teams) are plain values without foreign keys: team records outlive their creator's account, and each module cleans up its own data.
 
 ### Migrations
 
@@ -476,7 +667,9 @@ All API errors use the following structure:
 | 401 | `MISSING_ACCESS_TOKEN` | Bearer endpoint called without `Authorization: Bearer <token>` |
 | 401 | `INVALID_ACCESS_TOKEN`, `MALFORMED_ACCESS_TOKEN`, `EXPIRED_ACCESS_TOKEN` | The access token can't be used |
 | 401 | `TOKEN_REVOKED` | The token was issued before a logout-all, password reset or change, or account deletion |
-| 403 | `EMAIL_NOT_VERIFIED` | Todos endpoints, only when `AUTH_REQUIRE_VERIFIED_EMAIL=true` |
+| 403 | `EMAIL_NOT_VERIFIED` | Todos, teams and audit endpoints, only when `AUTH_REQUIRE_VERIFIED_EMAIL=true` |
+| 403 | `INSUFFICIENT_ROLE` | Your role in the team doesn't allow this (see [Roles](#roles)) |
+| 404 | `TEAM_NOT_FOUND` | The team doesn't exist or you're not a member |
 | 429 | `RATE_LIMITED` | Rate-limited endpoint called too often; see `Retry-After` |
 
 Endpoint-specific codes are listed with each endpoint.
@@ -788,11 +981,13 @@ Response `200 OK`
 
 #### DELETE `/me`
 
-Deletes the account with its todos, projects, collections, sessions and pending email verification and password reset. Bearer. Everything is removed in one transaction (on MongoDB this needs a replica set; on a standalone server the deletes run without one), and all of the user's tokens stop working.
+Deletes the account with its personal todos, projects and collections, its sessions, security log and pending email verification and password reset, and takes it out of every team. Team records the user created stay with their team, and teams the user owns alone are deleted. Bearer. Everything is removed in one transaction (on MongoDB this needs a replica set; on a standalone server the deletes run without one), and all of the user's tokens stop working.
 
 Request: no body.
 
 Response `204 No Content`
+
+Errors: `OWNS_TEAMS` (409) while the user owns a team that has other members: transfer ownership or delete the team first.
 
 ### Todos
 
@@ -800,7 +995,7 @@ All todos endpoints are Bearer, and also need a verified email when `AUTH_REQUIR
 
 #### POST `/todos`
 
-Creates a todo for the caller, in a project or in the inbox. Only `title` is required.
+Creates a todo for the caller, in a project or in the inbox. Only `title` is required. A todo in a team project belongs to that team (needs the `member` role or above).
 
 Request
 
@@ -822,6 +1017,7 @@ Response `201 Created`
 {
   "id": "672c60119e1b4d0012a7c3f4",
   "userId": "672c5f3a9e1b4d0012a7c3e1",
+  "teamId": null,
   "projectId": "672c61a09e1b4d0012a7c401",
   "title": "Pick a CMS",
   "notes": "Compare Strapi and Payload. Budget: 2k/yr.",
@@ -837,14 +1033,15 @@ Response `201 Created`
 }
 ```
 
-Omit `projectId` (or send `null`) for the inbox. Errors: `INVALID_TITLE`, `TITLE_TOO_LONG`, `NOTES_TOO_LONG`, `INVALID_STATUS`, `INVALID_PRIORITY`, `INVALID_TAG`, `TOO_MANY_TAGS`, `INVALID_FIELD` (wrong JSON type or unparsable date) (400); `PROJECT_NOT_FOUND` (404).
+Omit `projectId` (or send `null`) for the inbox. Errors: `INVALID_TITLE`, `TITLE_TOO_LONG`, `NOTES_TOO_LONG`, `INVALID_STATUS`, `INVALID_PRIORITY`, `INVALID_TAG`, `TOO_MANY_TAGS`, `INVALID_FIELD` (wrong JSON type or unparsable date) (400); `INSUFFICIENT_ROLE` (403) for a viewer of the project's team; `PROJECT_NOT_FOUND` (404).
 
 #### GET `/todos`
 
-Lists the caller's todos, filtered and sorted. Without parameters: every todo except those in archived projects, newest first.
+Lists the caller's personal todos and those of their teams, filtered and sorted. Without parameters: every todo except those in archived projects, newest first.
 
 | Parameter | Example | Meaning |
 |-----------|---------|---------|
+| `team` | `672c7011…` or `personal` | Only one team's todos, or only personal ones |
 | `project` | `672c61a0…` or `inbox` | Todos of one project (even an archived one), or of the inbox |
 | `status` | `pending,in_progress` | Any of these statuses |
 | `priority` | `high,urgent` | Any of these priorities |
@@ -874,7 +1071,7 @@ Response `200 OK`: an array of todos (same shape as above), `[]` when nothing ma
 ]
 ```
 
-Errors: `INVALID_STATUS`, `INVALID_PRIORITY`, `INVALID_SORT`, `INVALID_QUERY` (bad date or boolean) (400); `PROJECT_NOT_FOUND` (404) for an unknown `project`.
+Errors: `INVALID_STATUS`, `INVALID_PRIORITY`, `INVALID_SORT`, `INVALID_QUERY` (bad date or boolean) (400); `PROJECT_NOT_FOUND` (404) for an unknown `project`; `TEAM_NOT_FOUND` (404) for a `team` you're not in.
 
 #### GET `/todos/{id}`
 
@@ -882,7 +1079,7 @@ Returns one of the caller's todos.
 
 Response `200 OK`: a todo, as for [POST `/todos`](#post-todos).
 
-Errors: `NOT_FOUND` (404) when the todo doesn't exist or belongs to someone else; `INVALID_ID` (400) on MongoDB and PostgreSQL when the ID isn't a valid ObjectID or UUID (the memory backend answers `NOT_FOUND`).
+Errors: `NOT_FOUND` (404) when the todo doesn't exist or you can't reach it (someone else's, or a team you're not in); `INVALID_ID` (400) on MongoDB and PostgreSQL when the ID isn't a valid ObjectID or UUID (the memory backend answers `NOT_FOUND`).
 
 #### PATCH `/todos/{id}`
 
@@ -900,11 +1097,11 @@ Request
 
 Response `200 OK`: the updated todo.
 
-`null` clears `dueAt`, and moves the todo to the inbox for `projectId`; it is rejected for the other fields. Errors: `INVALID_BODY` (400) for an empty object `{}`; the field errors of [POST `/todos`](#post-todos); `INVALID_VALUE` (400) for `"completed": null`; `INVALID_ID` (400) and `NOT_FOUND` (404) as for [GET `/todos/{id}`](#get-todosid); `PROJECT_NOT_FOUND` (404).
+`null` clears `dueAt`, and moves the todo to the inbox for `projectId`; it is rejected for the other fields. Moving a todo changes its team with its project (see [Teams and team content](#teams-and-team-content)); team todos need the `member` role or above, on both sides of a move (`INSUFFICIENT_ROLE`, 403). Errors: `INVALID_BODY` (400) for an empty object `{}`; the field errors of [POST `/todos`](#post-todos); `INVALID_VALUE` (400) for `"completed": null`; `INVALID_ID` (400) and `NOT_FOUND` (404) as for [GET `/todos/{id}`](#get-todosid); `PROJECT_NOT_FOUND` (404).
 
 #### DELETE `/todos/{id}`
 
-Deletes one of the caller's todos.
+Deletes one of the caller's todos, or a team todo (`member` role or above).
 
 Request: no body.
 
@@ -922,7 +1119,7 @@ All projects endpoints are Bearer (+ verified email when required).
 
 #### POST `/projects`
 
-Creates a project (a list of todos), optionally inside a collection. Only `name` is required.
+Creates a project (a list of todos), personal or for a team (`teamId`, needs the `member` role or above), optionally inside a collection of the same team. Only `name` is required.
 
 Request
 
@@ -932,6 +1129,7 @@ Request
   "description": "New site live before Q1.",
   "icon": "🚀",
   "color": "blue",
+  "teamId": null,
   "collectionId": "672c61709e1b4d0012a7c3fd"
 }
 ```
@@ -941,6 +1139,8 @@ Response `201 Created`
 ```json
 {
   "id": "672c61a09e1b4d0012a7c401",
+  "userId": "672c5f3a9e1b4d0012a7c3e1",
+  "teamId": null,
   "collectionId": "672c61709e1b4d0012a7c3fd",
   "name": "Website relaunch",
   "description": "New site live before Q1.",
@@ -963,20 +1163,21 @@ Response `201 Created`
 }
 ```
 
-`name` is trimmed, 1–100 characters; `description` up to 2,000 characters; `icon` up to 32 bytes; `color` from the [Color enum](#enums) (default `default`). Errors: `INVALID_NAME`, `NAME_TOO_LONG`, `DESCRIPTION_TOO_LONG`, `ICON_TOO_LONG`, `INVALID_COLOR`, `INVALID_FIELD` (400); `COLLECTION_NOT_FOUND` (404).
+`name` is trimmed, 1–100 characters; `description` up to 2,000 characters; `icon` up to 32 bytes; `color` from the [Color enum](#enums) (default `default`). Errors: `INVALID_NAME`, `NAME_TOO_LONG`, `DESCRIPTION_TOO_LONG`, `ICON_TOO_LONG`, `INVALID_COLOR`, `INVALID_FIELD`, `TEAM_MISMATCH` (400); `INSUFFICIENT_ROLE` (403); `COLLECTION_NOT_FOUND`, `TEAM_NOT_FOUND` (404).
 
 #### GET `/projects`
 
-Lists the caller's projects with their progress, oldest first.
+Lists the caller's personal projects and those of their teams, with their progress, oldest first.
 
 | Parameter | Example | Meaning |
 |-----------|---------|---------|
+| `team` | `672c7011…` or `personal` | Only one team's projects, or only personal ones |
 | `collection` | `672c6170…` | Only projects in this collection |
 | `archived` | `true` | `false` (default): active only; `true`: archived only; `all`: both |
 
 Response `200 OK`: an array of projects, as for [POST `/projects`](#post-projects).
 
-Errors: `INVALID_QUERY` (400); `COLLECTION_NOT_FOUND` (404) for an unknown `collection`.
+Errors: `INVALID_QUERY` (400); `COLLECTION_NOT_FOUND` (404) for an unknown `collection`; `TEAM_NOT_FOUND` (404) for a `team` you're not in.
 
 #### GET `/projects/{id}`
 
@@ -988,7 +1189,7 @@ Errors: `INVALID_ID` (400) on MongoDB and PostgreSQL for a malformed ID; `PROJEC
 
 #### PATCH `/projects/{id}`
 
-Renames, restyles, archives or moves a project: send only the fields to change.
+Renames, restyles, archives or moves a project between collections (of its own team): send only the fields to change. Team projects need the `member` role or above; the team can't change (`TEAM_IMMUTABLE`).
 
 Request
 
@@ -1005,13 +1206,13 @@ Response `200 OK`: the updated project.
 
 #### DELETE `/projects/{id}`
 
-Deletes the project **and all of its todos**, in one transaction. To keep the todos, move them first (`PATCH /todos/{id}` with another `projectId`, or `null` for the inbox) or archive the project instead.
+Deletes the project **and all of its todos**, in one transaction. To keep the todos, move them first (`PATCH /todos/{id}` with another `projectId`, or `null` for the inbox) or archive the project instead. Team projects need the `admin` role or above.
 
 Request: no body.
 
 Response `204 No Content`
 
-Errors: `INVALID_ID` (400); `PROJECT_NOT_FOUND` (404).
+Errors: `INVALID_ID` (400); `INSUFFICIENT_ROLE` (403); `PROJECT_NOT_FOUND` (404).
 
 ### Collections
 
@@ -1019,7 +1220,7 @@ All collections endpoints are Bearer (+ verified email when required).
 
 #### POST `/collections`
 
-Creates a collection to group projects. Only `name` is required; the fields follow the rules of [POST `/projects`](#post-projects).
+Creates a collection to group projects, personal or for a team (`teamId`, needs the `member` role or above). Only `name` is required; the fields follow the rules of [POST `/projects`](#post-projects).
 
 Request
 
@@ -1036,6 +1237,8 @@ Response `201 Created`
 ```json
 {
   "id": "672c61709e1b4d0012a7c3fd",
+  "userId": "672c5f3a9e1b4d0012a7c3e1",
+  "teamId": null,
   "name": "Work",
   "description": "",
   "icon": "💼",
@@ -1058,14 +1261,15 @@ Response `201 Created`
 }
 ```
 
-Errors: `INVALID_NAME`, `NAME_TOO_LONG`, `DESCRIPTION_TOO_LONG`, `ICON_TOO_LONG`, `INVALID_COLOR`, `INVALID_FIELD` (400).
+Errors: `INVALID_NAME`, `NAME_TOO_LONG`, `DESCRIPTION_TOO_LONG`, `ICON_TOO_LONG`, `INVALID_COLOR`, `INVALID_FIELD` (400); `INSUFFICIENT_ROLE` (403); `TEAM_NOT_FOUND` (404).
 
 #### GET `/collections`
 
-Lists the caller's collections, oldest first, each with its active projects and their combined progress (a ready-made sidebar).
+Lists the caller's personal collections and those of their teams, oldest first, each with its active projects and their combined progress (a ready-made sidebar).
 
 | Parameter | Example | Meaning |
 |-----------|---------|---------|
+| `team` | `672c7011…` or `personal` | Only one team's collections, or only personal ones |
 | `archived` | `all` | `false` (default): active only; `true`: archived only; `all`: both |
 
 Response `200 OK`
@@ -1116,13 +1320,248 @@ Archiving a collection doesn't archive its projects. Errors: `INVALID_BODY` (400
 
 #### DELETE `/collections/{id}`
 
-Deletes the collection only. Its projects and their todos are kept and are no longer filed under any collection.
+Deletes the collection only. Its projects and their todos are kept and are no longer filed under any collection. Team collections need the `admin` role or above (`INSUFFICIENT_ROLE`, 403).
 
 Request: no body.
 
 Response `204 No Content`
 
 Errors: `INVALID_ID` (400); `COLLECTION_NOT_FOUND` (404).
+
+### Teams
+
+All teams endpoints are Bearer (+ verified email when required). Non-members get `TEAM_NOT_FOUND` (404) for every team endpoint, so team IDs don't leak. Rules are under [Teams and Roles](#teams-and-roles).
+
+#### POST `/teams`
+
+Creates a team; the caller becomes its owner.
+
+Request
+
+```json
+{
+  "name": "Platform"
+}
+```
+
+Response `201 Created`
+
+```json
+{
+  "id": "672c70119e1b4d0012a7c501",
+  "name": "Platform",
+  "role": "owner",
+  "createdAt": "2026-11-07T11:02:13.402Z",
+  "updatedAt": "2026-11-07T11:02:13.402Z",
+  "members": [
+    {
+      "userId": "672c5f3a9e1b4d0012a7c3e1",
+      "name": "Ann",
+      "email": "ann@example.com",
+      "role": "owner",
+      "joinedAt": "2026-11-07T11:02:13.402Z"
+    }
+  ]
+}
+```
+
+`role` is the caller's role. `name` is trimmed, 1–100 characters. Errors: `INVALID_TEAM_NAME`, `TEAM_NAME_TOO_LONG` (400).
+
+#### GET `/teams`
+
+Lists the caller's teams with their role in each, earliest joined first.
+
+Response `200 OK`: an array of teams as above, without `members`; `[]` when the caller is in none.
+
+#### GET `/teams/{id}`
+
+Returns a team with every member, earliest joined first.
+
+Response `200 OK`: a team, as for [POST `/teams`](#post-teams).
+
+Errors: `TEAM_NOT_FOUND` (404).
+
+#### PATCH `/teams/{id}`
+
+Renames a team. Owners and admins.
+
+Request
+
+```json
+{
+  "name": "Core platform"
+}
+```
+
+Response `200 OK`: the team.
+
+Errors: `INVALID_TEAM_NAME`, `TEAM_NAME_TOO_LONG` (400); `INSUFFICIENT_ROLE` (403); `TEAM_NOT_FOUND` (404).
+
+#### DELETE `/teams/{id}`
+
+Deletes the team with its members, invitations, audit log, and all its projects, collections and todos, in one transaction. Owner only.
+
+Request: no body.
+
+Response `204 No Content`
+
+Errors: `INSUFFICIENT_ROLE` (403); `TEAM_NOT_FOUND` (404).
+
+#### PATCH `/teams/{id}/members/{userId}`
+
+Changes another member's role. The caller must outrank both the member's current and the new role (an admin manages members and viewers; the owner also admins).
+
+Request
+
+```json
+{
+  "role": "admin"
+}
+```
+
+Response `200 OK`: the team with its members.
+
+Errors: `INVALID_ROLE`, `OWNER_NOT_ASSIGNABLE` (400); `INSUFFICIENT_ROLE` (403); `MEMBER_NOT_FOUND`, `TEAM_NOT_FOUND` (404); `CANNOT_CHANGE_OWN_ROLE` (409).
+
+#### DELETE `/teams/{id}/members/{userId}`
+
+Removes a member, or leaves the team when `userId` is the caller's own ID. Removing needs a role above the member's; anyone but the owner can leave.
+
+Request: no body.
+
+Response `204 No Content`
+
+Errors: `INSUFFICIENT_ROLE` (403); `MEMBER_NOT_FOUND`, `TEAM_NOT_FOUND` (404); `OWNER_CANNOT_LEAVE` (409).
+
+#### POST `/teams/{id}/transfer-ownership`
+
+Makes another member the owner; the caller becomes an admin. Owner only.
+
+Request
+
+```json
+{
+  "userId": "672c5f8e9e1b4d0012a7c3e9"
+}
+```
+
+Response `200 OK`: the team with its members.
+
+Errors: `INVALID_USER_ID` (400); `INSUFFICIENT_ROLE` (403); `MEMBER_NOT_FOUND`, `TEAM_NOT_FOUND` (404); `CANNOT_TRANSFER_TO_SELF` (409).
+
+### Invitations
+
+#### POST `/teams/{id}/invitations`
+
+Emails an invitation to join the team with a role below the caller's. Owners and admins. Inviting the same address again replaces its pending invitation.
+
+Request
+
+```json
+{
+  "email": "bo@example.com",
+  "role": "member"
+}
+```
+
+Response `201 Created`
+
+```json
+{
+  "id": "672c71029e1b4d0012a7c50a",
+  "teamId": "672c70119e1b4d0012a7c501",
+  "email": "bo@example.com",
+  "role": "member",
+  "invitedBy": "672c5f3a9e1b4d0012a7c3e1",
+  "expired": false,
+  "expiresAt": "2026-11-14T11:06:10.551Z",
+  "createdAt": "2026-11-07T11:06:10.551Z"
+}
+```
+
+The token is only in the email. Errors: `INVALID_EMAIL`, `INVALID_ROLE`, `OWNER_NOT_ASSIGNABLE` (400); `INSUFFICIENT_ROLE` (403) for members and viewers, or a role not below the caller's; `TEAM_NOT_FOUND` (404); `ALREADY_MEMBER` (409).
+
+#### GET `/teams/{id}/invitations`
+
+Lists the team's pending invitations, oldest first; `expired` marks those past `expiresAt`. Owners and admins.
+
+Response `200 OK`: an array of invitations, as above.
+
+Errors: `INSUFFICIENT_ROLE` (403); `TEAM_NOT_FOUND` (404).
+
+#### DELETE `/teams/{id}/invitations/{invitationId}`
+
+Revokes a pending invitation; its link stops working. Owners and admins.
+
+Request: no body.
+
+Response `204 No Content`
+
+Errors: `INSUFFICIENT_ROLE` (403); `INVITATION_NOT_FOUND`, `TEAM_NOT_FOUND` (404).
+
+#### POST `/invitations/accept`
+
+Joins the team with the invited role, using the token from the invitation email. Bearer, rate-limited. The caller's account email must be the invited address; the token is used up.
+
+Request
+
+```json
+{
+  "token": "dGhpcy1pcy1hbi1pbnZpdGF0aW9uLXRva2Vu"
+}
+```
+
+Response `200 OK`: the team with its members, as for [GET `/teams/{id}`](#get-teamsid).
+
+Errors: `INVALID_INVITATION_TOKEN` (400) for an unknown, used, revoked, replaced or expired token; `INVITATION_EMAIL_MISMATCH` (403); `ALREADY_MEMBER` (409).
+
+#### POST `/invitations/decline`
+
+Turns an invitation down; the token is used up. Bearer, rate-limited, same body and token errors as accepting.
+
+Response `204 No Content`
+
+### Audit
+
+Audit log endpoints are Bearer (+ verified email when required) and return one page, newest first:
+
+```json
+{
+  "events": [
+    {
+      "id": "672c72a19e1b4d0012a7c520",
+      "teamId": "672c70119e1b4d0012a7c501",
+      "userId": null,
+      "actorId": "672c5f8e9e1b4d0012a7c3e9",
+      "action": "todo.updated",
+      "targetType": "todo",
+      "targetId": "672c72809e1b4d0012a7c51c",
+      "details": { "title": "Ship it", "fields": "priority,status" },
+      "ip": "203.0.113.7",
+      "userAgent": "Mozilla/5.0 ...",
+      "createdAt": "2026-11-07T11:12:40.203Z"
+    }
+  ],
+  "nextCursor": "MTc2MjUxMzk2MDIwM182NzJjNzJhMTllMWI0ZDAwMTJhN2M1MjA"
+}
+```
+
+| Parameter | Example | Meaning |
+|-----------|---------|---------|
+| `limit` | `20` | Page size, 1–200 (default 50) |
+| `cursor` | `MTc2…` | `nextCursor` of the previous page; `nextCursor` is `null` on the last page |
+
+The IP is the connecting address (`X-Forwarded-For` is not trusted). Errors: `INVALID_LIMIT`, `INVALID_CURSOR` (400).
+
+#### GET `/teams/{id}/audit-log`
+
+The team audit log (actions are listed under [Audit logs](#audit-logs)). Owners and admins.
+
+Errors: `INSUFFICIENT_ROLE` (403); `TEAM_NOT_FOUND` (404).
+
+#### GET `/me/audit-log`
+
+The caller's own security log. Events have `userId` set and `teamId` null; `actorId` is null when the actor is unknown (a failed login, a password reset request).
 
 ## Testing
 
@@ -1132,7 +1571,7 @@ Errors: `INVALID_ID` (400); `COLLECTION_NOT_FOUND` (404).
 make test        # go test -race ./...
 ```
 
-Covers domains, commands and queries, adapters, middleware, migrations and codegen, plus an end-to-end suite (`cmd/api/app_test.go`) that drives every endpoint through the production router. Without database settings it runs on the memory backend and skips the database integration tests.
+Covers domains, commands and queries, adapters, middleware, migrations and codegen, plus an end-to-end suite (`cmd/api/app_test.go`, `organize_test.go`, `teams_test.go`) that drives every endpoint through the production router. Without database settings it runs on the memory backend and skips the database integration tests.
 
 ### Integration tests
 
@@ -1143,7 +1582,7 @@ make test-db-down       # stop the test databases
 
 This starts PostgreSQL and a single-node MongoDB replica set from `docker-compose.test.yml`, then:
 
-1. Runs every test with `TEST_POSTGRES_URI` and `TEST_MONGO_URI` set. Each persistence adapter runs its module's **store contract** (`adapters/persistence/storetest`): the same suite for memory, MongoDB and PostgreSQL, covering CRUD, ownership, unique emails, single-use tokens, concurrent refresh-token rotation, todo filters, sorting and progress, and transaction rollback and nesting. Migrations are also tested on existing data, upgrade and rollback.
+1. Runs every test with `TEST_POSTGRES_URI` and `TEST_MONGO_URI` set. Each persistence adapter runs its module's **store contract** (`adapters/persistence/storetest`): the same suite for memory, MongoDB and PostgreSQL, covering CRUD, ownership and team scopes, memberships and invitations, audit paging, unique emails, single-use tokens, concurrent refresh-token rotation, todo filters, sorting and progress, and transaction rollback and nesting. Migrations are also tested on existing data, upgrade and rollback.
 2. Runs the end-to-end suite again on each database (`TEST_E2E_BACKEND=postgres|mongo`).
 
 Every test gets its own freshly migrated database (`internal/platform/database/dbtest`), dropped when it ends. CI runs the same target on every pull request and before each image is published.

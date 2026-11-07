@@ -86,3 +86,55 @@ func exec(t *testing.T, db *sql.DB, query string) {
 		t.Fatalf("%s: %v", query, err)
 	}
 }
+
+// TestUpgrade_TeamWorkspaces checks migration 9 on existing data: records
+// stay personal (no team), and records no longer depend on the users table
+// (team records outlive their creator). Rolling back restores the foreign
+// keys. Needs TEST_POSTGRES_URI.
+func TestUpgrade_TeamWorkspaces(t *testing.T) {
+	pool := dbtest.PostgresEmpty(t)
+	ctx := context.Background()
+	db := stdlib.OpenDBFromPool(pool)
+	t.Cleanup(func() { db.Close() })
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.Migrations())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := provider.UpTo(ctx, 8); err != nil {
+		t.Fatal(err)
+	}
+	exec(t, db, `INSERT INTO users (id, name, email) VALUES ('00000000-0000-0000-0000-000000000001', 'Old', 'old@example.com')`)
+	exec(t, db, `INSERT INTO todos (user_id, title) VALUES ('00000000-0000-0000-0000-000000000001', 'kept')`)
+
+	if _, err := provider.UpTo(ctx, 9); err != nil {
+		t.Fatal(err)
+	}
+	var personal bool
+	if err := db.QueryRowContext(ctx, `SELECT team_id IS NULL FROM todos WHERE title = 'kept'`).Scan(&personal); err != nil || !personal {
+		t.Fatalf("existing todo must stay personal: %v %v", personal, err)
+	}
+	// A team todo whose creator has no account row is now allowed.
+	exec(t, db, `INSERT INTO todos (user_id, team_id, title) VALUES (gen_random_uuid(), gen_random_uuid(), 'team')`)
+
+	if _, err := provider.DownTo(ctx, 8); err != nil {
+		t.Fatal(err)
+	}
+	var titles []string
+	rows, err := db.QueryContext(ctx, `SELECT title FROM todos ORDER BY title`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var s string
+		_ = rows.Scan(&s)
+		titles = append(titles, s)
+	}
+	if len(titles) != 1 || titles[0] != "kept" {
+		t.Fatalf("after rollback: %v (team records are removed)", titles)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO todos (user_id, title) VALUES (gen_random_uuid(), 'orphan')`); err == nil {
+		t.Fatal("rollback must restore the users foreign key")
+	}
+}

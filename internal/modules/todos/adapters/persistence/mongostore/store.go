@@ -45,15 +45,63 @@ func hexOrEmpty(id *bson.ObjectID) string {
 	return id.Hex()
 }
 
-func ownedBy(id, userID bson.ObjectID) bson.M { return bson.M{"_id": id, "userId": userID} }
+// inScope is the filter for domain.Scope: the user's personal documents
+// (teamId null or missing) and those of the scope's teams.
+func inScope(sc domain.Scope) (bson.M, error) {
+	userOID, err := ids.ObjectID(sc.UserID)
+	if err != nil {
+		return nil, err
+	}
+	teams := bson.A{}
+	for _, id := range sc.TeamIDs {
+		oid, err := ids.ObjectID(id)
+		if err != nil {
+			return nil, err
+		}
+		teams = append(teams, oid)
+	}
+	return bson.M{"$or": bson.A{
+		bson.M{"teamId": nil, "userId": userOID},
+		bson.M{"teamId": bson.M{"$in": teams}},
+	}}, nil
+}
 
-// replaceOwned overwrites an owned document, reporting ErrNotFound if absent.
-func replaceOwned(ctx context.Context, coll *mongo.Collection, id, userID string, doc any) error {
-	oid, userOID, err := ids.ObjectIDPair(id, userID)
+// byIDInScope matches the document with id if it is in scope.
+func byIDInScope(sc domain.Scope, id string) (bson.M, error) {
+	oid, err := ids.ObjectID(id)
+	if err != nil {
+		return nil, err
+	}
+	filter, err := inScope(sc)
+	if err != nil {
+		return nil, err
+	}
+	filter["_id"] = oid
+	return filter, nil
+}
+
+// ownerFilter narrows to personal documents or one team's.
+func ownerFilter(f domain.OwnerFilter) (bson.M, error) {
+	switch {
+	case f.Personal:
+		return bson.M{"teamId": nil}, nil
+	case f.TeamID != "":
+		oid, err := ids.ObjectID(f.TeamID)
+		if err != nil {
+			return nil, err
+		}
+		return bson.M{"teamId": oid}, nil
+	}
+	return bson.M{}, nil
+}
+
+// replaceInScope overwrites a document in scope, reporting ErrNotFound if absent.
+func replaceInScope(ctx context.Context, coll *mongo.Collection, sc domain.Scope, id string, doc any) error {
+	filter, err := byIDInScope(sc, id)
 	if err != nil {
 		return err
 	}
-	res, err := coll.ReplaceOne(ctx, ownedBy(oid, userOID), doc)
+	res, err := coll.ReplaceOne(ctx, filter, doc)
 	if err != nil {
 		return err
 	}
@@ -63,33 +111,42 @@ func replaceOwned(ctx context.Context, coll *mongo.Collection, id, userID string
 	return nil
 }
 
-func findOwned[T any](ctx context.Context, coll *mongo.Collection, id, userID string) (*T, error) {
-	oid, userOID, err := ids.ObjectIDPair(id, userID)
+func findInScope[T any](ctx context.Context, coll *mongo.Collection, sc domain.Scope, id string) (*T, error) {
+	filter, err := byIDInScope(sc, id)
 	if err != nil {
 		return nil, err
 	}
 	var doc T
-	if err := coll.FindOne(ctx, ownedBy(oid, userOID)).Decode(&doc); err != nil {
+	if err := coll.FindOne(ctx, filter).Decode(&doc); err != nil {
 		return nil, mongodb.MapNotFound(err)
 	}
 	return &doc, nil
 }
 
-func deleteOwned(ctx context.Context, coll *mongo.Collection, id, userID string) error {
-	oid, userOID, err := ids.ObjectIDPair(id, userID)
+func deleteInScope(ctx context.Context, coll *mongo.Collection, sc domain.Scope, id string) error {
+	filter, err := byIDInScope(sc, id)
 	if err != nil {
 		return err
 	}
-	return mongodb.RequireDeleted(coll.DeleteOne(ctx, ownedBy(oid, userOID)))
+	return mongodb.RequireDeleted(coll.DeleteOne(ctx, filter))
 }
 
-func deleteAllOwned(ctx context.Context, coll *mongo.Collection, userID string, filter bson.M) error {
+// deletePersonal removes the user's personal documents.
+func deletePersonal(ctx context.Context, coll *mongo.Collection, userID string) error {
 	userOID, err := ids.ObjectID(userID)
 	if err != nil {
 		return err
 	}
-	filter["userId"] = userOID
-	_, err = coll.DeleteMany(ctx, filter)
+	_, err = coll.DeleteMany(ctx, bson.M{"userId": userOID, "teamId": nil})
+	return err
+}
+
+func deleteTeam(ctx context.Context, coll *mongo.Collection, teamID string) error {
+	teamOID, err := ids.ObjectID(teamID)
+	if err != nil {
+		return err
+	}
+	_, err = coll.DeleteMany(ctx, bson.M{"teamId": teamOID})
 	return err
 }
 
@@ -104,6 +161,7 @@ func NewTodos(db *mongo.Database) *Todos { return &Todos{coll: db.Collection(Tod
 type todoDoc struct {
 	ID          bson.ObjectID  `bson:"_id"`
 	UserID      bson.ObjectID  `bson:"userId"`
+	TeamID      *bson.ObjectID `bson:"teamId"`
 	ProjectID   *bson.ObjectID `bson:"projectId"`
 	Title       string         `bson:"title"`
 	Notes       string         `bson:"notes"`
@@ -121,6 +179,10 @@ func newTodoDoc(t *domain.Todo, id bson.ObjectID) (*todoDoc, error) {
 	if err != nil {
 		return nil, err
 	}
+	teamOID, err := optionalOID(t.TeamID)
+	if err != nil {
+		return nil, err
+	}
 	projectOID, err := optionalOID(t.ProjectID)
 	if err != nil {
 		return nil, err
@@ -130,7 +192,7 @@ func newTodoDoc(t *domain.Todo, id bson.ObjectID) (*todoDoc, error) {
 		tags = []string{}
 	}
 	return &todoDoc{
-		ID: id, UserID: userOID, ProjectID: projectOID, Title: t.Title, Notes: t.Notes,
+		ID: id, UserID: userOID, TeamID: teamOID, ProjectID: projectOID, Title: t.Title, Notes: t.Notes,
 		Status: string(t.Status), Priority: int(t.Priority), Tags: tags, DueAt: t.DueAt,
 		CompletedAt: t.CompletedAt, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
 	}, nil
@@ -146,7 +208,7 @@ func (d *todoDoc) toDomain() *domain.Todo {
 		tags = []string{}
 	}
 	return &domain.Todo{
-		ID: d.ID.Hex(), UserID: d.UserID.Hex(), ProjectID: hexOrEmpty(d.ProjectID), Title: d.Title, Notes: d.Notes,
+		ID: d.ID.Hex(), UserID: d.UserID.Hex(), TeamID: hexOrEmpty(d.TeamID), ProjectID: hexOrEmpty(d.ProjectID), Title: d.Title, Notes: d.Notes,
 		Status: status, Priority: domain.Priority(d.Priority), Tags: tags, DueAt: d.DueAt,
 		CompletedAt: d.CompletedAt, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt,
 	}
@@ -164,15 +226,15 @@ func (s *Todos) Create(ctx context.Context, t *domain.Todo) error {
 	return nil
 }
 
-func (s *Todos) Get(ctx context.Context, userID, id string) (*domain.Todo, error) {
-	doc, err := findOwned[todoDoc](ctx, s.coll, id, userID)
+func (s *Todos) Get(ctx context.Context, sc domain.Scope, id string) (*domain.Todo, error) {
+	doc, err := findInScope[todoDoc](ctx, s.coll, sc, id)
 	if err != nil {
 		return nil, err
 	}
 	return doc.toDomain(), nil
 }
 
-func (s *Todos) Update(ctx context.Context, t *domain.Todo) error {
+func (s *Todos) Update(ctx context.Context, sc domain.Scope, t *domain.Todo) error {
 	oid, err := ids.ObjectID(t.ID)
 	if err != nil {
 		return err
@@ -181,18 +243,26 @@ func (s *Todos) Update(ctx context.Context, t *domain.Todo) error {
 	if err != nil {
 		return err
 	}
-	return replaceOwned(ctx, s.coll, t.ID, t.UserID, doc)
+	return replaceInScope(ctx, s.coll, sc, t.ID, doc)
 }
 
-func (s *Todos) Delete(ctx context.Context, userID, id string) error {
-	return deleteOwned(ctx, s.coll, id, userID)
+func (s *Todos) Delete(ctx context.Context, sc domain.Scope, id string) error {
+	return deleteInScope(ctx, s.coll, sc, id)
 }
 
 var closedStatuses = bson.A{string(domain.StatusDone), string(domain.StatusCancelled)}
 
-// filter translates domain.Query into a MongoDB filter.
-func filter(userOID bson.ObjectID, q domain.Query) (bson.M, error) {
-	and := bson.A{bson.M{"userId": userOID}}
+// filter translates domain.Query, within a scope, into a MongoDB filter.
+func filter(sc domain.Scope, q domain.Query) (bson.M, error) {
+	scope, err := inScope(sc)
+	if err != nil {
+		return nil, err
+	}
+	owner, err := ownerFilter(q.OwnerFilter)
+	if err != nil {
+		return nil, err
+	}
+	and := bson.A{scope, owner}
 	if q.ProjectID != "" {
 		oid, err := ids.ObjectID(q.ProjectID)
 		if err != nil {
@@ -265,12 +335,8 @@ func sortStage(sort domain.Sort) bson.D {
 	}
 }
 
-func (s *Todos) List(ctx context.Context, userID string, q domain.Query) ([]*domain.Todo, error) {
-	userOID, err := ids.ObjectID(userID)
-	if err != nil {
-		return nil, err
-	}
-	match, err := filter(userOID, q)
+func (s *Todos) List(ctx context.Context, sc domain.Scope, q domain.Query) ([]*domain.Todo, error) {
+	match, err := filter(sc, q)
 	if err != nil {
 		return nil, err
 	}
@@ -295,8 +361,8 @@ func (s *Todos) List(ctx context.Context, userID string, q domain.Query) ([]*dom
 	return out, nil
 }
 
-func (s *Todos) Progress(ctx context.Context, userID string, now time.Time) (map[string]domain.Progress, error) {
-	userOID, err := ids.ObjectID(userID)
+func (s *Todos) Progress(ctx context.Context, sc domain.Scope, now time.Time) (map[string]domain.Progress, error) {
+	scope, err := inScope(sc)
 	if err != nil {
 		return nil, err
 	}
@@ -307,7 +373,7 @@ func (s *Todos) Progress(ctx context.Context, userID string, now time.Time) (map
 		bson.M{"$not": bson.A{bson.M{"$in": bson.A{"$status", closedStatuses}}}},
 	}}
 	pipeline := mongo.Pipeline{
-		{{Key: "$match", Value: bson.M{"userId": userOID}}},
+		{{Key: "$match", Value: scope}},
 		{{Key: "$group", Value: bson.M{
 			"_id":     bson.M{"project": "$projectId", "status": bson.M{"$ifNull": bson.A{"$status", string(domain.StatusPending)}}},
 			"total":   bson.M{"$sum": 1},
@@ -339,16 +405,26 @@ func (s *Todos) Progress(ctx context.Context, userID string, now time.Time) (map
 	return out, nil
 }
 
-func (s *Todos) DeleteByProject(ctx context.Context, userID, projectID string) error {
+func (s *Todos) DeleteByProject(ctx context.Context, sc domain.Scope, projectID string) error {
 	projectOID, err := ids.ObjectID(projectID)
 	if err != nil {
 		return err
 	}
-	return deleteAllOwned(ctx, s.coll, userID, bson.M{"projectId": projectOID})
+	filter, err := inScope(sc)
+	if err != nil {
+		return err
+	}
+	filter["projectId"] = projectOID
+	_, err = s.coll.DeleteMany(ctx, filter)
+	return err
 }
 
 func (s *Todos) DeleteByUser(ctx context.Context, userID string) error {
-	return deleteAllOwned(ctx, s.coll, userID, bson.M{})
+	return deletePersonal(ctx, s.coll, userID)
+}
+
+func (s *Todos) DeleteByTeam(ctx context.Context, teamID string) error {
+	return deleteTeam(ctx, s.coll, teamID)
 }
 
 // ---- projects and collections ----
@@ -408,6 +484,7 @@ func NewProjects(db *mongo.Database) *Projects {
 type projectDoc struct {
 	ID           bson.ObjectID  `bson:"_id"`
 	UserID       bson.ObjectID  `bson:"userId"`
+	TeamID       *bson.ObjectID `bson:"teamId"`
 	CollectionID *bson.ObjectID `bson:"collectionId"`
 	MetaDoc      `bson:",inline"`
 }
@@ -417,15 +494,19 @@ func newProjectDoc(p *domain.Project, id bson.ObjectID) (*projectDoc, error) {
 	if err != nil {
 		return nil, err
 	}
+	teamOID, err := optionalOID(p.TeamID)
+	if err != nil {
+		return nil, err
+	}
 	collectionOID, err := optionalOID(p.CollectionID)
 	if err != nil {
 		return nil, err
 	}
-	return &projectDoc{ID: id, UserID: userOID, CollectionID: collectionOID, MetaDoc: toMetaDoc(p.Meta)}, nil
+	return &projectDoc{ID: id, UserID: userOID, TeamID: teamOID, CollectionID: collectionOID, MetaDoc: toMetaDoc(p.Meta)}, nil
 }
 
 func (d *projectDoc) toDomain() *domain.Project {
-	return &domain.Project{ID: d.ID.Hex(), UserID: d.UserID.Hex(), CollectionID: hexOrEmpty(d.CollectionID), Meta: d.MetaDoc.toDomain()}
+	return &domain.Project{ID: d.ID.Hex(), UserID: d.UserID.Hex(), TeamID: hexOrEmpty(d.TeamID), CollectionID: hexOrEmpty(d.CollectionID), Meta: d.MetaDoc.toDomain()}
 }
 
 func (s *Projects) Create(ctx context.Context, p *domain.Project) error {
@@ -440,15 +521,15 @@ func (s *Projects) Create(ctx context.Context, p *domain.Project) error {
 	return nil
 }
 
-func (s *Projects) Get(ctx context.Context, userID, id string) (*domain.Project, error) {
-	doc, err := findOwned[projectDoc](ctx, s.coll, id, userID)
+func (s *Projects) Get(ctx context.Context, sc domain.Scope, id string) (*domain.Project, error) {
+	doc, err := findInScope[projectDoc](ctx, s.coll, sc, id)
 	if err != nil {
 		return nil, err
 	}
 	return doc.toDomain(), nil
 }
 
-func (s *Projects) Update(ctx context.Context, p *domain.Project) error {
+func (s *Projects) Update(ctx context.Context, sc domain.Scope, p *domain.Project) error {
 	oid, err := ids.ObjectID(p.ID)
 	if err != nil {
 		return err
@@ -457,20 +538,31 @@ func (s *Projects) Update(ctx context.Context, p *domain.Project) error {
 	if err != nil {
 		return err
 	}
-	return replaceOwned(ctx, s.coll, p.ID, p.UserID, doc)
+	return replaceInScope(ctx, s.coll, sc, p.ID, doc)
 }
 
-func (s *Projects) Delete(ctx context.Context, userID, id string) error {
-	return deleteOwned(ctx, s.coll, id, userID)
+func (s *Projects) Delete(ctx context.Context, sc domain.Scope, id string) error {
+	return deleteInScope(ctx, s.coll, sc, id)
 }
 
-func (s *Projects) List(ctx context.Context, userID string, f domain.ProjectFilter) ([]*domain.Project, error) {
-	userOID, err := ids.ObjectID(userID)
+// listFilter combines scope, owner filter and archive state.
+func listFilter(sc domain.Scope, owner domain.OwnerFilter, archive domain.ArchiveFilter) (bson.M, error) {
+	scope, err := inScope(sc)
 	if err != nil {
 		return nil, err
 	}
-	match := archiveFilter(f.Archive)
-	match["userId"] = userOID
+	o, err := ownerFilter(owner)
+	if err != nil {
+		return nil, err
+	}
+	return bson.M{"$and": bson.A{scope, o, archiveFilter(archive)}}, nil
+}
+
+func (s *Projects) List(ctx context.Context, sc domain.Scope, f domain.ProjectFilter) ([]*domain.Project, error) {
+	match, err := listFilter(sc, f.OwnerFilter, f.Archive)
+	if err != nil {
+		return nil, err
+	}
 	if f.CollectionID != "" {
 		oid, err := ids.ObjectID(f.CollectionID)
 		if err != nil {
@@ -489,18 +581,26 @@ func (s *Projects) List(ctx context.Context, userID string, f domain.ProjectFilt
 	return out, nil
 }
 
-func (s *Projects) DetachCollection(ctx context.Context, userID, collectionID string) error {
-	userOID, collectionOID, err := ids.ObjectIDPair(userID, collectionID)
+func (s *Projects) DetachCollection(ctx context.Context, sc domain.Scope, collectionID string) error {
+	collectionOID, err := ids.ObjectID(collectionID)
 	if err != nil {
 		return err
 	}
-	_, err = s.coll.UpdateMany(ctx, bson.M{"userId": userOID, "collectionId": collectionOID},
-		bson.M{"$set": bson.M{"collectionId": nil}})
+	filter, err := inScope(sc)
+	if err != nil {
+		return err
+	}
+	filter["collectionId"] = collectionOID
+	_, err = s.coll.UpdateMany(ctx, filter, bson.M{"$set": bson.M{"collectionId": nil}})
 	return err
 }
 
 func (s *Projects) DeleteByUser(ctx context.Context, userID string) error {
-	return deleteAllOwned(ctx, s.coll, userID, bson.M{})
+	return deletePersonal(ctx, s.coll, userID)
+}
+
+func (s *Projects) DeleteByTeam(ctx context.Context, teamID string) error {
+	return deleteTeam(ctx, s.coll, teamID)
 }
 
 type Collections struct{ coll *mongo.Collection }
@@ -512,8 +612,9 @@ func NewCollections(db *mongo.Database) *Collections {
 }
 
 type collectionDoc struct {
-	ID      bson.ObjectID `bson:"_id"`
-	UserID  bson.ObjectID `bson:"userId"`
+	ID      bson.ObjectID  `bson:"_id"`
+	UserID  bson.ObjectID  `bson:"userId"`
+	TeamID  *bson.ObjectID `bson:"teamId"`
 	MetaDoc `bson:",inline"`
 }
 
@@ -522,11 +623,15 @@ func newCollectionDoc(c *domain.Collection, id bson.ObjectID) (*collectionDoc, e
 	if err != nil {
 		return nil, err
 	}
-	return &collectionDoc{ID: id, UserID: userOID, MetaDoc: toMetaDoc(c.Meta)}, nil
+	teamOID, err := optionalOID(c.TeamID)
+	if err != nil {
+		return nil, err
+	}
+	return &collectionDoc{ID: id, UserID: userOID, TeamID: teamOID, MetaDoc: toMetaDoc(c.Meta)}, nil
 }
 
 func (d *collectionDoc) toDomain() *domain.Collection {
-	return &domain.Collection{ID: d.ID.Hex(), UserID: d.UserID.Hex(), Meta: d.MetaDoc.toDomain()}
+	return &domain.Collection{ID: d.ID.Hex(), UserID: d.UserID.Hex(), TeamID: hexOrEmpty(d.TeamID), Meta: d.MetaDoc.toDomain()}
 }
 
 func (s *Collections) Create(ctx context.Context, c *domain.Collection) error {
@@ -541,15 +646,15 @@ func (s *Collections) Create(ctx context.Context, c *domain.Collection) error {
 	return nil
 }
 
-func (s *Collections) Get(ctx context.Context, userID, id string) (*domain.Collection, error) {
-	doc, err := findOwned[collectionDoc](ctx, s.coll, id, userID)
+func (s *Collections) Get(ctx context.Context, sc domain.Scope, id string) (*domain.Collection, error) {
+	doc, err := findInScope[collectionDoc](ctx, s.coll, sc, id)
 	if err != nil {
 		return nil, err
 	}
 	return doc.toDomain(), nil
 }
 
-func (s *Collections) Update(ctx context.Context, c *domain.Collection) error {
+func (s *Collections) Update(ctx context.Context, sc domain.Scope, c *domain.Collection) error {
 	oid, err := ids.ObjectID(c.ID)
 	if err != nil {
 		return err
@@ -558,20 +663,18 @@ func (s *Collections) Update(ctx context.Context, c *domain.Collection) error {
 	if err != nil {
 		return err
 	}
-	return replaceOwned(ctx, s.coll, c.ID, c.UserID, doc)
+	return replaceInScope(ctx, s.coll, sc, c.ID, doc)
 }
 
-func (s *Collections) Delete(ctx context.Context, userID, id string) error {
-	return deleteOwned(ctx, s.coll, id, userID)
+func (s *Collections) Delete(ctx context.Context, sc domain.Scope, id string) error {
+	return deleteInScope(ctx, s.coll, sc, id)
 }
 
-func (s *Collections) List(ctx context.Context, userID string, f domain.ArchiveFilter) ([]*domain.Collection, error) {
-	userOID, err := ids.ObjectID(userID)
+func (s *Collections) List(ctx context.Context, sc domain.Scope, f domain.CollectionFilter) ([]*domain.Collection, error) {
+	match, err := listFilter(sc, f.OwnerFilter, f.Archive)
 	if err != nil {
 		return nil, err
 	}
-	match := archiveFilter(f)
-	match["userId"] = userOID
 	docs, err := findAll[collectionDoc](ctx, s.coll, match)
 	if err != nil {
 		return nil, err
@@ -584,5 +687,9 @@ func (s *Collections) List(ctx context.Context, userID string, f domain.ArchiveF
 }
 
 func (s *Collections) DeleteByUser(ctx context.Context, userID string) error {
-	return deleteAllOwned(ctx, s.coll, userID, bson.M{})
+	return deletePersonal(ctx, s.coll, userID)
+}
+
+func (s *Collections) DeleteByTeam(ctx context.Context, teamID string) error {
+	return deleteTeam(ctx, s.coll, teamID)
 }

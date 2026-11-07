@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -100,5 +101,21 @@ func TestRespondNoContent(t *testing.T) {
 	RespondNoContent(rec)
 	if rec.Code != http.StatusNoContent || rec.Body.Len() != 0 {
 		t.Fatalf("status %d body %q", rec.Code, rec.Body)
+	}
+}
+
+func TestClientInfo(t *testing.T) {
+	var got Client
+	h := ClientInfo(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { got = ClientFrom(r.Context()) }))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.7:4321"
+	req.Header.Set("User-Agent", strings.Repeat("a", 300))
+	req.Header.Set("X-Forwarded-For", "10.0.0.1")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if got.IP != "203.0.113.7" || len(got.UserAgent) != maxUserAgent {
+		t.Fatalf("client = %+v", got)
+	}
+	if (ClientFrom(context.Background()) != Client{}) {
+		t.Fatal("no client outside a request")
 	}
 }

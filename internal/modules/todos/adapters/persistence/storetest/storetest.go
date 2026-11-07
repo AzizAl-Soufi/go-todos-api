@@ -29,9 +29,10 @@ type Backend struct {
 	Tx          tx.Runner
 	// AtomicTx is true when Tx really rolls back (not tx.None).
 	AtomicTx bool
-	// NewUser returns the ID of a user records may belong to (PostgreSQL
-	// needs a real row for its foreign keys).
+	// NewUser returns a fresh, well-formed user ID for this backend.
 	NewUser func(t *testing.T) string
+	// NewID returns a fresh, well-formed ID (used for teams).
+	NewID func() string
 	// MissingID is a well-formed ID for this backend that matches nothing.
 	MissingID string
 }
@@ -45,6 +46,8 @@ func Run(t *testing.T, newBackend func(t *testing.T) Backend) {
 	t.Run("ConcurrentCreates", func(t *testing.T) { testConcurrent(t, newBackend(t)) })
 	t.Run("Projects", func(t *testing.T) { testProjects(t, newBackend(t)) })
 	t.Run("Collections", func(t *testing.T) { testCollections(t, newBackend(t)) })
+	t.Run("TeamScope", func(t *testing.T) { testTeamScope(t, newBackend(t)) })
+	t.Run("TeamBulkOperations", func(t *testing.T) { testTeamBulk(t, newBackend(t)) })
 	t.Run("Transactions", func(t *testing.T) {
 		b := newBackend(t)
 		if !b.AtomicTx {
@@ -55,6 +58,9 @@ func Run(t *testing.T, newBackend func(t *testing.T) Backend) {
 }
 
 var ctx = context.Background()
+
+// me is the scope of a user without teams.
+func me(userID string) domain.Scope { return domain.Scope{UserID: userID} }
 
 // base is a fixed, millisecond-precise reference time.
 var base = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
@@ -128,39 +134,39 @@ func testTodoCRUD(t *testing.T, b Backend) {
 	todo.DueAt, todo.CompletedAt = at(48*time.Hour), at(time.Hour)
 	create(t, b, todo)
 
-	got, err := b.Todos.Get(ctx, owner, todo.ID)
+	got, err := b.Todos.Get(ctx, me(owner), todo.ID)
 	if err != nil || !sameTodo(got, todo) {
 		t.Fatalf("round trip:\n got  %+v (%v)\n want %+v", got, err, todo)
 	}
 
 	plain := create(t, b, newTodo(owner, time.Minute))
-	if got, _ := b.Todos.Get(ctx, owner, plain.ID); got.ProjectID != "" || got.DueAt != nil || got.Tags == nil || len(got.Tags) != 0 {
+	if got, _ := b.Todos.Get(ctx, me(owner), plain.ID); got.ProjectID != "" || got.DueAt != nil || got.Tags == nil || len(got.Tags) != 0 {
 		t.Fatalf("empty optional fields must round-trip as empty: %+v", got)
 	}
 
 	expectNotFound(t, map[string]error{
-		"Get by another user":    func() error { _, err := b.Todos.Get(ctx, other, todo.ID); return err }(),
-		"Update by another user": b.Todos.Update(ctx, &domain.Todo{ID: todo.ID, UserID: other, Title: "x", Status: domain.StatusPending}),
-		"Delete by another user": b.Todos.Delete(ctx, other, todo.ID),
-		"Get missing":            func() error { _, err := b.Todos.Get(ctx, owner, b.MissingID); return err }(),
-		"Update missing":         b.Todos.Update(ctx, &domain.Todo{ID: b.MissingID, UserID: owner, Title: "x", Status: domain.StatusPending}),
-		"Delete missing":         b.Todos.Delete(ctx, owner, b.MissingID),
+		"Get by another user":    func() error { _, err := b.Todos.Get(ctx, me(other), todo.ID); return err }(),
+		"Update by another user": b.Todos.Update(ctx, me(other), &domain.Todo{ID: todo.ID, UserID: other, Title: "x", Status: domain.StatusPending}),
+		"Delete by another user": b.Todos.Delete(ctx, me(other), todo.ID),
+		"Get missing":            func() error { _, err := b.Todos.Get(ctx, me(owner), b.MissingID); return err }(),
+		"Update missing":         b.Todos.Update(ctx, me(owner), &domain.Todo{ID: b.MissingID, UserID: owner, Title: "x", Status: domain.StatusPending}),
+		"Delete missing":         b.Todos.Delete(ctx, me(owner), b.MissingID),
 	})
 
 	// Update saves every field, including clearing optional ones.
 	todo.ProjectID, todo.Title, todo.Notes, todo.Status = "", "changed", "", domain.StatusInProgress
 	todo.Priority, todo.Tags, todo.DueAt, todo.CompletedAt, todo.UpdatedAt = domain.PriorityNone, []string{}, nil, nil, base.Add(time.Hour)
-	if err := b.Todos.Update(ctx, todo); err != nil {
+	if err := b.Todos.Update(ctx, me(todo.UserID), todo); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := b.Todos.Get(ctx, owner, todo.ID); !sameTodo(got, todo) {
+	if got, _ := b.Todos.Get(ctx, me(owner), todo.ID); !sameTodo(got, todo) {
 		t.Fatalf("update:\n got  %+v\n want %+v", got, todo)
 	}
 
-	if err := b.Todos.Delete(ctx, owner, todo.ID); err != nil {
+	if err := b.Todos.Delete(ctx, me(owner), todo.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b.Todos.Get(ctx, owner, todo.ID); !errors.Is(err, apperrors.ErrNotFound) {
+	if _, err := b.Todos.Get(ctx, me(owner), todo.ID); !errors.Is(err, apperrors.ErrNotFound) {
 		t.Fatalf("deleted todo: err = %v", err)
 	}
 }
@@ -239,7 +245,7 @@ func testTodoQueries(t *testing.T, b Backend) {
 					want = append(want, todo.Title)
 				}
 			}
-			list, err := b.Todos.List(ctx, user, q)
+			list, err := b.Todos.List(ctx, me(user), q)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -271,7 +277,7 @@ func testProgress(t *testing.T, b Backend) {
 	add(p.ID, domain.StatusCancelled, nil)
 	add("", domain.StatusBlocked, at(-time.Minute)) // inbox, overdue
 
-	got, err := b.Todos.Progress(ctx, user, base)
+	got, err := b.Todos.Progress(ctx, me(user), base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,23 +308,23 @@ func testBulkDeletes(t *testing.T, b Backend) {
 	inbox := create(t, b, newTodo(u1, time.Second))
 	theirs := create(t, b, newTodo(u2, 0))
 
-	if err := b.Todos.DeleteByProject(ctx, u1, p.ID); err != nil {
+	if err := b.Todos.DeleteByProject(ctx, me(u1), p.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b.Todos.Get(ctx, u1, inProject.ID); !errors.Is(err, apperrors.ErrNotFound) {
+	if _, err := b.Todos.Get(ctx, me(u1), inProject.ID); !errors.Is(err, apperrors.ErrNotFound) {
 		t.Fatal("DeleteByProject left the project's todo")
 	}
-	if _, err := b.Todos.Get(ctx, u1, inbox.ID); err != nil {
+	if _, err := b.Todos.Get(ctx, me(u1), inbox.ID); err != nil {
 		t.Fatal("DeleteByProject removed an inbox todo")
 	}
 
 	if err := b.Todos.DeleteByUser(ctx, u1); err != nil {
 		t.Fatal(err)
 	}
-	if list, _ := b.Todos.List(ctx, u1, domain.Query{}); len(list) != 0 {
+	if list, _ := b.Todos.List(ctx, me(u1), domain.Query{}); len(list) != 0 {
 		t.Fatal("DeleteByUser left todos")
 	}
-	if _, err := b.Todos.Get(ctx, u2, theirs.ID); err != nil {
+	if _, err := b.Todos.Get(ctx, me(u2), theirs.ID); err != nil {
 		t.Fatal("DeleteByUser removed another user's todo")
 	}
 	if err := b.Todos.DeleteByUser(ctx, u1); err != nil {
@@ -339,13 +345,13 @@ func testConcurrent(t *testing.T, b Backend) {
 				t.Error(err)
 				return
 			}
-			if _, err := b.Todos.Get(ctx, user, todo.ID); err != nil {
+			if _, err := b.Todos.Get(ctx, me(user), todo.ID); err != nil {
 				t.Error(err)
 			}
 		}()
 	}
 	wg.Wait()
-	if list, _ := b.Todos.List(ctx, user, domain.Query{}); len(list) != n {
+	if list, _ := b.Todos.List(ctx, me(user), domain.Query{}); len(list) != n {
 		t.Fatalf("len = %d, want %d", len(list), n)
 	}
 }
@@ -358,9 +364,9 @@ func names[T any](list []*T, name func(*T) string) []string {
 	return out
 }
 
-func projectNames(t *testing.T, b Backend, userID string, f domain.ProjectFilter) []string {
+func projectNames(t *testing.T, b Backend, sc domain.Scope, f domain.ProjectFilter) []string {
 	t.Helper()
-	list, err := b.Projects.List(ctx, userID, f)
+	list, err := b.Projects.List(ctx, sc, f)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,17 +381,17 @@ func testProjects(t *testing.T, b Backend) {
 	c := newProject(t, b, user, "C", work.ID, time.Second)
 	newProject(t, b, other, "Theirs", "", 0)
 
-	got, err := b.Projects.Get(ctx, user, a.ID)
+	got, err := b.Projects.Get(ctx, me(user), a.ID)
 	if err != nil || got.Name != "A" || got.CollectionID != work.ID || got.Archived() || !got.CreatedAt.Equal(a.CreatedAt) {
 		t.Fatalf("round trip: %+v (%v)", got, err)
 	}
 
 	c.Name, c.Description, c.Icon, c.Color, c.CollectionID = "C2", "desc", "🚀", "blue", ""
 	c.ArchivedAt, c.UpdatedAt = at(time.Hour), base.Add(time.Hour)
-	if err := b.Projects.Update(ctx, c); err != nil {
+	if err := b.Projects.Update(ctx, me(c.UserID), c); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := b.Projects.Get(ctx, user, c.ID); got.Name != "C2" || got.Description != "desc" || got.Icon != "🚀" ||
+	if got, _ := b.Projects.Get(ctx, me(user), c.ID); got.Name != "C2" || got.Description != "desc" || got.Icon != "🚀" ||
 		got.Color != "blue" || got.CollectionID != "" || !equalTime(got.ArchivedAt, c.ArchivedAt) || !got.UpdatedAt.Equal(c.UpdatedAt) {
 		t.Fatalf("update not saved: %+v", got)
 	}
@@ -399,36 +405,36 @@ func testProjects(t *testing.T, b Backend) {
 		"any":                  {domain.ProjectFilter{Archive: domain.AnyArchiveState}, []string{"A", "C2", "B"}},
 		"in collection":        {domain.ProjectFilter{CollectionID: work.ID, Archive: domain.AnyArchiveState}, []string{"A"}},
 	} {
-		if got := projectNames(t, b, user, tc.f); !slices.Equal(got, tc.want) {
+		if got := projectNames(t, b, me(user), tc.f); !slices.Equal(got, tc.want) {
 			t.Errorf("%s: got %q, want %q", name, got, tc.want)
 		}
 	}
 
-	if err := b.Projects.DetachCollection(ctx, user, work.ID); err != nil {
+	if err := b.Projects.DetachCollection(ctx, me(user), work.ID); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := b.Projects.Get(ctx, user, a.ID); got.CollectionID != "" {
+	if got, _ := b.Projects.Get(ctx, me(user), a.ID); got.CollectionID != "" {
 		t.Fatal("DetachCollection left the project in the collection")
 	}
 
 	expectNotFound(t, map[string]error{
-		"Get by another user":    func() error { _, err := b.Projects.Get(ctx, other, a.ID); return err }(),
-		"Update by another user": b.Projects.Update(ctx, &domain.Project{ID: a.ID, UserID: other, Meta: domain.Meta{Name: "x"}}),
-		"Delete by another user": b.Projects.Delete(ctx, other, a.ID),
-		"Get missing":            func() error { _, err := b.Projects.Get(ctx, user, b.MissingID); return err }(),
-		"Delete missing":         b.Projects.Delete(ctx, user, b.MissingID),
+		"Get by another user":    func() error { _, err := b.Projects.Get(ctx, me(other), a.ID); return err }(),
+		"Update by another user": b.Projects.Update(ctx, me(other), &domain.Project{ID: a.ID, UserID: other, Meta: domain.Meta{Name: "x"}}),
+		"Delete by another user": b.Projects.Delete(ctx, me(other), a.ID),
+		"Get missing":            func() error { _, err := b.Projects.Get(ctx, me(user), b.MissingID); return err }(),
+		"Delete missing":         b.Projects.Delete(ctx, me(user), b.MissingID),
 	})
 
-	if err := b.Projects.Delete(ctx, user, a.ID); err != nil {
+	if err := b.Projects.Delete(ctx, me(user), a.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := b.Projects.DeleteByUser(ctx, user); err != nil {
 		t.Fatal(err)
 	}
-	if got := projectNames(t, b, user, domain.ProjectFilter{Archive: domain.AnyArchiveState}); len(got) != 0 {
+	if got := projectNames(t, b, me(user), domain.ProjectFilter{Archive: domain.AnyArchiveState}); len(got) != 0 {
 		t.Fatalf("DeleteByUser left %q", got)
 	}
-	if got := projectNames(t, b, other, domain.ProjectFilter{}); len(got) != 1 {
+	if got := projectNames(t, b, me(other), domain.ProjectFilter{}); len(got) != 1 {
 		t.Fatal("DeleteByUser removed another user's project")
 	}
 }
@@ -440,16 +446,16 @@ func testCollections(t *testing.T, b Backend) {
 	newCollection(t, b, other, "Theirs", 0)
 
 	home.Name, home.Icon, home.Color, home.ArchivedAt, home.UpdatedAt = "Home 2", "🏠", "green", at(time.Hour), base.Add(time.Hour)
-	if err := b.Collections.Update(ctx, home); err != nil {
+	if err := b.Collections.Update(ctx, me(home.UserID), home); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := b.Collections.Get(ctx, user, home.ID); err != nil || got.Name != "Home 2" || got.Icon != "🏠" ||
+	if got, err := b.Collections.Get(ctx, me(user), home.ID); err != nil || got.Name != "Home 2" || got.Icon != "🏠" ||
 		got.Color != "green" || !equalTime(got.ArchivedAt, home.ArchivedAt) {
 		t.Fatalf("update not saved: %+v (%v)", got, err)
 	}
 
 	list := func(f domain.ArchiveFilter) []string {
-		l, err := b.Collections.List(ctx, user, f)
+		l, err := b.Collections.List(ctx, me(user), domain.CollectionFilter{Archive: f})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -466,13 +472,13 @@ func testCollections(t *testing.T, b Backend) {
 	}
 
 	expectNotFound(t, map[string]error{
-		"Get by another user":    func() error { _, err := b.Collections.Get(ctx, other, work.ID); return err }(),
-		"Update by another user": b.Collections.Update(ctx, &domain.Collection{ID: work.ID, UserID: other, Meta: domain.Meta{Name: "x"}}),
-		"Delete by another user": b.Collections.Delete(ctx, other, work.ID),
-		"Delete missing":         b.Collections.Delete(ctx, user, b.MissingID),
+		"Get by another user":    func() error { _, err := b.Collections.Get(ctx, me(other), work.ID); return err }(),
+		"Update by another user": b.Collections.Update(ctx, me(other), &domain.Collection{ID: work.ID, UserID: other, Meta: domain.Meta{Name: "x"}}),
+		"Delete by another user": b.Collections.Delete(ctx, me(other), work.ID),
+		"Delete missing":         b.Collections.Delete(ctx, me(user), b.MissingID),
 	})
 
-	if err := b.Collections.Delete(ctx, user, work.ID); err != nil {
+	if err := b.Collections.Delete(ctx, me(user), work.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := b.Collections.DeleteByUser(ctx, user); err != nil {
@@ -503,10 +509,187 @@ func testTransactions(t *testing.T, b Backend) {
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want the function's error", err)
 	}
-	if _, err := b.Projects.Get(ctx, user, projectID); !errors.Is(err, apperrors.ErrNotFound) {
+	if _, err := b.Projects.Get(ctx, me(user), projectID); !errors.Is(err, apperrors.ErrNotFound) {
 		t.Fatalf("project created in a failed transaction is visible: %v", err)
 	}
-	if list, _ := b.Todos.List(ctx, user, domain.Query{}); len(list) != 0 {
+	if list, _ := b.Todos.List(ctx, me(user), domain.Query{}); len(list) != 0 {
 		t.Fatal("todo created in a failed transaction is visible")
+	}
+}
+
+// teamFixture is a team with a project, a collection and a todo created by
+// creator, plus creator's personal todo.
+type teamFixture struct {
+	team, creator, outsider string
+	project                 *domain.Project
+	collection              *domain.Collection
+	todo, personal          *domain.Todo
+}
+
+func newTeamFixture(t *testing.T, b Backend) teamFixture {
+	t.Helper()
+	f := teamFixture{team: b.NewID(), creator: b.NewUser(t), outsider: b.NewUser(t)}
+	f.collection = &domain.Collection{UserID: f.creator, TeamID: f.team, Meta: domain.Meta{Name: "Team C", Color: "default", CreatedAt: base, UpdatedAt: base}}
+	if err := b.Collections.Create(ctx, f.collection); err != nil {
+		t.Fatal(err)
+	}
+	f.project = &domain.Project{UserID: f.creator, TeamID: f.team, CollectionID: f.collection.ID, Meta: domain.Meta{Name: "Team P", Color: "default", CreatedAt: base, UpdatedAt: base}}
+	if err := b.Projects.Create(ctx, f.project); err != nil {
+		t.Fatal(err)
+	}
+	f.todo = newTodo(f.creator, 0)
+	f.todo.TeamID, f.todo.ProjectID, f.todo.Title = f.team, f.project.ID, "team todo"
+	create(t, b, f.todo)
+	f.personal = newTodo(f.creator, time.Second)
+	f.personal.Title = "personal todo"
+	create(t, b, f.personal)
+	return f
+}
+
+func (f teamFixture) member(userID string) domain.Scope {
+	return domain.Scope{UserID: userID, TeamIDs: []string{f.team}}
+}
+
+func testTeamScope(t *testing.T, b Backend) {
+	f := newTeamFixture(t, b)
+	colleague := b.NewUser(t)
+	inTeam, outside := f.member(colleague), me(f.outsider)
+
+	// Team records round-trip their team and are visible to every member...
+	if got, err := b.Todos.Get(ctx, inTeam, f.todo.ID); err != nil || got.TeamID != f.team || got.UserID != f.creator {
+		t.Fatalf("team todo for a member: %+v (%v)", got, err)
+	}
+	if got, err := b.Projects.Get(ctx, inTeam, f.project.ID); err != nil || got.TeamID != f.team {
+		t.Fatalf("team project for a member: %+v (%v)", got, err)
+	}
+	if got, err := b.Collections.Get(ctx, inTeam, f.collection.ID); err != nil || got.TeamID != f.team {
+		t.Fatalf("team collection for a member: %+v (%v)", got, err)
+	}
+	// ...but not to outsiders, nor to their creator without the team in scope,
+	// and a member never sees a colleague's personal records.
+	expectNotFound(t, map[string]error{
+		"todo for outsider":        func() error { _, err := b.Todos.Get(ctx, outside, f.todo.ID); return err }(),
+		"todo for creator alone":   func() error { _, err := b.Todos.Get(ctx, me(f.creator), f.todo.ID); return err }(),
+		"project for outsider":     func() error { _, err := b.Projects.Get(ctx, outside, f.project.ID); return err }(),
+		"collection for outsider":  func() error { _, err := b.Collections.Get(ctx, outside, f.collection.ID); return err }(),
+		"colleague's personal":     func() error { _, err := b.Todos.Get(ctx, inTeam, f.personal.ID); return err }(),
+		"update by outsider":       b.Todos.Update(ctx, outside, f.todo),
+		"delete by outsider":       b.Todos.Delete(ctx, outside, f.todo.ID),
+		"delete project outsider":  b.Projects.Delete(ctx, outside, f.project.ID),
+		"update coll. by outsider": b.Collections.Update(ctx, outside, f.collection),
+	})
+
+	// Listings combine personal and team records; the owner filter narrows them.
+	both := f.member(f.creator)
+	for name, tc := range map[string]struct {
+		q    domain.Query
+		want []string
+	}{
+		"all in scope":  {domain.Query{}, []string{"personal todo", "team todo"}},
+		"personal only": {domain.Query{OwnerFilter: domain.OwnerFilter{Personal: true}}, []string{"personal todo"}},
+		"one team":      {domain.Query{OwnerFilter: domain.OwnerFilter{TeamID: f.team}}, []string{"team todo"}},
+	} {
+		list, err := b.Todos.List(ctx, both, tc.q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := names(list, func(t *domain.Todo) string { return t.Title }); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: got %q, want %q", name, got, tc.want)
+		}
+	}
+	newProject(t, b, f.creator, "Mine", "", time.Second)
+	if got := projectNames(t, b, both, domain.ProjectFilter{OwnerFilter: domain.OwnerFilter{TeamID: f.team}}); !slices.Equal(got, []string{"Team P"}) {
+		t.Errorf("team projects = %q", got)
+	}
+	if got := projectNames(t, b, both, domain.ProjectFilter{OwnerFilter: domain.OwnerFilter{Personal: true}}); !slices.Equal(got, []string{"Mine"}) {
+		t.Errorf("personal projects = %q", got)
+	}
+	if got := projectNames(t, b, inTeam, domain.ProjectFilter{}); !slices.Equal(got, []string{"Team P"}) {
+		t.Errorf("a colleague sees %q", got)
+	}
+	colls, err := b.Collections.List(ctx, inTeam, domain.CollectionFilter{OwnerFilter: domain.OwnerFilter{TeamID: f.team}})
+	if err != nil || len(colls) != 1 || colls[0].ID != f.collection.ID {
+		t.Fatalf("team collections = %v (%v)", colls, err)
+	}
+	if colls, _ := b.Collections.List(ctx, inTeam, domain.CollectionFilter{OwnerFilter: domain.OwnerFilter{Personal: true}}); len(colls) != 0 {
+		t.Fatalf("a colleague has no personal collections: %v", colls)
+	}
+
+	// Progress counts team todos for members.
+	progress, err := b.Todos.Progress(ctx, inTeam, base)
+	if err != nil || progress[f.project.ID].Total != 1 || progress[""].Total != 0 {
+		t.Fatalf("progress for a member = %v (%v)", progress, err)
+	}
+
+	// A member may update a team todo; Update saves team and creator, so a
+	// todo can move out of the team into the member's personal inbox.
+	moved := *f.todo
+	moved.TeamID, moved.ProjectID, moved.UserID = "", "", colleague
+	if err := b.Todos.Update(ctx, inTeam, &moved); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Todos.Get(ctx, me(f.creator), f.todo.ID); !errors.Is(err, apperrors.ErrNotFound) {
+		t.Fatalf("moved todo still visible to its creator: %v", err)
+	}
+	if got, err := b.Todos.Get(ctx, me(colleague), f.todo.ID); err != nil || got.TeamID != "" || got.UserID != colleague {
+		t.Fatalf("moved todo is now the colleague's personal todo: %+v (%v)", got, err)
+	}
+}
+
+func testTeamBulk(t *testing.T, b Backend) {
+	f := newTeamFixture(t, b)
+	other := newTeamFixture(t, b)
+	scope := f.member(f.creator)
+
+	if err := b.Projects.DetachCollection(ctx, me(f.creator), f.collection.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := b.Projects.Get(ctx, scope, f.project.ID); got.CollectionID != f.collection.ID {
+		t.Fatal("DetachCollection reached a team project outside the scope")
+	}
+	if err := b.Todos.DeleteByProject(ctx, me(f.creator), f.project.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Todos.Get(ctx, scope, f.todo.ID); err != nil {
+		t.Fatal("DeleteByProject reached a team todo outside the scope")
+	}
+
+	// DeleteByUser removes only personal records: team records stay with the team.
+	if err := b.Todos.DeleteByUser(ctx, f.creator); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Projects.DeleteByUser(ctx, f.creator); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Collections.DeleteByUser(ctx, f.creator); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Todos.Get(ctx, me(f.creator), f.personal.ID); !errors.Is(err, apperrors.ErrNotFound) {
+		t.Fatal("DeleteByUser left a personal todo")
+	}
+	if _, err := b.Todos.Get(ctx, scope, f.todo.ID); err != nil {
+		t.Fatalf("DeleteByUser removed a team todo: %v", err)
+	}
+	if _, err := b.Projects.Get(ctx, scope, f.project.ID); err != nil {
+		t.Fatalf("DeleteByUser removed a team project: %v", err)
+	}
+
+	// DeleteByTeam removes that team's records only.
+	for _, del := range []func(context.Context, string) error{b.Todos.DeleteByTeam, b.Projects.DeleteByTeam, b.Collections.DeleteByTeam} {
+		if err := del(ctx, f.team); err != nil {
+			t.Fatal(err)
+		}
+	}
+	expectNotFound(t, map[string]error{
+		"team todo":       func() error { _, err := b.Todos.Get(ctx, scope, f.todo.ID); return err }(),
+		"team project":    func() error { _, err := b.Projects.Get(ctx, scope, f.project.ID); return err }(),
+		"team collection": func() error { _, err := b.Collections.Get(ctx, scope, f.collection.ID); return err }(),
+	})
+	otherScope := other.member(other.creator)
+	if _, err := b.Todos.Get(ctx, otherScope, other.todo.ID); err != nil {
+		t.Fatalf("DeleteByTeam removed another team's todo: %v", err)
+	}
+	if _, err := b.Collections.Get(ctx, otherScope, other.collection.ID); err != nil {
+		t.Fatalf("DeleteByTeam removed another team's collection: %v", err)
 	}
 }

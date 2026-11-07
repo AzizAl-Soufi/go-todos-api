@@ -8,15 +8,26 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity"
-	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/mail"
+	identityaudit "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/auditgateway"
+	identitymail "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/mail"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/security"
-	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/todosgateway"
+	identityteams "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/teamsgateway"
+	identitytodos "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/todosgateway"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams"
+	teamsaudit "github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/adapters/auditgateway"
+	teamsmail "github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/adapters/mail"
+	teamstodos "github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/adapters/todosgateway"
+	teamsapp "github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos"
+	todosaudit "github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/adapters/auditgateway"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/auth"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/config"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/httpx"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/mail"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/ratelimit"
 )
 
@@ -40,21 +51,45 @@ func newApp(ctx context.Context, cfg *config.Config) (*app, error) {
 		return nil, fmt.Errorf("initialize JWT: %w", err)
 	}
 
-	modules := wireModules(store, security.NewBcryptHasher(security.DefaultBcryptCost), tokens, newMailer(cfg), cfg)
+	modules := wireModules(store, security.NewBcryptHasher(security.DefaultBcryptCost), tokens, newMailers(cfg), cfg)
 	return &app{cfg: cfg, handler: newRouter(cfg, modules), close: store.close}, nil
 }
 
 type modules struct {
-	identity *identity.Module
+	audit    *audit.Module
 	todos    *todos.Module
+	teams    *teams.Module
+	identity *identity.Module
 }
 
-func wireModules(store *storage, hasher application.PasswordHasher, tokens application.AccessTokens, mailer application.Mailer, cfg *config.Config) modules {
+// mailers are the modules' email adapters.
+type mailers struct {
+	identity application.Mailer
+	teams    teamsapp.Mailer
+}
+
+// wireModules builds the modules in dependency order: audit is a leaf, todos
+// records into it, teams deletes team data in todos, identity reaches all of
+// them on account deletion. Team memberships flow to todos and audit through
+// platform/access (teams.Resolver), not through imports.
+func wireModules(store *storage, hasher application.PasswordHasher, tokens application.AccessTokens, mailer mailers, cfg *config.Config) modules {
+	auditModule := audit.New(audit.Deps{Events: store.events})
 	todosModule := todos.New(todos.Deps{
 		Todos:       store.todos,
 		Projects:    store.projects,
 		Collections: store.collections,
+		Audit:       todosaudit.New(auditModule),
 		Tx:          store.tx,
+	})
+	teamsModule := teams.New(teams.Deps{
+		Teams:       store.teams,
+		Members:     store.members,
+		Invitations: store.invitations,
+		TeamData:    teamstodos.New(todosModule),
+		Audit:       teamsaudit.New(auditModule),
+		Mailer:      mailer.teams,
+		Tx:          store.tx,
+		Config:      teams.DefaultConfig(cfg.App.BaseURL),
 	})
 	identityModule := identity.New(identity.Deps{
 		Users:          store.users,
@@ -63,12 +98,14 @@ func wireModules(store *storage, hasher application.PasswordHasher, tokens appli
 		PasswordResets: store.passwordResets,
 		Hasher:         hasher,
 		Tokens:         tokens,
-		Mailer:         mailer,
-		Todos:          todosgateway.New(todosModule),
+		Mailer:         mailer.identity,
+		Todos:          identitytodos.New(todosModule),
+		Teams:          identityteams.New(teamsModule),
+		Audit:          identityaudit.New(auditModule),
 		Tx:             store.tx,
 		Config:         identityConfig(cfg),
 	})
-	return modules{identity: identityModule, todos: todosModule}
+	return modules{audit: auditModule, todos: todosModule, teams: teamsModule, identity: identityModule}
 }
 
 func identityConfig(cfg *config.Config) identity.Config {
@@ -79,15 +116,17 @@ func identityConfig(cfg *config.Config) identity.Config {
 	return c
 }
 
-func newMailer(cfg *config.Config) application.Mailer {
+func newMailers(cfg *config.Config) mailers {
+	var sender mail.Sender = mail.LogSender{}
 	if cfg.SMTP.Host == "" {
-		slog.Warn("SMTP_HOST not set: verification and password reset emails are logged, not sent")
-		return mail.LogMailer{}
+		slog.Warn("SMTP_HOST not set: verification, password reset and invitation emails are logged, not sent")
+	} else {
+		sender = mail.SMTP{
+			Host: cfg.SMTP.Host, Port: cfg.SMTP.Port,
+			Username: cfg.SMTP.Username, Password: cfg.SMTP.Password, From: cfg.SMTP.From,
+		}
 	}
-	return mail.SMTPMailer{
-		Host: cfg.SMTP.Host, Port: cfg.SMTP.Port,
-		Username: cfg.SMTP.Username, Password: cfg.SMTP.Password, From: cfg.SMTP.From,
-	}
+	return mailers{identity: identitymail.Mailer{Sender: sender}, teams: teamsmail.Mailer{Sender: sender}}
 }
 
 func newRouter(cfg *config.Config, m modules) http.Handler {
@@ -99,17 +138,24 @@ func newRouter(cfg *config.Config, m modules) http.Handler {
 	authenticate := auth.Middleware(m.identity.Authenticator())
 	limiter := ratelimit.New(cfg.Auth.RateLimitPerMinute, cfg.Auth.RateLimitBurst)
 
-	protectTodos := authenticate
+	// Everything but identity runs as an access.Actor (the caller plus their
+	// team roles), and may require a verified email.
+	verified := authenticate
 	if cfg.Auth.RequireVerifiedEmail {
-		protectTodos = func(h http.Handler) http.Handler { return authenticate(auth.RequireVerifiedEmail(h)) }
+		verified = func(h http.Handler) http.Handler { return authenticate(auth.RequireVerifiedEmail(h)) }
 	}
+	resolve := access.Middleware(m.teams.Resolver())
+	protect := func(h http.Handler) http.Handler { return verified(resolve(h)) }
 
 	m.identity.RegisterRoutes(mux, authenticate, limiter.Middleware)
-	m.todos.RegisterRoutes(mux, protectTodos)
+	m.todos.RegisterRoutes(mux, protect)
+	m.teams.RegisterRoutes(mux, protect, limiter.Middleware)
+	m.audit.RegisterRoutes(mux, protect)
 
 	return httpx.Chain(httpx.JSONErrors(mux),
 		httpx.Recovery,
 		httpx.RequestID,
+		httpx.ClientInfo,
 		httpx.AccessLog,
 		func(h http.Handler) http.Handler { return httpx.LimitBody(httpx.DefaultMaxBodyBytes, h) },
 	)

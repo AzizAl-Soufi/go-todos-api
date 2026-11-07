@@ -8,10 +8,18 @@ import (
 	"os"
 	"time"
 
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit"
+	auditmem "github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit/adapters/persistence/memstore"
+	auditmongo "github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit/adapters/persistence/mongostore"
+	auditpg "github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit/adapters/persistence/pgstore"
 	identitymem "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/persistence/memstore"
 	identitymongo "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/persistence/mongostore"
 	identitypg "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/persistence/pgstore"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams"
+	teamsmem "github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/adapters/persistence/memstore"
+	teamsmongo "github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/adapters/persistence/mongostore"
+	teamspg "github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/adapters/persistence/pgstore"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos"
 	todosmem "github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/adapters/persistence/memstore"
 	todosmongo "github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/adapters/persistence/mongostore"
@@ -34,6 +42,10 @@ type storage struct {
 	sessions       application.SessionRepository
 	verifications  application.OneTimeTokenRepository
 	passwordResets application.OneTimeTokenRepository
+	teams          teams.TeamStore
+	members        teams.MemberStore
+	invitations    teams.InvitationStore
+	events         audit.EventStore
 	tx             tx.Runner
 	close          func()
 }
@@ -60,6 +72,10 @@ func newMemoryStorage() *storage {
 		sessions:       identitymem.NewSessions(),
 		verifications:  identitymem.NewVerifications(),
 		passwordResets: identitymem.NewPasswordResets(),
+		teams:          teamsmem.NewTeams(),
+		members:        teamsmem.NewMembers(),
+		invitations:    teamsmem.NewInvitations(),
+		events:         auditmem.NewEvents(),
 		tx:             tx.None{},
 		close:          func() {},
 	}
@@ -104,6 +120,10 @@ func mongoStorage(ctx context.Context, client mongodb.MongoDBClient) *storage {
 		sessions:       identitymongo.NewSessions(db),
 		verifications:  identitymongo.NewVerifications(db),
 		passwordResets: identitymongo.NewPasswordResets(db),
+		teams:          teamsmongo.NewTeams(db),
+		members:        teamsmongo.NewMembers(db),
+		invitations:    teamsmongo.NewInvitations(db),
+		events:         auditmongo.NewEvents(db),
 		tx:             mongodb.NewTxRunner(ctx, client),
 		close:          func() {},
 	}
@@ -144,6 +164,10 @@ func postgresStorage(pool *pgxpool.Pool) *storage {
 		sessions:       identitypg.NewSessions(pool),
 		verifications:  identitypg.NewVerifications(pool),
 		passwordResets: identitypg.NewPasswordResets(pool),
+		teams:          teamspg.NewTeams(pool),
+		members:        teamspg.NewMembers(pool),
+		invitations:    teamspg.NewInvitations(pool),
+		events:         auditpg.NewEvents(pool),
 		tx:             postgres.NewTxRunner(pool),
 		close:          func() {},
 	}

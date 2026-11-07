@@ -70,6 +70,26 @@ type Mailer interface {
 	SendPasswordResetEmail(ctx context.Context, to, name, link string) error
 }
 
+// TeamMemberships is how account deletion reaches the teams module. It fails
+// when the user still owns a team that has other members.
+type TeamMemberships interface {
+	RemoveUser(ctx context.Context, userID string) error
+}
+
+// AuditEntry is a security event about one user's account.
+type AuditEntry struct {
+	UserID  string // whose security log
+	ActorID string // who did it; "" when unknown (a failed login)
+	Action  string // e.g. "session.login"
+	Details map[string]string
+}
+
+// AuditLog is how commands reach the audit module (the personal security log).
+type AuditLog interface {
+	Record(ctx context.Context, e AuditEntry) error
+	DeleteUserLog(ctx context.Context, userID string) error
+}
+
 // TodoDeleter is how account deletion reaches the todos module.
 type TodoDeleter interface {
 	DeleteAllForUser(ctx context.Context, userID string) error

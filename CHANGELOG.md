@@ -4,9 +4,18 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
-The codebase was restructured into a modular monolith with Clean Architecture / Hexagonal layering. Password authentication, refresh-token rotation, email verification and password reset were added, along with integration tests against real databases. Todos can now be organized in projects and collections, with statuses, priorities, deadlines, notes, tags, archiving, progress summaries, filtering and sorting. **The HTTP API changes in breaking ways**; see [Upgrade notes](#upgrade-notes).
+The codebase was restructured into a modular monolith with Clean Architecture / Hexagonal layering. Password authentication, refresh-token rotation, email verification and password reset were added, along with integration tests against real databases. Todos can now be organized in projects and collections, with statuses, priorities, deadlines, notes, tags, archiving, progress summaries, filtering and sorting. Teams share projects with roles and email invitations, and an audit log records team activity and account security. **The HTTP API changes in breaking ways**; see [Upgrade notes](#upgrade-notes).
 
 ### Added
+
+- **Teams.** `POST /teams` creates a team owned by the caller; `GET /teams`, `GET/PATCH/DELETE /teams/{id}`. Deleting a team deletes its projects, collections, todos, invitations and audit log in one transaction.
+- **Roles.** `owner`, `admin`, `member`, `viewer`. Members edit team content, admins also manage people and delete team projects and collections, the owner also deletes the team. Managers act only on people below them and grant roles below their own. `PATCH /teams/{id}/members/{userId}` changes a role, `DELETE /teams/{id}/members/{userId}` removes a member (or leaves), `POST /teams/{id}/transfer-ownership` hands the team over.
+- **Invitations.** `POST /teams/{id}/invitations` emails a single-use link (7 days) for an email address and role; `GET` lists and `DELETE /teams/{id}/invitations/{id}` revokes them. The invitee accepts or declines with `POST /invitations/accept|decline`, signed in with the invited address. Re-inviting replaces the pending link.
+- **Team-owned content.** `teamId` on `POST /projects` and `POST /collections`; todos belong to the team of their project. `GET /todos`, `/projects` and `/collections` list personal and team records, filtered with `?team={id}|personal`; responses carry `teamId` and `userId` (creator). Moving a team todo to the inbox makes it the mover's personal todo.
+- **Audit logs.** Team audit log (`GET /teams/{id}/audit-log`, owners and admins) for team, member, invitation and content changes; personal security log (`GET /me/audit-log`) for registration, logins and failed logins, logouts, refresh-token reuse, verification and password events. Events carry actor, target, details, client IP and User-Agent, are written in the same transaction as the change, and are paged newest first with `?limit=` and `?cursor=`.
+- New error codes: `TEAM_NOT_FOUND`, `INSUFFICIENT_ROLE`, `MEMBER_NOT_FOUND`, `INVITATION_NOT_FOUND`, `INVALID_INVITATION_TOKEN`, `INVITATION_EMAIL_MISMATCH`, `ALREADY_MEMBER`, `OWNER_NOT_ASSIGNABLE`, `OWNER_CANNOT_LEAVE`, `CANNOT_CHANGE_OWN_ROLE`, `CANNOT_TRANSFER_TO_SELF`, `OWNS_TEAMS`, `INVALID_ROLE`, `INVALID_TEAM_NAME`, `TEAM_NAME_TOO_LONG`, `INVALID_EMAIL`, `TEAM_MISMATCH`, `TEAM_IMMUTABLE`, `INVALID_CURSOR`, `INVALID_LIMIT`, `INVALID_USER_ID`.
+- **Schema.** PostgreSQL migrations `00007` (`teams`, `team_members`, `team_invitations`), `00008` (`audit_events`) and `00009` (`team_id` on collections, projects and todos; their foreign keys to `users` are dropped so team records outlive their creator). MongoDB migration 005 creates the new collections and indexes. Upgrade and rollback of `00009` are tested on real data.
+- Platform packages `access` (roles, `Actor`, membership middleware), `mail` (shared `Sender`), `opaque` (single-use tokens), and `httpx.ClientInfo`.
 
 - **Projects and collections.** A project is a list of todos, and a collection groups projects. Both have a name, description, icon and color.
   - Endpoints: `/projects` and `/collections` (create, list, get, `PATCH`, delete).
@@ -46,6 +55,10 @@ The codebase was restructured into a modular monolith with Clean Architecture / 
 - **Configuration keys:** `APP_BASE_URL`, `MIGRATE_ON_START`, `MONGO_MIGRATIONS_CONFIG`, `AUTH_REQUIRE_VERIFIED_EMAIL`, `AUTH_RATE_LIMIT_PER_MINUTE`, `AUTH_RATE_LIMIT_BURST`, `AUTH_PASSWORD_RESET_URL`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`.
 
 ### Changed
+
+- `DELETE /me` now leaves every team: teams the user owns alone are deleted, owning a team with other members answers `409 OWNS_TEAMS`, and team records the user created stay with their team. It also deletes the user's security log.
+- Todos, projects and collections endpoints now authorize through the caller's team memberships (loaded per request); store calls take a scope (personal + teams) instead of a user ID.
+- Login runs in a transaction with its audit event; the identity mail adapter now writes messages for the shared platform `mail.Sender`.
 
 - **CQRS application layer.** Each module's single service was split into commands (`application/command`) and queries (`application/query`), one small handler per use case.
   - Commands return at most a new ID or issued credentials; HTTP endpoints read the response back with a query.

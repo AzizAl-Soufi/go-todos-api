@@ -19,6 +19,7 @@ func TestContract(t *testing.T) {
 			Collections: memstore.NewCollections(),
 			Tx:          tx.None{},
 			NewUser:     func(*testing.T) string { return bson.NewObjectID().Hex() },
+			NewID:       func() string { return bson.NewObjectID().Hex() },
 			MissingID:   "missing",
 		}
 	})
@@ -32,10 +33,10 @@ func TestTodos_CopiesValues(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, _ := s.Get(ctx, "u1", todo.ID)
+	got, _ := s.Get(ctx, domain.Scope{UserID: "u1"}, todo.ID)
 	got.Title, got.Tags[0] = "mutated", "mutated"
 	todo.Title, todo.Tags[0] = "mutated", "mutated"
-	if fresh, _ := s.Get(ctx, "u1", todo.ID); fresh.Title != "a" || fresh.Tags[0] != "x" {
+	if fresh, _ := s.Get(ctx, domain.Scope{UserID: "u1"}, todo.ID); fresh.Title != "a" || fresh.Tags[0] != "x" {
 		t.Fatal("stored todo must not share memory with values handed out or passed in")
 	}
 }
