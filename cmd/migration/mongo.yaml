@@ -1,0 +1,16 @@
+version: "0.1"
+
+mongodb:
+  schema: "./internal/database/mongodb/migrations/schema"
+  gen:
+    out: "./internal/database/mongodb/migrations/generated"
+    package: "generated"
+  migrations:
+    dir: "./internal/database/mongodb/migrations/versions"
+  seeding:
+    dir: "./internal/database/mongodb/migrations/seeds"
+    files:
+      - collection: "users"
+        file: "users.json"
+      - collection: "todos"
+        file: "todos.json"

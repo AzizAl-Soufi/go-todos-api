@@ -5,8 +5,8 @@ import (
 	"time"
 
 	inmem "github.com/AzizAl-Soufi/go-todos-api/internal/database/memory"
-	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/shared/errors"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/domain"
+	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/shared/errors"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -21,6 +21,15 @@ func NewInMemoryUsersRepository() UsersRepository {
 		},
 	}
 }
+func cloneUser(user *domain.User) *domain.User {
+	if user == nil {
+		return nil
+	}
+
+	clone := *user
+	return &clone
+}
+
 func (r *inMemoryUsersRepo) getUser(id string) (*domain.User, error) {
 	r.Mu.RLock()
 	defer r.Mu.RUnlock()
@@ -30,7 +39,7 @@ func (r *inMemoryUsersRepo) getUser(id string) (*domain.User, error) {
 		return nil, apperrors.ErrNotFound
 	}
 
-	return userData, nil
+	return cloneUser(userData), nil
 }
 
 func (r *inMemoryUsersRepo) Register(_ context.Context, user *domain.UserDTO) (*domain.User, error) {
@@ -39,7 +48,7 @@ func (r *inMemoryUsersRepo) Register(_ context.Context, user *domain.UserDTO) (*
 	for _, existingUser := range r.Data {
 		if existingUser.Email == user.Email {
 			existingUser.IsNew = false
-			return existingUser, nil
+			return cloneUser(existingUser), nil
 		}
 	}
 
@@ -48,11 +57,14 @@ func (r *inMemoryUsersRepo) Register(_ context.Context, user *domain.UserDTO) (*
 		Name:      user.Name,
 		Email:     user.Email,
 		CreatedAt: time.Now().UTC(),
-		IsNew:     true,
 	}
 	r.Data[newUser.ID] = newUser
 
-	return newUser, nil
+	// IsNew describes this Register call only; it must not be persisted,
+	// otherwise later lookups would still report the user as new.
+	created := cloneUser(newUser)
+	created.IsNew = true
+	return created, nil
 }
 
 func (r *inMemoryUsersRepo) Auth(_ context.Context, id string) (*domain.User, error) {

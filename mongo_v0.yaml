@@ -1,0 +1,23 @@
+version: "1"
+
+mongodb:
+  migrations:
+    dir: "./internal/database/mongodb/migrations/versions"
+  seeding:
+    dir: "./internal/database/mongodb/migrations/seeds"
+  collections:
+    - name: "users"
+      indexes:
+        - keys:
+            - field: "email"
+              order: 1
+          unique: true
+          
+    - name: "todos"
+      indexes:
+        - keys:
+            - field: "userId"
+              order: 1
+            - field: "createdAt"
+              order: -1
+          unique: false
