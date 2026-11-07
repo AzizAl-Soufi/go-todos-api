@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/domain"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
@@ -15,7 +17,9 @@ import (
 
 // Invite emails an invitation to join the team with a role below the
 // actor's. Inviting the same email again replaces the pending invitation (and
-// its link).
+// its link), but like a resend only once domain.InvitationResendCooldown has
+// passed since that invitation was last sent: otherwise the same email
+// address could be sent mail without limit.
 type Invite struct {
 	Actor  access.Actor
 	TeamID string
@@ -50,15 +54,18 @@ func (h InviteHandler) Handle(ctx context.Context, cmd Invite) (invitationID str
 			return "", domain.ErrAlreadyMember
 		}
 	}
+	now := h.now()
+	if err := h.checkReinvite(ctx, cmd.TeamID, email, now); err != nil {
+		return "", err
+	}
 
 	token, hash, err := opaque.New()
 	if err != nil {
 		return "", err
 	}
-	now := h.now()
 	inv := &domain.Invitation{
 		TeamID: cmd.TeamID, Email: email, Role: cmd.Role, InvitedBy: cmd.Actor.UserID,
-		TokenHash: hash, ExpiresAt: now.Add(h.Config.InvitationTTL), CreatedAt: now,
+		TokenHash: hash, ExpiresAt: now.Add(h.Config.InvitationTTL), CreatedAt: now, SentAt: now,
 	}
 	err = h.Tx.WithinTx(ctx, func(ctx context.Context) error {
 		if err := h.Invitations.Save(ctx, inv); err != nil {
@@ -72,6 +79,105 @@ func (h InviteHandler) Handle(ctx context.Context, cmd Invite) (invitationID str
 	}
 	h.sendInvitation(ctx, inv, inviter.Name, team.Name, inviteLink(h.Config.AcceptURL, token))
 	return inv.ID, nil
+}
+
+// checkReinvite applies the resend cooldown to a pending invitation for the
+// same email. A team has few pending invitations, so listing them is cheap.
+// Two invitations at the same instant can both pass; the cooldown is a
+// guard against flooding, not an invariant.
+func (h InviteHandler) checkReinvite(ctx context.Context, teamID, email string, now time.Time) error {
+	pending, err := h.Invitations.ListByTeam(ctx, teamID)
+	if err != nil {
+		return err
+	}
+	for _, inv := range pending {
+		if inv.Email == email {
+			return inv.CheckResend(now)
+		}
+	}
+	return nil
+}
+
+// ResendInvitation emails an invitation again with a new link: the old link
+// stops working, and the invitation (expired or not) is valid for
+// InvitationTTL from now. It keeps its ID, email and role. Whoever may
+// invite with that role may resend, at most once per
+// domain.InvitationResendCooldown; sooner fails with ErrResendTooSoon,
+// retryable from the time it becomes available.
+type ResendInvitation struct {
+	Actor      access.Actor
+	TeamID, ID string
+}
+
+type ResendInvitationHandler struct{ base }
+
+func (h ResendInvitationHandler) Handle(ctx context.Context, cmd ResendInvitation) error {
+	inviter, err := h.membership(ctx, cmd.TeamID, cmd.Actor.UserID)
+	if err != nil {
+		return err
+	}
+	if !inviter.Role.CanManage() {
+		return access.ErrInsufficientRole
+	}
+	inv, err := h.Invitations.Get(ctx, cmd.TeamID, cmd.ID)
+	if err != nil {
+		return apperrors.UnresolvedAs(err, domain.ErrInvitationNotFound)
+	}
+	if err := domain.CanInvite(inviter.Role, inv.Role); err != nil {
+		return err
+	}
+	now := h.now()
+	if err := inv.CheckResend(now); err != nil {
+		return err
+	}
+	team, err := h.Teams.Get(ctx, cmd.TeamID)
+	if err != nil {
+		return apperrors.NotFoundAs(err, access.ErrTeamNotFound)
+	}
+
+	token, hash, err := opaque.New()
+	if err != nil {
+		return err
+	}
+	err = h.Tx.WithinTx(ctx, func(ctx context.Context) error {
+		err := h.Invitations.Resend(ctx, application.InvitationResend{
+			TeamID:     cmd.TeamID,
+			ID:         inv.ID,
+			TokenHash:  hash,
+			SentAt:     now,
+			ExpiresAt:  now.Add(h.Config.InvitationTTL),
+			SentBefore: now.Add(-domain.InvitationResendCooldown),
+		})
+		if errors.Is(err, apperrors.ErrNotFound) {
+			return h.resendLost(ctx, cmd, now)
+		}
+		if err != nil {
+			return err
+		}
+		return h.record(ctx, cmd.Actor, cmd.TeamID, "invitation.resent", "invitation", inv.ID,
+			map[string]string{"email": inv.Email})
+	})
+	if err != nil {
+		return err
+	}
+	h.sendInvitation(ctx, inv, inviter.Name, team.Name, inviteLink(h.Config.AcceptURL, token))
+	return nil
+}
+
+// resendLost explains why the guarded update matched nothing: the
+// invitation was revoked or accepted meanwhile, or another resend got in
+// first (then it is too soon again).
+func (h ResendInvitationHandler) resendLost(ctx context.Context, cmd ResendInvitation, now time.Time) error {
+	inv, err := h.Invitations.Get(ctx, cmd.TeamID, cmd.ID)
+	if err != nil {
+		return apperrors.NotFoundAs(err, domain.ErrInvitationNotFound)
+	}
+	if err := inv.CheckResend(now); err != nil {
+		return err
+	}
+	// The stored send time and ours disagree by a rounding step; a moment
+	// later the guard will match.
+	return apperrors.RetryAt(domain.ErrResendTooSoon, now, now.Add(time.Second))
 }
 
 // RevokeInvitation cancels a pending invitation; owners and admins only.

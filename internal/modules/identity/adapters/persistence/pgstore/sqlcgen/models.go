@@ -37,6 +37,14 @@ type Collection struct {
 	TeamID      *uuid.UUID
 }
 
+type Device struct {
+	Token     string
+	UserID    uuid.UUID
+	Platform  string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 type EmailVerification struct {
 	UserID    uuid.UUID
 	TokenHash string
@@ -109,6 +117,7 @@ type TeamInvitation struct {
 	TokenHash string
 	ExpiresAt time.Time
 	CreatedAt time.Time
+	SentAt    time.Time
 }
 
 type TeamMember struct {

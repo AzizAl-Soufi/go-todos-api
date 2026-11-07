@@ -118,7 +118,9 @@ func (h SignInHandler) syncVerified(ctx context.Context, user *domain.User, c ap
 
 // LogoutAll refuses, from now on, every Firebase ID token of a sign-in that
 // happened before: the user has to sign in again on every device. Refreshed
-// ID tokens keep their sign-in time, so they are refused too.
+// ID tokens keep their sign-in time, so they are refused too. The user's
+// push devices are forgotten as well, so a lost or stolen device stops
+// receiving notifications; apps register again after their next sign-in.
 type LogoutAll struct {
 	UserID string
 }
@@ -130,6 +132,9 @@ func (h LogoutAllHandler) Handle(ctx context.Context, cmd LogoutAll) error {
 		if err := h.Users.RevokeSessions(ctx, cmd.UserID, h.Now()); err != nil {
 			return err
 		}
+		if err := h.Devices.DeleteUserDevices(ctx, cmd.UserID); err != nil {
+			return err
+		}
 		return h.record(ctx, cmd.UserID, "session.logout_all", nil)
 	})
 }
@@ -137,8 +142,8 @@ func (h LogoutAllHandler) Handle(ctx context.Context, cmd LogoutAll) error {
 // DeleteAccount removes the user and everything they own in one transaction
 // (where the database supports it), across modules: the user leaves their
 // teams (teams they own alone are deleted; owning a team with other members
-// blocks the deletion), and their personal todos, passkeys and security log
-// go too. Team records they created stay with the team. With a service
+// blocks the deletion), and their personal todos, passkeys, devices and
+// security log go too. Team records they created stay with the team. With a service
 // account the Firebase user is deleted afterwards; that can't be part of the
 // transaction, so a failure there is only logged.
 type DeleteAccount struct {
@@ -159,6 +164,7 @@ func (h DeleteAccountHandler) Handle(ctx context.Context, cmd DeleteAccount) err
 			func() error { return h.Todos.DeleteAllForUser(ctx, id) },
 			func() error { return h.Passkeys.DeleteAllForUser(ctx, id) },
 			func() error { return h.Challenges.DeleteForUser(ctx, id) },
+			func() error { return h.Devices.DeleteUserDevices(ctx, id) },
 			func() error { return h.Audit.DeleteUserLog(ctx, id) },
 			func() error { return h.Users.Delete(ctx, id) },
 		} {

@@ -97,6 +97,20 @@ func (a Actor) Require(teamID string, allowed func(Role) bool) error {
 // TeamIDs returns the actor's teams, sorted.
 func (a Actor) TeamIDs() []string { return slices.Sorted(maps.Keys(a.Teams)) }
 
+// Roster is a team's name and its members' roles (user ID -> role).
+type Roster struct {
+	TeamID  string
+	Name    string
+	Members map[string]Role
+}
+
+// Directory looks up a team's roster; ErrTeamNotFound for an unknown team.
+// Like Resolver, it is implemented by the teams module, so modules that need
+// a team's members (notifications) don't import it.
+type Directory interface {
+	Roster(ctx context.Context, teamID string) (Roster, error)
+}
+
 // Resolver loads a user's memberships (team ID -> role).
 type Resolver interface {
 	Memberships(ctx context.Context, userID string) (map[string]Role, error)

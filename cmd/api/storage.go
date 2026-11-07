@@ -16,6 +16,10 @@ import (
 	identitymongo "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/persistence/mongostore"
 	identitypg "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/persistence/pgstore"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications"
+	notificationsmem "github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications/adapters/persistence/memstore"
+	notificationsmongo "github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications/adapters/persistence/mongostore"
+	notificationspg "github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications/adapters/persistence/pgstore"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams"
 	teamsmem "github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/adapters/persistence/memstore"
 	teamsmongo "github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/adapters/persistence/mongostore"
@@ -45,6 +49,7 @@ type storage struct {
 	members     teams.MemberStore
 	invitations teams.InvitationStore
 	events      audit.EventStore
+	devices     notifications.DeviceStore
 	tx          tx.Runner
 	close       func()
 }
@@ -74,6 +79,7 @@ func newMemoryStorage() *storage {
 		members:     teamsmem.NewMembers(),
 		invitations: teamsmem.NewInvitations(),
 		events:      auditmem.NewEvents(),
+		devices:     notificationsmem.NewDevices(),
 		tx:          tx.None{},
 		close:       func() {},
 	}
@@ -121,6 +127,7 @@ func mongoStorage(ctx context.Context, client mongodb.MongoDBClient) *storage {
 		members:     teamsmongo.NewMembers(db),
 		invitations: teamsmongo.NewInvitations(db),
 		events:      auditmongo.NewEvents(db),
+		devices:     notificationsmongo.NewDevices(db),
 		tx:          mongodb.NewTxRunner(ctx, client),
 		close:       func() {},
 	}
@@ -164,6 +171,7 @@ func postgresStorage(pool *pgxpool.Pool) *storage {
 		members:     teamspg.NewMembers(pool),
 		invitations: teamspg.NewInvitations(pool),
 		events:      auditpg.NewEvents(pool),
+		devices:     notificationspg.NewDevices(pool),
 		tx:          postgres.NewTxRunner(pool),
 		close:       func() {},
 	}

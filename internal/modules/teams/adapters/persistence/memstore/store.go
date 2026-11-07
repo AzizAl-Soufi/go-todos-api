@@ -201,6 +201,18 @@ func (s *Invitations) FindByTokenHash(_ context.Context, tokenHash string) (*dom
 	return s.find(func(i domain.Invitation) bool { return i.TokenHash == tokenHash })
 }
 
+func (s *Invitations) Resend(_ context.Context, r application.InvitationResend) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	inv, ok := s.data[r.ID]
+	if !ok || inv.TeamID != r.TeamID || inv.SentAt.After(r.SentBefore) {
+		return apperrors.ErrNotFound
+	}
+	inv.TokenHash, inv.ExpiresAt, inv.SentAt = r.TokenHash, r.ExpiresAt, r.SentAt
+	s.data[r.ID] = inv
+	return nil
+}
+
 func (s *Invitations) Delete(_ context.Context, teamID, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

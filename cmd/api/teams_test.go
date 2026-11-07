@@ -4,8 +4,14 @@ package main
 // audit logs.
 
 import (
+	"context"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
+
+	teamsapp "github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/application"
 )
 
 // team creates a team owned by owner and returns its ID.
@@ -23,6 +29,21 @@ func (s *testServer) join(teamID string, inviter, invitee session, email, role s
 	s.t.Helper()
 	s.do("POST", "/teams/"+teamID+"/invitations", inviter.access, map[string]string{"email": email, "role": role}).expect(s.t, 201)
 	s.do("POST", "/invitations/accept", invitee.access, map[string]string{"token": s.mailer.inviteToken(s.t, email)}).expect(s.t, 200)
+}
+
+// backdateInvitation moves an invitation's last send 150 seconds into the
+// past (giving it a placeholder link), so the 2-minute resend cooldown has
+// passed without the test waiting for it.
+func (s *testServer) backdateInvitation(teamID, invitationID string) {
+	s.t.Helper()
+	now := time.Now()
+	err := s.store.invitations.Resend(context.Background(), teamsapp.InvitationResend{
+		TeamID: teamID, ID: invitationID, TokenHash: "backdated-" + invitationID,
+		SentAt: now.Add(-150 * time.Second), ExpiresAt: now.Add(time.Hour), SentBefore: now,
+	})
+	if err != nil {
+		s.t.Fatal(err)
+	}
 }
 
 func memberRoles(t *testing.T, r response) map[string]string {
@@ -76,9 +97,16 @@ func TestTeamInvitations(t *testing.T) {
 	invite(ann, "not-an-email", "viewer").expectCode(t, 400, "INVALID_EMAIL")
 	invite(ann, "cy@example.com", "boss").expectCode(t, 400, "INVALID_ROLE")
 
-	// Re-inviting replaces the pending invitation; admins see and revoke them.
-	invite(ann, "cy@example.com", "viewer").expect(t, 201)
+	// Re-inviting replaces the pending invitation, but like a resend only
+	// 2 minutes after the last email; admins see and revoke them.
+	firstID := invite(ann, "cy@example.com", "viewer").expect(t, 201).str("id")
 	first := s.mailer.inviteToken(t, "cy@example.com")
+	r = invite(ann, "cy@example.com", "member")
+	r.expectCode(t, 429, "INVITATION_RESEND_TOO_SOON")
+	if r.str("error", "retryAt") == "" || r.header.Get("Retry-After") == "" {
+		t.Fatalf("re-invite too soon must say when: %s", r.raw)
+	}
+	s.backdateInvitation(teamID, firstID)
 	invite(ann, "cy@example.com", "member").expect(t, 201)
 	pending := s.do("GET", "/teams/"+teamID+"/invitations", ann.access, nil).expect(t, 200).items(t)
 	if len(pending) != 1 || pending[0]["role"] != "member" {
@@ -342,4 +370,67 @@ func TestDeleteAccountWithTeams(t *testing.T) {
 	s.do("DELETE", "/me", ann.access, nil).expect(t, 204)
 	carl := s.register("Carl", "carl@example.com")
 	s.do("GET", "/teams/"+solo, carl.access, nil).expectCode(t, 404, "TEAM_NOT_FOUND")
+}
+
+func TestResendInvitation(t *testing.T) {
+	s := newTestServer(t)
+	ann := s.register("Ann", "ann@example.com")
+	bo := s.register("Bo", "bo@example.com")
+	cy := s.register("Cy", "cy@example.com")
+	teamID := s.team(ann, "Platform")
+	s.join(teamID, ann, bo, "bo@example.com", "member")
+
+	inv := s.do("POST", "/teams/"+teamID+"/invitations", ann.access, map[string]string{"email": "cy@example.com", "role": "viewer"}).expect(t, 201)
+	invID := inv.str("id")
+	firstToken := s.mailer.inviteToken(t, "cy@example.com")
+	sentAt, _ := time.Parse(time.RFC3339Nano, inv.str("sentAt"))
+	available, err := time.Parse(time.RFC3339Nano, inv.str("resendAvailableAt"))
+	if err != nil || !strings.HasSuffix(inv.str("resendAvailableAt"), "Z") || available.Sub(sentAt) != 2*time.Minute {
+		t.Fatalf("invitation times must be UTC, 2 minutes apart: %s", inv.raw)
+	}
+	resendPath := "/teams/" + teamID + "/invitations/" + invID + "/resend"
+
+	// Right after sending: 429, with the UTC time it becomes available.
+	r := s.do("POST", resendPath, ann.access, nil)
+	r.expectCode(t, 429, "INVITATION_RESEND_TOO_SOON")
+	retryAt, err := time.Parse(time.RFC3339, r.str("error", "retryAt"))
+	if err != nil || !strings.HasSuffix(r.str("error", "retryAt"), "Z") {
+		t.Fatalf("retryAt must be an RFC 3339 UTC time: %s", r.raw)
+	}
+	if retryAt.Before(available) || retryAt.Sub(available) >= time.Second {
+		t.Fatalf("retryAt = %v, want resendAvailableAt %v rounded up to the second", retryAt, available)
+	}
+	if secs, err := strconv.Atoi(r.header.Get("Retry-After")); err != nil || secs < 1 || secs > 121 { // 2 minutes, rounded up to retryAt's second
+		t.Fatalf("Retry-After = %q, want the seconds until retryAt", r.header.Get("Retry-After"))
+	}
+
+	// Who may resend, and what.
+	s.do("POST", resendPath, bo.access, nil).expectCode(t, 403, "INSUFFICIENT_ROLE")
+	s.do("POST", "/teams/"+teamID+"/invitations/000000000000000000000000/resend", ann.access, nil).expectCode(t, 404, "INVITATION_NOT_FOUND")
+
+	// Two and a half minutes later (the stored send time is moved back): sent
+	// again with a new link; the old one stops working.
+	backdate := time.Now().Add(-150 * time.Second)
+	s.backdateInvitation(teamID, invID)
+	r = s.do("POST", resendPath, ann.access, nil).expect(t, 200)
+	if r.str("id") != invID || r.str("email") != "cy@example.com" || r.str("role") != "viewer" || r.body["expired"] != false {
+		t.Fatalf("resent invitation: %s", r.raw)
+	}
+	resentAt, _ := time.Parse(time.RFC3339Nano, r.str("sentAt"))
+	if !resentAt.After(backdate) {
+		t.Fatalf("sentAt not updated: %s", r.raw)
+	}
+	newToken := s.mailer.inviteToken(t, "cy@example.com")
+	if newToken == firstToken {
+		t.Fatal("resend must send a new link")
+	}
+	s.do("POST", "/invitations/accept", cy.access, map[string]string{"token": firstToken}).expectCode(t, 400, "INVALID_INVITATION_TOKEN")
+	s.do("POST", "/invitations/accept", cy.access, map[string]string{"token": newToken}).expect(t, 200)
+
+	// Accepted: nothing left to resend.
+	s.do("POST", resendPath, ann.access, nil).expectCode(t, 404, "INVITATION_NOT_FOUND")
+	log := actions(t, s.do("GET", "/teams/"+teamID+"/audit-log", ann.access, nil).expect(t, 200))
+	if !slices.Contains(log, "invitation.resent") {
+		t.Fatalf("audit log %v has no invitation.resent", log)
+	}
 }

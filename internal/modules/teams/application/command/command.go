@@ -45,6 +45,7 @@ type Handlers struct {
 	RenameTeam        RenameTeamHandler
 	DeleteTeam        DeleteTeamHandler
 	Invite            InviteHandler
+	ResendInvitation  ResendInvitationHandler
 	RevokeInvitation  RevokeInvitationHandler
 	AcceptInvitation  AcceptInvitationHandler
 	DeclineInvitation DeclineInvitationHandler
@@ -64,7 +65,7 @@ func New(d Deps) Handlers {
 	b := base{d}
 	return Handlers{
 		CreateTeam: CreateTeamHandler{b}, RenameTeam: RenameTeamHandler{b}, DeleteTeam: DeleteTeamHandler{b},
-		Invite: InviteHandler{b}, RevokeInvitation: RevokeInvitationHandler{b},
+		Invite: InviteHandler{b}, ResendInvitation: ResendInvitationHandler{b}, RevokeInvitation: RevokeInvitationHandler{b},
 		AcceptInvitation: AcceptInvitationHandler{b}, DeclineInvitation: DeclineInvitationHandler{b},
 		ChangeRole: ChangeRoleHandler{b}, RemoveMember: RemoveMemberHandler{b},
 		TransferOwnership: TransferOwnershipHandler{b}, RemoveUser: RemoveUserHandler{b},

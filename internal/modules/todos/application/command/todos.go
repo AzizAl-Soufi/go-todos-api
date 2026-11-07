@@ -9,7 +9,9 @@ import (
 )
 
 // CreateTodo adds a todo, in a project or in the (personal) inbox. A todo in
-// a team project belongs to that team.
+// a team project belongs to that team, and once it is committed the
+// notifications module hears about it (it tells the team when an owner or
+// admin added it).
 type CreateTodo struct {
 	Actor   access.Actor
 	Changes domain.Changes // the fields to set; Title is required
@@ -32,7 +34,23 @@ func (h CreateTodoHandler) Handle(ctx context.Context, cmd CreateTodo) (id strin
 		func() application.AuditEntry {
 			return event(cmd.Actor, teamID, "todo.created", "todo", todo.ID, map[string]string{"title": todo.Title})
 		})
-	return todo.ID, err
+	if err != nil {
+		return "", err
+	}
+	if teamID != "" {
+		role, _ := cmd.Actor.Role(teamID)
+		projectID, _ := cmd.Changes.ProjectID.Get()
+		h.Notifier.TodoCreated(ctx, application.NewTeamTodo{
+			TeamID:    teamID,
+			ProjectID: projectID,
+			TodoID:    todo.ID,
+			Title:     todo.Title,
+			ActorID:   cmd.Actor.UserID,
+			ActorName: cmd.Actor.Name,
+			ActorRole: role,
+		})
+	}
+	return todo.ID, nil
 }
 
 // teamOfProject resolves the team a todo gets in the project (inbox:

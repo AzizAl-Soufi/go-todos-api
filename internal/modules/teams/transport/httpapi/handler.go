@@ -38,9 +38,10 @@ func Register(mux *http.ServeMux, cmd command.Handlers, qry query.Handlers, prot
 		"DELETE /teams/{id}/members/{userId}": h.removeMember,
 		"POST /teams/{id}/transfer-ownership": h.transferOwnership,
 
-		"POST /teams/{id}/invitations":                  h.invite,
-		"GET /teams/{id}/invitations":                   h.listInvitations,
-		"DELETE /teams/{id}/invitations/{invitationId}": h.revokeInvitation,
+		"POST /teams/{id}/invitations":                       h.invite,
+		"POST /teams/{id}/invitations/{invitationId}/resend": h.resendInvitation,
+		"GET /teams/{id}/invitations":                        h.listInvitations,
+		"DELETE /teams/{id}/invitations/{invitationId}":      h.revokeInvitation,
 	}
 	for pattern, fn := range routes {
 		mux.Handle(pattern, protect(access.ForActor(fn)))
@@ -94,12 +95,17 @@ type invitationResponse struct {
 	Expired   bool      `json:"expired"`
 	ExpiresAt time.Time `json:"expiresAt"`
 	CreatedAt time.Time `json:"createdAt"`
+	// SentAt is when the invitation email was last sent; it may be sent
+	// again (POST .../resend) from ResendAvailableAt on. Both in UTC.
+	SentAt            time.Time `json:"sentAt"`
+	ResendAvailableAt time.Time `json:"resendAvailableAt"`
 }
 
 func (h handler) toInvitation(i *domain.Invitation) invitationResponse {
 	return invitationResponse{
 		ID: i.ID, TeamID: i.TeamID, Email: i.Email, Role: string(i.Role), InvitedBy: i.InvitedBy,
 		Expired: i.Expired(h.now()), ExpiresAt: i.ExpiresAt, CreatedAt: i.CreatedAt,
+		SentAt: i.SentAt.UTC(), ResendAvailableAt: i.ResendAvailableAt().UTC(),
 	}
 }
 
@@ -251,6 +257,16 @@ func (h handler) invite(r *http.Request, a access.Actor) (int, any, error) {
 	}
 	inv, err := h.qry.GetInvitation.Handle(r.Context(), query.GetInvitation{Actor: a, TeamID: teamID, ID: id})
 	return respond(http.StatusCreated, inv, err, h.toInvitation)
+}
+
+func (h handler) resendInvitation(r *http.Request, a access.Actor) (int, any, error) {
+	teamID, id := r.PathValue("id"), r.PathValue("invitationId")
+	err := h.cmd.ResendInvitation.Handle(r.Context(), command.ResendInvitation{Actor: a, TeamID: teamID, ID: id})
+	if err != nil {
+		return 0, nil, err
+	}
+	inv, err := h.qry.GetInvitation.Handle(r.Context(), query.GetInvitation{Actor: a, TeamID: teamID, ID: id})
+	return respond(http.StatusOK, inv, err, h.toInvitation)
 }
 
 func (h handler) listInvitations(r *http.Request, a access.Actor) (int, any, error) {

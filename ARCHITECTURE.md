@@ -14,6 +14,7 @@ How the Todos API is put together and why. Read this before adding a feature, a 
   - [todos](#todos)
   - [teams](#teams)
   - [audit](#audit)
+  - [notifications](#notifications)
   - [Talking across modules](#talking-across-modules)
 - [Platform (shared kernel)](#platform-shared-kernel)
 - [Authorization (teams and roles)](#authorization-teams-and-roles)
@@ -71,11 +72,13 @@ internal/
 │   │                         adapters/{persistence,auditgateway}/
 │   ├── teams/                teams, members, roles, invitations; same shape, plus adapters/
 │   │                         {mail,todosgateway,auditgateway}/
-│   └── audit/                append-only team audit log and personal security log; a leaf
-│                             module: nothing it depends on but platform
+│   ├── audit/                append-only team audit log and personal security log; a leaf
+│   │                         module: nothing it depends on but platform
+│   └── notifications/        devices (FCM tokens) and push notifications; a leaf module:
+│                             team rosters come through platform/access, adapters/fcm sends
 │
 └── platform/                 shared kernel: technical building blocks, no business concepts
-    ├── access/               roles, the Actor (caller + team roles), Resolver port, actor middleware
+    ├── access/               roles, the Actor (caller + team roles), Resolver and Directory ports, actor middleware
     ├── apperrors/            typed application errors (HTTP status + stable code)
     ├── auth/                 Principal, Authenticator port, bearer-token middleware
     ├── config/               env config (keys derived from struct tags)
@@ -168,7 +171,7 @@ Accounts and authentication of every request. Sign-in itself (Google, email and 
 | `AuditLog` (security log) | `auditgateway.Gateway` → `audit.Module` |
 | `tx.Runner` | `tx.None`, `postgres.TxRunner`, `mongodb.TxRunner` |
 
-Commands: `SignIn`, `LogoutAll`, `DeleteAccount`, and for passkeys `BeginPasskeyRegistration`, `FinishPasskeyRegistration`, `BeginPasskeyLogin`, `FinishPasskeyLogin`, `DeletePasskey`. `SignIn` runs after every Firebase sign-in: it finds the account by Firebase UID, or links an account from before Firebase with the same email (only when Firebase says the email is verified), or creates one, in one unit of work. `LogoutAll` sets `sessionsValidAfter`; ID tokens whose `auth_time` is earlier are refused from then on. Sign-ins, links, logout-all and passkey events go to the user's security log; `DeleteAccount` first takes the user out of their teams (which fails with `OWNS_TEAMS` while they own a team with other members), then deletes their personal todos, passkeys and security log, and after the transaction their Firebase user (when there is a service account).
+Commands: `SignIn`, `LogoutAll`, `DeleteAccount`, and for passkeys `BeginPasskeyRegistration`, `FinishPasskeyRegistration`, `BeginPasskeyLogin`, `FinishPasskeyLogin`, `DeletePasskey`. `SignIn` runs after every Firebase sign-in: it finds the account by Firebase UID, or links an account from before Firebase with the same email (only when Firebase says the email is verified), or creates one, in one unit of work. `LogoutAll` sets `sessionsValidAfter`; ID tokens whose `auth_time` is earlier are refused from then on. In the same unit of work it has the notifications module forget the user's push devices (through the `Devices` port), so a lost device stops receiving pushes. Sign-ins, links, logout-all and passkey events go to the user's security log; `DeleteAccount` first takes the user out of their teams (which fails with `OWNS_TEAMS` while they own a team with other members), then deletes their personal todos, passkeys and security log, and after the transaction their Firebase user (when there is a service account).
 
 Passkeys keep WebAuthn out of the application layer. `RelyingParty` takes and returns opaque bytes: the options JSON for the browser, the ceremony state kept between the two calls, and the credential record (public key, sign counter, flags) that the adapter stores in `domain.Passkey.Credential` and updates on every sign-in. A ceremony is two commands: `Begin…` stores a `domain.PasskeyChallenge` named by a single-use opaque token (only its hash is stored, like the one-time tokens) and returns the options; `Finish…` consumes the challenge (used up even if the answer fails), lets the adapter verify the answer and then writes in one unit of work. A registration challenge carries the account's ID and a sign-in challenge none, so one can't stand in for the other. Sign-in uses discoverable credentials: the user handle the authenticator returns is the account ID, and `FinishPasskeyLogin` hands the adapter a lookup for that account's passkeys, then mints a Firebase custom token the client exchanges for an ID token, so a passkey sign-in ends like any other Firebase sign-in. A sign counter that went backwards fails the sign-in, and failures on an existing account are recorded like failed password logins.
 
@@ -216,7 +219,7 @@ Teams, their members and roles, and invitations by email.
 
 Domain: `Team`, `Member` (with the name and email the user joined with, so the module never reads accounts), `Invitation` (only the token hash is stored), and the role rules `CanInvite`, `CanChangeRole`, `CanRemove`: managers act only on people strictly below them and hand out roles strictly below their own; ownership is only transferred.
 
-Commands: `CreateTeam`, `RenameTeam`, `DeleteTeam`, `Invite`, `RevokeInvitation`, `AcceptInvitation`, `DeclineInvitation`, `ChangeRole`, `RemoveMember` (also leaving), `TransferOwnership`, and `RemoveUser` for account deletion. Roles are always checked against the stored membership, and every change is audited in the same unit of work.
+Commands: `CreateTeam`, `RenameTeam`, `DeleteTeam`, `Invite`, `ResendInvitation`, `RevokeInvitation`, `AcceptInvitation`, `DeclineInvitation`, `ChangeRole`, `RemoveMember` (also leaving), `TransferOwnership`, and `RemoveUser` for account deletion. Roles are always checked against the stored membership, and every change is audited in the same unit of work. `ResendInvitation` issues a new link at most once per `InvitationResendCooldown` (2 minutes after `Invitation.SentAt`). The check happens twice: in the domain, so a refusal can say when to retry (`apperrors.RetryLaterError`, which `httpx.RespondErr` turns into `retryAt` and `Retry-After`), and in the store's conditional update (`sent_at <= now - cooldown`), so two concurrent resends can't both get through. `Invite` applies the same cooldown when the address already has a pending invitation (checked against the team's pending list only: re-inviting is a flood guard, not an invariant).
 
 Queries: `ListTeams`, `GetTeam`, `ListInvitations`, `GetInvitation`, and `Memberships`, which implements `access.Resolver`.
 
@@ -231,6 +234,18 @@ An append-only log. A `domain.Event` belongs either to a team (the team audit lo
 | `EventRepository` (append, delete a user's or team's log) / `EventReader` | `memstore.Events`, `mongostore.Events`, `pgstore.Events` |
 
 Commands: `Record`, `DeleteUserLog`, `DeleteTeamLog`. Queries: `TeamLog` (owners and admins, checked with the caller's `access.Actor`) and `UserLog`. The module depends on nothing but `platform`: other modules call its public `Record` through their own `auditgateway`, which adds the client IP and User-Agent from the request context (`httpx.ClientInfo`).
+
+### notifications
+
+Push notifications through Firebase Cloud Messaging. A `domain.Device` is an FCM registration token of one user (a token registered again moves to whoever registered it; a user keeps at most 10). `domain.TodoCreated` holds the one rule set so far: a task added to a team project by the team's owner or an admin (`Notifies`) goes to every other member (`Recipients`), with the `Message` they see.
+
+| Port | Adapters |
+|------|----------|
+| `DeviceRepository` / `DeviceReader` | `memstore.Devices`, `mongostore.Devices`, `pgstore.Devices` |
+| `Pusher` (nil: sending off) | `fcm.Pusher` (Admin SDK multicast, 500 tokens per batch; reports dead tokens) |
+| `Directory` (team rosters) | `access.Directory`, implemented by the teams module |
+
+Commands: `RegisterDevice`, `UnregisterDevice`, `DeleteUserDevices`, `NotifyTodoCreated`. Queries: `ListDevices`. Notifications are side effects outside the database, so they never run inside the change's transaction: todos calls the `Notifier` port after `CreateTodo` committed, and the module's public `TodoCreated` hands the work to a dispatcher with a context that outlives the request and a 30-second timeout. In production the dispatcher runs at most 32 notifications at once (more are dropped and logged rather than queued, so adding a task never waits), recovers panics, and is drained by `Module.Close`, which `cmd/api` calls after the HTTP server stops and before the database closes; tests pass a dispatcher that runs in place. Failures are logged, never returned; tokens FCM rejects are deleted. Without an outbox a crash between commit and send loses that notification, which is acceptable for "new task" pushes.
 
 ### Talking across modules
 
@@ -247,10 +262,13 @@ identity ──► audit     security log
 teams    ──► todos     team deletion deletes team data
 teams    ──► audit     team audit log
 todos    ──► audit     team audit log
+todos    ──► notifications   new team tasks
+identity ──► notifications   account deletion (forget devices)
 todos, audit ◄── platform/access ◄── teams (Resolver)
+notifications ◄── platform/access ◄── teams (Directory: team rosters)
 ```
 
-Every arrow points one way, so the graph has no cycles. The one thing todos and audit need from teams, the caller's memberships, doesn't go through a gateway: teams implements `access.Resolver`, the access middleware puts an `access.Actor` in the request context, and todos and audit only see that platform type. See [Authorization](#authorization-teams-and-roles).
+Every arrow points one way, so the graph has no cycles. The one thing todos and audit need from teams, the caller's memberships, doesn't go through a gateway: teams implements `access.Resolver`, the access middleware puts an `access.Actor` in the request context, and todos and audit only see that platform type. See [Authorization](#authorization-teams-and-roles). Notifications needs whole team rosters, which it gets the same way, through the `access.Directory` port that teams implements: a gateway to teams would close the cycle todos → notifications → teams → todos. Because notifications is built before teams, `cmd/api` gets its directory from `teams.NewDirectory(teamStore, memberStore)`, which reads the team stores without building the rest of the module.
 
 ## Platform (shared kernel)
 
@@ -259,7 +277,7 @@ Every arrow points one way, so the graph has no cycles. The one thing todos and 
 | Package | Responsibility |
 |---------|----------------|
 | `apperrors` | Error type carrying an HTTP status, a stable `code` and a message; constructors such as `Validation`, `NotFound`, `Unauthorized`, `InternalWrap`; `NotFoundAs` / `UnresolvedAs` turn a repository's generic not-found into a specific error |
-| `access` | `Role` (owner, admin, member, viewer) and what each allows (`CanEdit`, `CanManage`, `Outranks`); `Actor` (caller + team roles) with `Require`; the `Resolver` port; `Middleware` (Principal → Actor) and `ForActor` |
+| `access` | `Role` (owner, admin, member, viewer) and what each allows (`CanEdit`, `CanManage`, `Outranks`); `Actor` (caller + team roles) with `Require`; the `Resolver` port (a user's memberships) and the `Directory` port (a team's roster), both implemented by teams; `Middleware` (Principal → Actor) and `ForActor` |
 | `auth` | `Principal` (the authenticated caller), the `Authenticator` port, the bearer-token middleware, `RequireVerifiedEmail`, and `ForUser` (an endpoint that receives the caller's user ID) |
 | `config` | Loads env / `.env`; every key is declared once as a struct tag with an optional default |
 | `database/*` | Connection clients, transaction runners, migrations, and `dbtest` throwaway databases for tests |
@@ -295,7 +313,9 @@ main.go   run(ctx)
         │     mongo    → connect, optional migrate, mongostores + mongodb.TxRunner
         ├── newSignIn(cfg)           Firebase client (FIREBASE_PROJECT_ID, optional service account) + WebAuthn relying party
         ├── newMailers(cfg)          one mail.Sender (SMTP if SMTP_HOST is set, else log) for every module
-        ├── wireModules(...)         in dependency order: audit → todos → teams → identity, gateways in between
+        ├── newPusher(cfg)           FCM when FIREBASE_CREDENTIALS_FILE is set, else nil (no pushes)
+        ├── wireModules(...)         in dependency order: audit → notifications → todos → teams → identity,
+        │                            gateways in between; notifications gets teams.NewDirectory, built from the team stores
         └── newRouter(cfg, modules)
 ```
 
@@ -348,7 +368,7 @@ The tables and collections of the password sign-in from before Firebase (`sessio
 - **MongoDB**: the session context created by `WithTransaction` is passed down, and driver calls made with it join the transaction.
 - **Memory**: `tx.None` runs `fn` directly.
 
-Nested `WithinTx` calls join the outer transaction. Commands that write more than one record use one unit of work: sign-in (create or link, plus its audit event), logout-all, passkey registration and sign-in, deleting a project (with its todos), deleting a collection (detaching its projects), every team command, every audited change to a team record (the change and its event), team deletion and account deletion. Team and account deletion span modules: the gateways run inside the same transaction (teams → todos and audit; identity → teams, todos and audit), and the other modules' commands join it.
+Nested `WithinTx` calls join the outer transaction. Commands that write more than one record use one unit of work: sign-in (create or link, plus its audit event), logout-all, passkey registration and sign-in, deleting a project (with its todos), deleting a collection (detaching its projects), every team command, every audited change to a team record (the change and its event), team deletion and account deletion. Team and account deletion span modules: the gateways run inside the same transaction (teams → todos and audit; identity → teams, todos, audit and notifications), and the other modules' commands join it.
 
 MongoDB transactions need a replica set or sharded cluster. `mongodb.NewTxRunner` checks the topology at startup and falls back to `tx.None`, with a warning, on a standalone server.
 

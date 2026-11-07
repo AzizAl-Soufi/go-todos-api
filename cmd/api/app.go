@@ -14,10 +14,13 @@ import (
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity"
 	identityaudit "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/auditgateway"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/firebase"
+	identitynotifications "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/notificationsgateway"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/passkeys"
 	identityteams "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/teamsgateway"
 	identitytodos "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/todosgateway"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications/adapters/fcm"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams"
 	teamsaudit "github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/adapters/auditgateway"
 	teamsmail "github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/adapters/mail"
@@ -25,6 +28,7 @@ import (
 	teamsapp "github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos"
 	todosaudit "github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/adapters/auditgateway"
+	todosnotifications "github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/adapters/notificationsgateway"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/auth"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/config"
@@ -38,7 +42,10 @@ import (
 type app struct {
 	cfg     *config.Config
 	handler http.Handler
-	close   func()
+	// drain waits for background work (notifications) after the server has
+	// stopped, before close releases the database.
+	drain func(context.Context) error
+	close func()
 }
 
 func newApp(ctx context.Context, cfg *config.Config) (*app, error) {
@@ -53,15 +60,27 @@ func newApp(ctx context.Context, cfg *config.Config) (*app, error) {
 		return nil, err
 	}
 
-	modules := wireModules(store, signIn, newMailers(cfg), cfg)
-	return &app{cfg: cfg, handler: newRouter(cfg, modules), close: store.close}, nil
+	pusher, err := newPusher(ctx, cfg)
+	if err != nil {
+		store.close()
+		return nil, err
+	}
+
+	modules := wireModules(store, signIn, push{pusher: pusher}, newMailers(cfg), cfg)
+	return &app{
+		cfg:     cfg,
+		handler: newRouter(cfg, modules),
+		drain:   modules.notifications.Close,
+		close:   store.close,
+	}, nil
 }
 
 type modules struct {
-	audit    *audit.Module
-	todos    *todos.Module
-	teams    *teams.Module
-	identity *identity.Module
+	audit         *audit.Module
+	notifications *notifications.Module
+	todos         *todos.Module
+	teams         *teams.Module
+	identity      *identity.Module
 }
 
 // mailers are the modules' email adapters.
@@ -98,17 +117,34 @@ func newSignIn(ctx context.Context, cfg *config.Config) (signIn, error) {
 	return s, nil
 }
 
+// push is how notifications are delivered: the FCM pusher (nil: off) and
+// how they run after the request (nil: in the background, drained on
+// shutdown; tests run them in place).
+type push struct {
+	pusher   notifications.Pusher
+	dispatch func(func())
+}
+
 // wireModules builds the modules in dependency order: audit is a leaf, todos
 // records into it, teams deletes team data in todos, identity reaches all of
 // them on account deletion. Team memberships flow to todos and audit through
-// platform/access (teams.Resolver), not through imports.
-func wireModules(store *storage, signIn signIn, mailer mailers, cfg *config.Config) modules {
+// platform/access (teams.Resolver, teams.NewDirectory), not through imports.
+func wireModules(store *storage, signIn signIn, push push, mailer mailers, cfg *config.Config) modules {
 	auditModule := audit.New(audit.Deps{Events: store.events})
+	// notifications is built before teams (teams → todos → notifications),
+	// so it reads team rosters straight from the team stores.
+	notificationsModule := notifications.New(notifications.Deps{
+		Devices:   store.devices,
+		Directory: teams.NewDirectory(store.teams, store.members),
+		Pusher:    push.pusher,
+		Dispatch:  push.dispatch,
+	})
 	todosModule := todos.New(todos.Deps{
 		Todos:       store.todos,
 		Projects:    store.projects,
 		Collections: store.collections,
 		Audit:       todosaudit.New(auditModule),
+		Notifier:    todosnotifications.New(notificationsModule),
 		Tx:          store.tx,
 	})
 	teamsModule := teams.New(teams.Deps{
@@ -131,10 +167,32 @@ func wireModules(store *storage, signIn signIn, mailer mailers, cfg *config.Conf
 		Todos:        identitytodos.New(todosModule),
 		Teams:        identityteams.New(teamsModule),
 		Audit:        identityaudit.New(auditModule),
+		Devices:      identitynotifications.New(notificationsModule),
 		Tx:           store.tx,
 		Config:       identity.DefaultConfig(),
 	})
-	return modules{audit: auditModule, todos: todosModule, teams: teamsModule, identity: identityModule}
+	return modules{
+		audit:         auditModule,
+		notifications: notificationsModule,
+		todos:         todosModule,
+		teams:         teamsModule,
+		identity:      identityModule,
+	}
+}
+
+// newPusher sends push notifications with FCM when a Firebase service
+// account is configured; without one devices are still registered but
+// nothing is sent.
+func newPusher(ctx context.Context, cfg *config.Config) (notifications.Pusher, error) {
+	if cfg.Firebase.CredentialsFile == "" {
+		slog.Warn("FIREBASE_CREDENTIALS_FILE not set: push notifications are disabled")
+		return nil, nil
+	}
+	p, err := fcm.New(ctx, cfg.Firebase.ProjectID, cfg.Firebase.CredentialsFile)
+	if err != nil {
+		return nil, fmt.Errorf("initialize push notifications: %w", err)
+	}
+	return p, nil
 }
 
 // newRelyingParty configures passkeys for PASSKEY_RP_ID and PASSKEY_ORIGINS,
@@ -193,9 +251,10 @@ func newRouter(cfg *config.Config, m modules) http.Handler {
 	protect := func(h http.Handler) http.Handler { return verified(resolve(h)) }
 
 	m.identity.RegisterRoutes(mux, authenticate, limiter.Middleware)
-	m.todos.RegisterRoutes(mux, protect)
+	m.todos.RegisterRoutes(mux, protect, perUser(cfg.Limits.TodoCreatesPerMinute, cfg.Limits.TodoCreateBurst))
 	m.teams.RegisterRoutes(mux, protect, limiter.Middleware)
 	m.audit.RegisterRoutes(mux, protect)
+	m.notifications.RegisterRoutes(mux, protect)
 
 	return httpx.Chain(httpx.JSONErrors(mux),
 		httpx.Recovery,
@@ -205,6 +264,10 @@ func newRouter(cfg *config.Config, m modules) http.Handler {
 		func(h http.Handler) http.Handler { return httpx.LimitBody(httpx.DefaultMaxBodyBytes, h) },
 	)
 }
+
+// shutdownGrace is how long requests in flight, then notifications being
+// sent, get to finish after SIGTERM.
+const shutdownGrace = 5 * time.Second
 
 func (a *app) run(ctx context.Context) error {
 	server := &http.Server{
@@ -217,12 +280,20 @@ func (a *app) run(ctx context.Context) error {
 		MaxHeaderBytes:    1 << 16,
 	}
 
+	// ListenAndServe returns as soon as Shutdown starts; run waits for
+	// stopped to know requests and notifications are done before the caller
+	// closes the database.
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			slog.Error("server shutdown failed", "error", err)
+		}
+		if err := a.drain(shutdownCtx); err != nil {
+			slog.Error("notifications still being sent at shutdown", "error", err)
 		}
 	}()
 
@@ -230,5 +301,15 @@ func (a *app) run(ctx context.Context) error {
 	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
+	<-stopped
 	return nil
+}
+
+// perUser rate-limits each signed-in user (it must run after
+// auth.Middleware); requests without a principal share one bucket.
+func perUser(perMinute, burst int) httpx.Middleware {
+	return ratelimit.New(perMinute, burst).MiddlewareBy(func(r *http.Request) string {
+		p, _ := auth.PrincipalFrom(r.Context())
+		return p.UserID
+	})
 }

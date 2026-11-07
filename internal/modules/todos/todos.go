@@ -11,7 +11,7 @@
 //	application/command/   write use cases, one handler per command
 //	application/query/     read use cases, one handler per query
 //	transport/             driving adapter (HTTP)
-//	adapters/              driven adapters (persistence)
+//	adapters/              driven adapters (persistence, audit and notifications gateways)
 package todos
 
 import (
@@ -36,6 +36,9 @@ type (
 	// AuditLog receives the changes to team records; AuditEntry is one change.
 	AuditLog   = application.AuditLog
 	AuditEntry = application.AuditEntry
+	// Notifier hears about new team todos; NewTeamTodo is one.
+	Notifier    = application.Notifier
+	NewTeamTodo = application.NewTeamTodo
 )
 
 // Deps are the adapters the module runs on.
@@ -44,6 +47,7 @@ type Deps struct {
 	Projects    ProjectStore
 	Collections CollectionStore
 	Audit       AuditLog // nil records nothing
+	Notifier    Notifier // nil notifies nobody
 	Tx          tx.Runner
 	Now         func() time.Time // nil means time.Now
 }
@@ -55,16 +59,25 @@ type Module struct {
 
 func New(d Deps) *Module {
 	return &Module{
-		Commands: command.New(command.Deps{Todos: d.Todos, Projects: d.Projects, Collections: d.Collections, Audit: d.Audit, Tx: d.Tx, Now: d.Now}),
-		Queries:  query.New(query.Deps{Todos: d.Todos, Projects: d.Projects, Collections: d.Collections, Now: d.Now}),
+		Commands: command.New(command.Deps{
+			Todos:       d.Todos,
+			Projects:    d.Projects,
+			Collections: d.Collections,
+			Audit:       d.Audit,
+			Notifier:    d.Notifier,
+			Tx:          d.Tx,
+			Now:         d.Now,
+		}),
+		Queries: query.New(query.Deps{Todos: d.Todos, Projects: d.Projects, Collections: d.Collections, Now: d.Now}),
 	}
 }
 
 // RegisterRoutes mounts /todos, /projects and /collections; protect must
 // authenticate the caller and resolve their team memberships
-// (access.Middleware).
-func (m *Module) RegisterRoutes(mux *http.ServeMux, protect httpx.Middleware) {
-	httpapi.Register(mux, m.Commands, m.Queries, protect)
+// (access.Middleware). limitCreate rate-limits creating todos; it runs after
+// protect, so it can key on the caller.
+func (m *Module) RegisterRoutes(mux *http.ServeMux, protect, limitCreate httpx.Middleware) {
+	httpapi.Register(mux, m.Commands, m.Queries, protect, limitCreate)
 }
 
 // Todo is the read model exposed to other modules.

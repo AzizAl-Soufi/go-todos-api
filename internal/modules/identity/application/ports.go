@@ -124,6 +124,11 @@ type AuditLog interface {
 	DeleteUserLog(ctx context.Context, userID string) error
 }
 
+// Devices is how account deletion reaches the notifications module.
+type Devices interface {
+	DeleteUserDevices(ctx context.Context, userID string) error
+}
+
 // TodoDeleter is how account deletion reaches the todos module.
 type TodoDeleter interface {
 	DeleteAllForUser(ctx context.Context, userID string) error

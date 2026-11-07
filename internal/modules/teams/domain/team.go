@@ -17,6 +17,10 @@ import (
 const (
 	MaxNameLength  = 100
 	MaxEmailLength = 254
+
+	// InvitationResendCooldown is how long after an invitation email was
+	// sent before it may be sent again, so an invitee isn't flooded.
+	InvitationResendCooldown = 2 * time.Minute
 )
 
 var (
@@ -33,6 +37,7 @@ var (
 	ErrCannotChangeOwnRole   = apperrors.Conflict("CANNOT_CHANGE_OWN_ROLE", "you can't change your own role")
 	ErrCannotTransferToSelf  = apperrors.Conflict("CANNOT_TRANSFER_TO_SELF", "you already own this team")
 	ErrOwnsTeamsWithMembers  = apperrors.Conflict("OWNS_TEAMS", "transfer ownership of your teams that have other members (or delete them) before deleting your account")
+	ErrResendTooSoon         = apperrors.TooManyRequests("INVITATION_RESEND_TOO_SOON", "an invitation was sent to this address less than 2 minutes ago; try again after retryAt")
 	ErrInvitationRoleTooHigh = apperrors.Forbidden("INSUFFICIENT_ROLE", "you can only invite people with a role below your own")
 )
 
@@ -94,9 +99,25 @@ type Invitation struct {
 	TokenHash string
 	ExpiresAt time.Time
 	CreatedAt time.Time
+	// SentAt is when the invitation email was last sent (created or resent).
+	SentAt time.Time
 }
 
 func (i *Invitation) Expired(now time.Time) bool { return !now.Before(i.ExpiresAt) }
+
+// ResendAvailableAt is when the invitation email may be sent again.
+func (i *Invitation) ResendAvailableAt() time.Time {
+	return i.SentAt.Add(InvitationResendCooldown)
+}
+
+// CheckResend fails with ErrResendTooSoon, retryable from
+// ResendAvailableAt, until the cooldown has passed.
+func (i *Invitation) CheckResend(now time.Time) error {
+	if at := i.ResendAvailableAt(); now.Before(at) {
+		return apperrors.RetryAt(ErrResendTooSoon, now, at)
+	}
+	return nil
+}
 
 // NormalizeEmail trims and lower-cases an address and requires a bare
 // "local@domain" form, like account emails.

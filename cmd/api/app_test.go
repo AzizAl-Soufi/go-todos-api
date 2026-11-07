@@ -21,6 +21,7 @@ import (
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/domain"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/config"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/dbtest"
@@ -62,6 +63,7 @@ type testServer struct {
 	store    *storage
 	mailer   *captureMailer
 	firebase *fakeFirebase
+	pushes   *fakePusher
 }
 
 // newTestServer runs the API on a fake Firebase. Options mutate the config;
@@ -73,6 +75,7 @@ func newTestServer(t *testing.T, mutate ...func(*config.Config)) *testServer {
 	cfg := &config.Config{
 		App:      config.AppConfig{BaseURL: "http://example.test"},
 		Auth:     config.AuthConfig{RateLimitPerMinute: 1000, RateLimitBurst: 1000},
+		Limits:   config.LimitsConfig{TodoCreatesPerMinute: 1000, TodoCreateBurst: 1000},
 		Firebase: config.FirebaseConfig{ProjectID: "todos-test", CredentialsFile: "service-account.json"},
 	}
 	for _, m := range mutate {
@@ -90,11 +93,17 @@ func newTestServer(t *testing.T, mutate ...func(*config.Config)) *testServer {
 		in.firebase = fb
 	}
 	store := testStorage(t)
-	mods := wireModules(store, in, mailers{teams: mailer}, cfg)
+	pushes := &fakePusher{}
+	var pusher notifications.Pusher
+	if cfg.Firebase.CredentialsFile != "" {
+		pusher = pushes
+	}
+	// Notifications run in place, so a test sees them when its request returns.
+	mods := wireModules(store, in, push{pusher: pusher, dispatch: func(f func()) { f() }}, mailers{teams: mailer}, cfg)
 
 	srv := httptest.NewServer(newRouter(cfg, mods))
 	t.Cleanup(srv.Close)
-	return &testServer{t: t, srv: srv, store: store, mailer: mailer, firebase: fb}
+	return &testServer{t: t, srv: srv, store: store, mailer: mailer, firebase: fb, pushes: pushes}
 }
 
 func noServiceAccount(c *config.Config) { c.Firebase.CredentialsFile = "" }
@@ -390,6 +399,26 @@ func TestAuthRateLimit(t *testing.T) {
 
 	// Authenticated endpoints are not subject to the auth limiter.
 	s.do("GET", "/health", "", nil).expect(t, 200)
+}
+
+func TestTodoCreateRateLimit(t *testing.T) {
+	s := newTestServer(t, func(c *config.Config) { c.Limits.TodoCreatesPerMinute, c.Limits.TodoCreateBurst = 1, 2 })
+	ann := s.register("Ann", "ann@example.com")
+	bo := s.register("Bo", "bo@example.com")
+
+	for range 2 {
+		s.do("POST", "/todos", ann.access, map[string]any{"title": "Task"}).expect(t, 201)
+	}
+	r := s.do("POST", "/todos", ann.access, map[string]any{"title": "One too many"})
+	r.expectCode(t, 429, "RATE_LIMITED")
+	if r.header.Get("Retry-After") == "" || !strings.HasSuffix(r.str("error", "retryAt"), "Z") {
+		t.Fatalf("429 must carry Retry-After and a UTC retryAt: %s", r.raw)
+	}
+
+	// The limit is per user and only on creating todos.
+	s.do("POST", "/todos", bo.access, map[string]any{"title": "Task"}).expect(t, 201)
+	s.do("GET", "/todos", ann.access, nil).expect(t, 200)
+	s.do("POST", "/projects", ann.access, map[string]any{"name": "Launch"}).expect(t, 201)
 }
 
 func TestBodySizeLimit(t *testing.T) {

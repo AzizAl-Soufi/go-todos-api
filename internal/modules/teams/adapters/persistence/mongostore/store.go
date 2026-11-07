@@ -224,12 +224,17 @@ type invitationDoc struct {
 	TokenHash string        `bson:"tokenHash"`
 	ExpiresAt time.Time     `bson:"expiresAt"`
 	CreatedAt time.Time     `bson:"createdAt"`
+	SentAt    time.Time     `bson:"sentAt"`
 }
 
 func (d invitationDoc) toDomain() *domain.Invitation {
+	sentAt := d.SentAt
+	if sentAt.IsZero() { // written by a release from before sentAt (migration 009)
+		sentAt = d.CreatedAt
+	}
 	return &domain.Invitation{
 		ID: d.ID.Hex(), TeamID: d.TeamID.Hex(), Email: d.Email, Role: access.Role(d.Role), InvitedBy: d.InvitedBy.Hex(),
-		TokenHash: d.TokenHash, ExpiresAt: d.ExpiresAt.UTC(), CreatedAt: d.CreatedAt.UTC(),
+		TokenHash: d.TokenHash, ExpiresAt: d.ExpiresAt.UTC(), CreatedAt: d.CreatedAt.UTC(), SentAt: sentAt.UTC(),
 	}
 }
 
@@ -240,7 +245,7 @@ func (s *Invitations) Save(ctx context.Context, inv *domain.Invitation) error {
 	}
 	doc := invitationDoc{
 		ID: bson.NewObjectID(), TeamID: team, Email: inv.Email, Role: string(inv.Role), InvitedBy: invitedBy,
-		TokenHash: inv.TokenHash, ExpiresAt: inv.ExpiresAt, CreatedAt: inv.CreatedAt,
+		TokenHash: inv.TokenHash, ExpiresAt: inv.ExpiresAt, CreatedAt: inv.CreatedAt, SentAt: inv.SentAt,
 	}
 	// Replace the pending invitation for this team and email (new ID and token).
 	if _, err := s.coll.DeleteOne(ctx, bson.M{"teamId": team, "email": inv.Email}); err != nil {
@@ -279,6 +284,29 @@ func (s *Invitations) Get(ctx context.Context, teamID, id string) (*domain.Invit
 
 func (s *Invitations) FindByTokenHash(ctx context.Context, tokenHash string) (*domain.Invitation, error) {
 	return s.findOne(ctx, bson.M{"tokenHash": tokenHash})
+}
+
+func (s *Invitations) Resend(ctx context.Context, r application.InvitationResend) error {
+	filter, err := byTeamAndID(r.TeamID, r.ID)
+	if err != nil {
+		return err
+	}
+	filter["$or"] = bson.A{
+		bson.M{"sentAt": bson.M{"$lte": r.SentBefore}},
+		bson.M{"sentAt": bson.M{"$exists": false}}, // see toDomain
+	}
+	res, err := s.coll.UpdateOne(ctx, filter, bson.M{"$set": bson.M{
+		"tokenHash": r.TokenHash,
+		"expiresAt": r.ExpiresAt,
+		"sentAt":    r.SentAt,
+	}})
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return apperrors.ErrNotFound
+	}
+	return nil
 }
 
 func (s *Invitations) Delete(ctx context.Context, teamID, id string) error {

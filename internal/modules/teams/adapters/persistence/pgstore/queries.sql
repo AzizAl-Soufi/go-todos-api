@@ -43,12 +43,19 @@ DELETE FROM team_members WHERE team_id = @team_id;
 
 -- Saving replaces the pending invitation for the same team and email.
 -- name: SaveInvitation :one
-INSERT INTO team_invitations (team_id, email, role, invited_by, token_hash, expires_at, created_at)
-VALUES (@team_id, @email, @role, @invited_by, @token_hash, @expires_at, @created_at)
+INSERT INTO team_invitations (team_id, email, role, invited_by, token_hash, expires_at, created_at, sent_at)
+VALUES (@team_id, @email, @role, @invited_by, @token_hash, @expires_at, @created_at, @sent_at)
 ON CONFLICT (team_id, email) DO UPDATE
 SET id = gen_random_uuid(), role = EXCLUDED.role, invited_by = EXCLUDED.invited_by, token_hash = EXCLUDED.token_hash,
-    expires_at = EXCLUDED.expires_at, created_at = EXCLUDED.created_at
+    expires_at = EXCLUDED.expires_at, created_at = EXCLUDED.created_at, sent_at = EXCLUDED.sent_at
 RETURNING id;
+
+-- Resending gives the invitation a new link, expiry and send time, unless
+-- it was sent after @sent_before (the cooldown) or is gone: then no row.
+-- name: ResendInvitation :execrows
+UPDATE team_invitations
+SET token_hash = @token_hash, expires_at = @expires_at, sent_at = @sent_at
+WHERE team_id = @team_id AND id = @id AND sent_at <= @sent_before;
 
 -- name: GetInvitation :one
 SELECT * FROM team_invitations WHERE team_id = @team_id AND id = @id;

@@ -26,6 +26,7 @@ type Deps struct {
 	Projects    application.ProjectRepository
 	Collections application.CollectionRepository
 	Audit       application.AuditLog // nil records nothing
+	Notifier    application.Notifier // nil notifies nobody
 	Tx          tx.Runner
 	Now         func() time.Time // nil means time.Now
 }
@@ -55,6 +56,9 @@ func New(d Deps) Handlers {
 	if d.Audit == nil {
 		d.Audit = noAudit{}
 	}
+	if d.Notifier == nil {
+		d.Notifier = noNotifier{}
+	}
 	b := base{d}
 	return Handlers{
 		CreateTodo: CreateTodoHandler{b}, UpdateTodo: UpdateTodoHandler{b}, DeleteTodo: DeleteTodoHandler{b},
@@ -64,7 +68,12 @@ func New(d Deps) Handlers {
 	}
 }
 
-type noAudit struct{}
+type (
+	noAudit    struct{}
+	noNotifier struct{}
+)
+
+func (noNotifier) TodoCreated(context.Context, application.NewTeamTodo) {}
 
 func (noAudit) Record(context.Context, application.AuditEntry) error { return nil }
 
