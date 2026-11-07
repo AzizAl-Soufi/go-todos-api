@@ -15,7 +15,7 @@ import (
 type Deps struct {
 	Users    application.UserReader
 	Passkeys application.PasskeyReader
-	Tokens   application.AccessTokenVerifier
+	IDTokens application.IDTokenVerifier
 	Todos    application.TodoLister
 }
 
@@ -77,12 +77,12 @@ func (h GetOverviewHandler) Handle(ctx context.Context, q GetOverview) (Overview
 	return Overview{User: user, Todos: todos}, nil
 }
 
-// Authenticate resolves an access token to the caller. Besides the signature
-// and expiry it checks, per request, that the user still exists and that the
-// token version matches; that is what makes logout-all, password changes and
-// account deletion take effect immediately.
+// Authenticate resolves a Firebase ID token to the caller. Besides the
+// token's signature, expiry and project, it checks per request that the
+// account exists and that the sign-in wasn't revoked by logging out
+// everywhere, so both take effect immediately.
 type Authenticate struct {
-	AccessToken string
+	IDToken string
 }
 
 type AuthenticateHandler struct{ d Deps }
@@ -90,24 +90,27 @@ type AuthenticateHandler struct{ d Deps }
 var _ auth.Authenticator = AuthenticateHandler{}
 
 func (h AuthenticateHandler) Handle(ctx context.Context, q Authenticate) (auth.Principal, error) {
-	claims, err := h.d.Tokens.Parse(q.AccessToken)
+	claims, err := h.d.IDTokens.VerifyIDToken(ctx, q.IDToken)
 	if err != nil {
 		return auth.Principal{}, err
 	}
-	user, err := h.d.Users.FindByID(ctx, claims.UserID)
-	if errors.Is(err, apperrors.ErrNotFound) || errors.Is(err, apperrors.ErrInvalidID) {
-		return auth.Principal{}, domain.ErrInvalidAccessToken
+	user, err := h.d.Users.FindByFirebaseUID(ctx, claims.UID)
+	if errors.Is(err, apperrors.ErrNotFound) {
+		return auth.Principal{}, domain.ErrAccountNotRegistered
 	}
 	if err != nil {
 		return auth.Principal{}, err
 	}
-	if user.TokenVersion != claims.TokenVersion {
+	if user.SignInRevoked(claims.AuthTime) {
 		return auth.Principal{}, domain.ErrTokenRevoked
 	}
-	return auth.Principal{UserID: user.ID, Name: user.Name, Email: user.Email, EmailVerified: user.EmailVerified()}, nil
+	return auth.Principal{
+		UserID: user.ID, Name: user.Name, Email: user.Email,
+		EmailVerified: user.EmailVerified() || claims.EmailVerified,
+	}, nil
 }
 
 // Authenticate implements auth.Authenticator for the HTTP middleware.
-func (h AuthenticateHandler) Authenticate(ctx context.Context, accessToken string) (auth.Principal, error) {
-	return h.Handle(ctx, Authenticate{AccessToken: accessToken})
+func (h AuthenticateHandler) Authenticate(ctx context.Context, idToken string) (auth.Principal, error) {
+	return h.Handle(ctx, Authenticate{IDToken: idToken})
 }

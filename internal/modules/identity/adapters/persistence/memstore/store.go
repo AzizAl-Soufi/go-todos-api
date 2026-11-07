@@ -38,6 +38,9 @@ func (s *Users) Create(_ context.Context, u *domain.User) error {
 		if existing.Email == u.Email {
 			return domain.ErrEmailTaken
 		}
+		if u.FirebaseUID != "" && existing.FirebaseUID == u.FirebaseUID {
+			return domain.ErrFirebaseUIDTaken
+		}
 	}
 	u.ID = newID()
 	s.Data[u.ID] = inmem.Clone(u)
@@ -67,6 +70,38 @@ func (s *Users) FindByEmail(_ context.Context, email string) (*domain.User, erro
 	return nil, apperrors.ErrNotFound
 }
 
+func (s *Users) FindByFirebaseUID(_ context.Context, firebaseUID string) (*domain.User, error) {
+	s.Mu.RLock()
+	defer s.Mu.RUnlock()
+
+	for _, u := range s.Data {
+		if firebaseUID != "" && u.FirebaseUID == firebaseUID {
+			return inmem.Clone(u), nil
+		}
+	}
+	return nil, apperrors.ErrNotFound
+}
+
+func (s *Users) LinkFirebaseUID(_ context.Context, id, firebaseUID string) error {
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+
+	u, ok := s.Data[id]
+	if !ok {
+		return apperrors.ErrNotFound
+	}
+	if u.FirebaseUID != "" {
+		return domain.ErrFirebaseUIDTaken
+	}
+	for _, other := range s.Data {
+		if other.FirebaseUID == firebaseUID {
+			return domain.ErrFirebaseUIDTaken
+		}
+	}
+	u.FirebaseUID = firebaseUID
+	return nil
+}
+
 func (s *Users) update(id string, fn func(u *domain.User)) error {
 	s.Mu.Lock()
 	defer s.Mu.Unlock()
@@ -87,12 +122,8 @@ func (s *Users) MarkEmailVerified(_ context.Context, id string, at time.Time) er
 	})
 }
 
-func (s *Users) IncrementTokenVersion(_ context.Context, id string) error {
-	return s.update(id, func(u *domain.User) { u.TokenVersion++ })
-}
-
-func (s *Users) SetPasswordHash(_ context.Context, id, hash string) error {
-	return s.update(id, func(u *domain.User) { u.PasswordHash = hash })
+func (s *Users) RevokeSessions(_ context.Context, id string, at time.Time) error {
+	return s.update(id, func(u *domain.User) { u.SessionsValidAfter = &at })
 }
 
 func (s *Users) Delete(_ context.Context, id string) error {
@@ -103,129 +134,6 @@ func (s *Users) Delete(_ context.Context, id string) error {
 		return apperrors.ErrNotFound
 	}
 	delete(s.Data, id)
-	return nil
-}
-
-// ---- sessions ----
-
-type Sessions struct {
-	inmem.MemoryClient[string, domain.Session]
-}
-
-var _ application.SessionRepository = (*Sessions)(nil)
-
-func NewSessions() *Sessions {
-	return &Sessions{MemoryClient: inmem.MemoryClient[string, domain.Session]{Data: map[string]*domain.Session{}}}
-}
-
-func (s *Sessions) Create(_ context.Context, sess *domain.Session) error {
-	s.Mu.Lock()
-	defer s.Mu.Unlock()
-
-	sess.ID = newID()
-	s.Data[sess.ID] = inmem.Clone(sess)
-	return nil
-}
-
-func (s *Sessions) FindByTokenHash(_ context.Context, tokenHash string) (*domain.Session, error) {
-	s.Mu.RLock()
-	defer s.Mu.RUnlock()
-
-	for _, sess := range s.Data {
-		if sess.TokenHash == tokenHash {
-			return inmem.Clone(sess), nil
-		}
-	}
-	return nil, apperrors.ErrNotFound
-}
-
-func (s *Sessions) Revoke(_ context.Context, id string, at time.Time) (bool, error) {
-	s.Mu.Lock()
-	defer s.Mu.Unlock()
-
-	sess, ok := s.Data[id]
-	if !ok || sess.RevokedAt != nil {
-		return false, nil
-	}
-	sess.RevokedAt = &at
-	return true, nil
-}
-
-func (s *Sessions) revokeWhere(at time.Time, match func(*domain.Session) bool) {
-	s.Mu.Lock()
-	defer s.Mu.Unlock()
-
-	for _, sess := range s.Data {
-		if sess.RevokedAt == nil && match(sess) {
-			sess.RevokedAt = &at
-		}
-	}
-}
-
-func (s *Sessions) RevokeFamily(_ context.Context, familyID string, at time.Time) error {
-	s.revokeWhere(at, func(sess *domain.Session) bool { return sess.FamilyID == familyID })
-	return nil
-}
-
-func (s *Sessions) RevokeAllForUser(_ context.Context, userID string, at time.Time) error {
-	s.revokeWhere(at, func(sess *domain.Session) bool { return sess.UserID == userID })
-	return nil
-}
-
-func (s *Sessions) DeleteAllForUser(_ context.Context, userID string) error {
-	s.Mu.Lock()
-	defer s.Mu.Unlock()
-
-	for id, sess := range s.Data {
-		if sess.UserID == userID {
-			delete(s.Data, id)
-		}
-	}
-	return nil
-}
-
-// ---- one-time tokens (keyed by user ID: one pending per user) ----
-
-// OneTimeTokens holds one kind of one-time token; use one instance per kind.
-type OneTimeTokens struct {
-	inmem.MemoryClient[string, domain.OneTimeToken]
-}
-
-var _ application.OneTimeTokenRepository = (*OneTimeTokens)(nil)
-
-func newOneTimeTokens() *OneTimeTokens {
-	return &OneTimeTokens{MemoryClient: inmem.MemoryClient[string, domain.OneTimeToken]{Data: map[string]*domain.OneTimeToken{}}}
-}
-
-func NewVerifications() *OneTimeTokens  { return newOneTimeTokens() }
-func NewPasswordResets() *OneTimeTokens { return newOneTimeTokens() }
-
-func (s *OneTimeTokens) Save(_ context.Context, v *domain.OneTimeToken) error {
-	s.Mu.Lock()
-	defer s.Mu.Unlock()
-
-	s.Data[v.UserID] = inmem.Clone(v)
-	return nil
-}
-
-func (s *OneTimeTokens) Consume(_ context.Context, tokenHash string) (*domain.OneTimeToken, error) {
-	s.Mu.Lock()
-	defer s.Mu.Unlock()
-
-	for userID, v := range s.Data {
-		if v.TokenHash == tokenHash {
-			delete(s.Data, userID)
-			return v, nil // removed from the map, so returning it shares nothing
-		}
-	}
-	return nil, apperrors.ErrNotFound
-}
-
-func (s *OneTimeTokens) DeleteForUser(_ context.Context, userID string) error {
-	s.Mu.Lock()
-	defer s.Mu.Unlock()
-
-	delete(s.Data, userID)
 	return nil
 }
 

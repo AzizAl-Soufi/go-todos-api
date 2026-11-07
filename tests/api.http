@@ -2,41 +2,16 @@
 # Run them top to bottom: later requests reuse tokens and IDs from earlier responses.
 
 @base = http://localhost:8000
-@access = {{login.response.body.authorization.access_token}}
-@refresh = {{login.response.body.authorization.refresh_token}}
+# Sign in with the Firebase SDK in your client (Google, or email and password)
+# and paste its ID token here: `await auth.currentUser.getIdToken()`. It
+# expires after an hour.
+@access = PASTE-FIREBASE-ID-TOKEN-HERE
 
 ### Health
 GET {{base}}/health
 
-### Register (sends a verification email; with SMTP unset the link is logged)
-# @name register
-POST {{base}}/auth/register
-Content-Type: application/json
-
-{"name": "Aziz Al-Soufi", "email": "aziz@example.com", "password": "correct horse battery"}
-
-### Log in
-# @name login
-POST {{base}}/auth/login
-Content-Type: application/json
-
-{"email": "aziz@example.com", "password": "correct horse battery"}
-
-### Rotate the refresh token (the old one becomes invalid; replaying it revokes the login)
-# @name refreshed
-POST {{base}}/auth/refresh
-Content-Type: application/json
-
-{"refresh_token": "{{refresh}}"}
-
-### Verify email (paste the token from the logged link)
-POST {{base}}/auth/verify-email
-Content-Type: application/json
-
-{"token": "PASTE-TOKEN-HERE"}
-
-### Resend the verification email
-POST {{base}}/auth/verify-email/resend
+### Sign in: creates the account on the first call, then finds it
+POST {{base}}/auth
 Authorization: Bearer {{access}}
 
 ### Profile and todos
@@ -144,14 +119,6 @@ Authorization: Bearer {{access}}
 DELETE {{base}}/collections/{{collection.response.body.id}}
 Authorization: Bearer {{access}}
 
-### Change the password (revokes other logins; returns a fresh token pair)
-# @name changed
-POST {{base}}/auth/password/change
-Authorization: Bearer {{access}}
-Content-Type: application/json
-
-{"current_password": "correct horse battery", "new_password": "a brand new password"}
-
 ### ---- Passkeys ----
 ### Passkey ceremonies need a browser (navigator.credentials); these show the
 ### options. Send the browser's credential.toJSON() back with the token.
@@ -238,42 +205,11 @@ Authorization: Bearer {{access}}
 DELETE {{base}}/teams/{{team.response.body.id}}
 Authorization: Bearer {{access}}
 
-### Forgot password (always 202; with SMTP unset the reset link is logged)
-POST {{base}}/auth/password/forgot
-Content-Type: application/json
-
-{"email": "aziz@example.com"}
-
-### Reset the password (paste the token from the logged link)
-POST {{base}}/auth/password/reset
-Content-Type: application/json
-
-{"token": "PASTE-RESET-TOKEN-HERE", "password": "correct horse battery"}
-
-### Log in again (the reset revoked every earlier token)
-# @name relogin
-POST {{base}}/auth/login
-Content-Type: application/json
-
-{"email": "aziz@example.com", "password": "correct horse battery"}
-
-### Log out this login (pass the latest refresh token)
-POST {{base}}/auth/logout
-Content-Type: application/json
-
-{"refresh_token": "{{relogin.response.body.authorization.refresh_token}}"}
-
-### Log out everywhere (revokes all sessions and access tokens)
-POST {{base}}/auth/logout-all
-Authorization: Bearer {{relogin.response.body.authorization.access_token}}
-
-### Delete the account (log in again first: logout-all revoked the token above)
-# @name final
-POST {{base}}/auth/login
-Content-Type: application/json
-
-{"email": "aziz@example.com", "password": "correct horse battery"}
-
-###
+### Delete the account (and its Firebase user, with a service account configured)
 DELETE {{base}}/me
-Authorization: Bearer {{final.response.body.authorization.access_token}}
+Authorization: Bearer {{access}}
+
+### Log out everywhere instead of deleting: ID tokens of earlier sign-ins
+### stop working, including the one above; sign in again to get a new one
+POST {{base}}/auth/logout-all
+Authorization: Bearer {{access}}

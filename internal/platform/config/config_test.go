@@ -49,8 +49,8 @@ DEBUG=true
 DATABASE_URI=mongodb://localhost:27017
 DATABASE_NAME=todos
 DB_TYPE=mongo
-JWT_PRIVATE_KEY_PATH=secrets/private.pem
-JWT_PUBLIC_KEY_PATH=secrets/public.pem
+FIREBASE_PROJECT_ID=todos-prod
+FIREBASE_CREDENTIALS_FILE=secrets/firebase.json
 `)
 
 	cfg, err := LoadConfig()
@@ -61,7 +61,7 @@ JWT_PUBLIC_KEY_PATH=secrets/public.pem
 	want := defaultConfig()
 	want.App.Port, want.App.Debug = 8080, true
 	want.DB.DatabaseURI, want.DB.DatabaseName, want.DB.DBType = "mongodb://localhost:27017", "todos", "mongo"
-	want.JWT = JWTConfig{PrivateKeyPath: "secrets/private.pem", PublicKeyPath: "secrets/public.pem"}
+	want.Firebase = FirebaseConfig{ProjectID: "todos-prod", CredentialsFile: "secrets/firebase.json"}
 	if *cfg != want {
 		t.Fatalf("config = %+v, want %+v", *cfg, want)
 	}
@@ -104,8 +104,8 @@ func TestLoadConfig_EnvOnlyWithoutEnvFile(t *testing.T) {
 	t.Setenv("DB_TYPE", "postgres")
 	t.Setenv("DATABASE_URI", "postgres://db/todos")
 	t.Setenv("DATABASE_NAME", "todos")
-	t.Setenv("JWT_PRIVATE_KEY_PATH", "/run/secrets/private.pem")
-	t.Setenv("JWT_PUBLIC_KEY_PATH", "/run/secrets/public.pem")
+	t.Setenv("FIREBASE_PROJECT_ID", "todos-prod")
+	t.Setenv("FIREBASE_CREDENTIALS_FILE", "/run/secrets/firebase.json")
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -115,7 +115,7 @@ func TestLoadConfig_EnvOnlyWithoutEnvFile(t *testing.T) {
 	want := defaultConfig()
 	want.App.Port, want.App.Debug = 9090, true
 	want.DB.DatabaseURI, want.DB.DatabaseName, want.DB.DBType = "postgres://db/todos", "todos", "postgres"
-	want.JWT = JWTConfig{PrivateKeyPath: "/run/secrets/private.pem", PublicKeyPath: "/run/secrets/public.pem"}
+	want.Firebase = FirebaseConfig{ProjectID: "todos-prod", CredentialsFile: "/run/secrets/firebase.json"}
 	if *cfg != want {
 		t.Fatalf("config = %+v, want %+v", *cfg, want)
 	}

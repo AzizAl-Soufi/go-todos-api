@@ -20,15 +20,12 @@ func TestContract(t *testing.T) {
 		runner := mongodb.NewTxRunner(context.Background(), client)
 		_, standalone := runner.(tx.None)
 		return storetest.Stores{
-			Users:          mongostore.NewUsers(db),
-			Sessions:       mongostore.NewSessions(db),
-			Verifications:  mongostore.NewVerifications(db),
-			PasswordResets: mongostore.NewPasswordResets(db),
-			Passkeys:       mongostore.NewPasskeys(db),
-			Challenges:     mongostore.NewPasskeyChallenges(db),
-			Tx:             runner,
-			AtomicTx:       !standalone,
-			MissingID:      bson.NewObjectID().Hex(),
+			Users:      mongostore.NewUsers(db),
+			Passkeys:   mongostore.NewPasskeys(db),
+			Challenges: mongostore.NewPasskeyChallenges(db),
+			Tx:         runner,
+			AtomicTx:   !standalone,
+			MissingID:  bson.NewObjectID().Hex(),
 		}
 	})
 }

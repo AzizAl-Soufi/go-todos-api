@@ -48,9 +48,9 @@ func PrincipalFrom(ctx context.Context) (Principal, bool) {
 func Middleware(a Authenticator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			token, ok := bearerToken(r)
-			if !ok {
-				httpx.RespondErr(w, r, ErrMissingToken)
+			token, err := BearerToken(r)
+			if err != nil {
+				httpx.RespondErr(w, r, err)
 				return
 			}
 			p, err := a.Authenticate(r.Context(), token)
@@ -80,13 +80,17 @@ func RequireVerifiedEmail(next http.Handler) http.Handler {
 	})
 }
 
-func bearerToken(r *http.Request) (string, bool) {
+// BearerToken returns the token of an "Authorization: Bearer <token>"
+// header, or ErrMissingToken.
+func BearerToken(r *http.Request) (string, error) {
 	scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " ")
 	if !ok || !strings.EqualFold(scheme, "Bearer") {
-		return "", false
+		return "", ErrMissingToken
 	}
-	token = strings.TrimSpace(token)
-	return token, token != ""
+	if token = strings.TrimSpace(token); token == "" {
+		return "", ErrMissingToken
+	}
+	return token, nil
 }
 
 // ForUser adapts an endpoint that needs the authenticated caller's user ID;

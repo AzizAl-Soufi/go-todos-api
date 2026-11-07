@@ -38,8 +38,8 @@ func (s *testServer) passkeyLogin(a *passkeytest.Authenticator, cred *passkeytes
 
 func TestPasskeys(t *testing.T) {
 	s := newTestServer(t)
-	ann := s.register("Ann", "ann@example.com", "password1")
-	bo := s.register("Bo", "bo@example.com", "password1")
+	ann := s.register("Ann", "ann@example.com")
+	bo := s.register("Bo", "bo@example.com")
 	a := passkeytest.New("http://example.test") // APP_BASE_URL's origin
 
 	s.do("POST", "/me/passkeys/options", "", nil).expectCode(t, 401, "MISSING_ACCESS_TOKEN")
@@ -63,12 +63,16 @@ func TestPasskeys(t *testing.T) {
 	s.do("POST", "/me/passkeys", ann.access, map[string]any{"token": opts.str("token"), "credential": resp}).
 		expectCode(t, 400, "INVALID_PASSKEY_CHALLENGE")
 
-	// Sign in without email or password.
+	// Sign in without email or password: the API answers with a Firebase
+	// custom token, which the client exchanges for an ID token.
 	r := s.passkeyLogin(a, cred).expect(t, 200)
-	if r.str("user", "id") != ann.userID || r.str("authorization", "refresh_token") == "" {
+	if r.str("user", "id") != ann.userID || r.str("firebase_custom_token") == "" {
 		t.Fatalf("passkey login: %s", r.raw)
 	}
-	access := r.str("authorization", "access_token")
+	access, ok := s.firebase.exchange(r.str("firebase_custom_token"))
+	if !ok {
+		t.Fatalf("custom token unknown to Firebase: %s", r.raw)
+	}
 	s.do("GET", "/me", access, nil).expect(t, 200)
 	list := s.do("GET", "/me/passkeys", access, nil).expect(t, 200).items(t)
 	if len(list) != 1 || list[0]["id"] != id || list[0]["lastUsedAt"] == nil {
@@ -104,7 +108,7 @@ func TestPasskeysForAFrontendOrigin(t *testing.T) {
 		c.Passkey.RPID = "example.test"
 		c.Passkey.Origins = "https://app.example.test, https://admin.example.test"
 	})
-	ann := s.register("Ann", "ann@example.com", "password1")
+	ann := s.register("Ann", "ann@example.com")
 	app := passkeytest.New("https://app.example.test")
 	_, cred := s.addPasskey(app, ann, "")
 	s.passkeyLogin(passkeytest.New("https://admin.example.test"), cred).expect(t, 200)
@@ -113,9 +117,16 @@ func TestPasskeysForAFrontendOrigin(t *testing.T) {
 
 func TestAccountDeletionRemovesPasskeys(t *testing.T) {
 	s := newTestServer(t)
-	ann := s.register("Ann", "ann@example.com", "password1")
+	ann := s.register("Ann", "ann@example.com")
 	a := passkeytest.New("http://example.test")
 	_, cred := s.addPasskey(a, ann, "")
 	s.do("DELETE", "/me", ann.access, nil).expect(t, 204)
 	s.passkeyLogin(a, cred).expectCode(t, 401, "INVALID_PASSKEY")
+}
+
+func TestPasskeyLoginNeedsAServiceAccount(t *testing.T) {
+	s := newTestServer(t, noServiceAccount)
+	ann := s.register("Ann", "ann@example.com")
+	s.addPasskey(passkeytest.New("http://example.test"), ann, "") // adding still works
+	s.do("POST", "/auth/passkeys/login/options", "", nil).expectCode(t, 403, "PASSKEY_LOGIN_DISABLED")
 }

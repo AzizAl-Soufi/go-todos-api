@@ -8,6 +8,11 @@ The codebase was restructured into a modular monolith with Clean Architecture / 
 
 ### Added
 
+- **Sign-in with Firebase Authentication** (Google, email and password). Clients sign in with the Firebase SDK and send the Firebase ID token: as `Authorization: Bearer` to `POST /auth` after each sign-in (creates the account the first time, `201`), then as `Authorization: Bearer` on every call. Email verification, password reset and change happen in Firebase. Accounts from before are linked to their Firebase user on the first sign-in with the same, verified, email. New settings `FIREBASE_PROJECT_ID` (required) and `FIREBASE_CREDENTIALS_FILE` (optional service account).
+- **Passkeys** (WebAuthn). `POST /me/passkeys/options` + `POST /me/passkeys` add one, `GET /me/passkeys` lists and `DELETE /me/passkeys/{id}` removes them; `POST /auth/passkeys/login/options` + `POST /auth/passkeys/login` sign in without email and return a Firebase custom token (needs `FIREBASE_CREDENTIALS_FILE`). Discoverable credentials with user verification required; single-use, hashed challenges; sign-counter clone detection. New settings `PASSKEY_RP_ID`, `PASSKEY_RP_NAME`, `PASSKEY_ORIGINS`.
+- New error codes: `ACCOUNT_NOT_REGISTERED`, `EMAIL_NOT_VERIFIED`, `EMAIL_REQUIRED`, `FIREBASE_UID_TAKEN`, `ACCOUNT_NOT_LINKED`, `PASSKEY_LOGIN_DISABLED`, `INVALID_PASSKEY_CHALLENGE`, `PASSKEY_REJECTED`, `PASSKEY_EXISTS`, `TOO_MANY_PASSKEYS`, `PASSKEY_NOT_FOUND`, `INVALID_PASSKEY`, `PASSKEY_NAME_TOO_LONG`.
+- **Schema.** PostgreSQL migrations `00010` (`passkeys`, `passkey_challenges`) and `00011` (`firebase_uid`, `sessions_valid_after` on users); MongoDB migrations 006 and 007 likewise.
+
 - **Teams.** `POST /teams` creates a team owned by the caller; `GET /teams`, `GET/PATCH/DELETE /teams/{id}`. Deleting a team deletes its projects, collections, todos, invitations and audit log in one transaction.
 - **Roles.** `owner`, `admin`, `member`, `viewer`. Members edit team content, admins also manage people and delete team projects and collections, the owner also deletes the team. Managers act only on people below them and grant roles below their own. `PATCH /teams/{id}/members/{userId}` changes a role, `DELETE /teams/{id}/members/{userId}` removes a member (or leaves), `POST /teams/{id}/transfer-ownership` hands the team over.
 - **Invitations.** `POST /teams/{id}/invitations` emails a single-use link (7 days) for an email address and role; `GET` lists and `DELETE /teams/{id}/invitations/{id}` revokes them. The invitee accepts or declines with `POST /invitations/accept|decline`, signed in with the invited address. Re-inviting replaces the pending link.
@@ -92,6 +97,7 @@ The codebase was restructured into a modular monolith with Clean Architecture / 
 
 ### Removed
 
+- **Breaking:** the API's own password sign-in: `POST /auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/verify-email` (POST and GET), `/auth/verify-email/resend`, `/auth/password/forgot`, `/auth/password/reset` and `/auth/password/change`, along with API-issued JWT access and refresh tokens, bcrypt hashing and the verification and reset emails. `POST /auth/logout-all` stays and now refuses ID tokens of earlier sign-ins. `JWT_PRIVATE_KEY_PATH`, `JWT_PUBLIC_KEY_PATH` and `AUTH_PASSWORD_RESET_URL` are no longer read.
 - The old layer-based packages (`internal/domain`, `handler`, `service`, `repository`, `middleware`, `shared`) and the single shared `sqlc` package.
 - The old per-endpoint `tests/*.http` files, replaced by `tests/api.http`.
 
@@ -108,6 +114,9 @@ The codebase was restructured into a modular monolith with Clean Architecture / 
 
 ### Upgrade notes
 
+- **Firebase**: create a Firebase project with the Google and Email/Password providers enabled, set `FIREBASE_PROJECT_ID`, and (for passkey sign-in and deleting Firebase users) mount a service account key at `FIREBASE_CREDENTIALS_FILE`. Clients sign in with the Firebase SDK and call `POST /auth` (ID token in the `Authorization: Bearer` header) after each sign-in; see the README's *Signing in with Firebase*.
+- **Existing accounts** keep their data: the first Firebase sign-in with the same email links them, once Firebase reports the email verified (Google sign-in, or email verification in Firebase). Old passwords don't carry over; users sign in with Google or reset their password in Firebase once.
+- The old `sessions`, `email_verifications` and `password_resets` tables/collections and `password_hash` / `token_version` are no longer used but kept, so this release can be rolled back; a later migration removes them.
 - **Clients** must move to the new routes and the new error and token response shapes listed under [Changed](#changed).
 - **Clients reading `completed`** keep working. New clients should use `status`, since a todo can now also be `in_progress`, `blocked` or `cancelled`.
 - **Run the migrations** (`make migrate`, `migrate` in the image, or `MIGRATE_ON_START=true`) before starting the new version.

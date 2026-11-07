@@ -1,5 +1,6 @@
-// Package domain holds the identity entities (users, sessions, email
-// verifications) and their invariants. No HTTP, storage or crypto here.
+// Package domain holds the identity entities (users, passkeys) and their
+// invariants. Sign-in itself is Firebase Authentication's job; an account
+// here is the API's record of a Firebase user. No HTTP, storage or crypto here.
 package domain
 
 import (
@@ -10,42 +11,55 @@ import (
 )
 
 const (
-	MaxNameLength     = 100
-	MaxEmailLength    = 254
-	MinPasswordLength = 8
-	// MaxPasswordBytes is bcrypt's input limit; longer passwords would be
-	// silently truncated, so they are rejected instead.
-	MaxPasswordBytes = 72
+	MaxNameLength  = 100
+	MaxEmailLength = 254
 )
 
 type User struct {
-	ID              string
-	Name            string
-	Email           string
-	PasswordHash    string
+	ID    string
+	Name  string
+	Email string
+	// FirebaseUID links the account to its Firebase user. It is empty only
+	// for accounts from before Firebase that haven't signed in since.
+	FirebaseUID     string
 	EmailVerifiedAt *time.Time
-	// TokenVersion is embedded in access tokens; bumping it revokes them all.
-	TokenVersion int
-	CreatedAt    time.Time
+	// SessionsValidAfter revokes sign-ins: Firebase ID tokens of sign-ins
+	// before it are refused (log out everywhere).
+	SessionsValidAfter *time.Time
+	CreatedAt          time.Time
 }
 
-// NewUser builds a user from already-normalized name/email and a password hash.
-func NewUser(name, email, passwordHash string, now time.Time) (*User, error) {
-	name, err := NormalizeName(name)
+// NewUser builds the account of a Firebase user. A blank name falls back to
+// the local part of the email address.
+func NewUser(firebaseUID, name, email string, emailVerified bool, now time.Time) (*User, error) {
+	if firebaseUID == "" {
+		return nil, ErrInvalidIDToken
+	}
+	email, err := NormalizeEmail(email)
 	if err != nil {
 		return nil, err
 	}
-	email, err = NormalizeEmail(email)
-	if err != nil {
+	if strings.TrimSpace(name) == "" {
+		name, _, _ = strings.Cut(email, "@")
+	}
+	if name, err = NormalizeName(name); err != nil {
 		return nil, err
 	}
-	return &User{Name: name, Email: email, PasswordHash: passwordHash, CreatedAt: now.UTC()}, nil
+	u := &User{FirebaseUID: firebaseUID, Name: name, Email: email, CreatedAt: now.UTC()}
+	if emailVerified {
+		u.EmailVerifiedAt = &u.CreatedAt
+	}
+	return u, nil
 }
 
 func (u *User) EmailVerified() bool { return u.EmailVerifiedAt != nil }
 
-// HasPassword is false for accounts created before password auth existed.
-func (u *User) HasPassword() bool { return u.PasswordHash != "" }
+// SignInRevoked reports whether a sign-in at authTime was revoked by logging
+// out everywhere. Firebase's auth_time has second precision, so the cutoff
+// is compared at seconds too.
+func (u *User) SignInRevoked(authTime time.Time) bool {
+	return u.SessionsValidAfter != nil && authTime.Before(u.SessionsValidAfter.Truncate(time.Second))
+}
 
 func NormalizeName(name string) (string, error) {
 	name = strings.TrimSpace(name)
@@ -70,14 +84,4 @@ func NormalizeEmail(email string) (string, error) {
 		return "", ErrInvalidEmail
 	}
 	return email, nil
-}
-
-func ValidatePassword(password string) error {
-	switch {
-	case utf8.RuneCountInString(password) < MinPasswordLength:
-		return ErrWeakPassword
-	case len(password) > MaxPasswordBytes:
-		return ErrPasswordTooLong
-	}
-	return nil
 }

@@ -40,9 +40,10 @@ COPY cmd/migrate/mongo.yaml /app/cmd/migrate/mongo.yaml
 COPY cmd/migrate/seeds /app/cmd/migrate/seeds
 COPY internal/platform/database/mongodb/migrations/schema /app/internal/platform/database/mongodb/migrations/schema
 
-# Configuration comes from the environment (see .env.example). JWT keys must be
-# mounted into the container, e.g. at /run/secrets, and pointed to with
-# JWT_PRIVATE_KEY_PATH / JWT_PUBLIC_KEY_PATH.
+# Configuration comes from the environment (see .env.example). FIREBASE_PROJECT_ID
+# is required; an optional Firebase service account key (for passkey sign-in)
+# should be mounted, e.g. at /run/secrets, and pointed to with
+# FIREBASE_CREDENTIALS_FILE.
 ENV PORT=8000
 EXPOSE 8000
 

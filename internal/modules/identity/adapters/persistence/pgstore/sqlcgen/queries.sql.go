@@ -12,23 +12,6 @@ import (
 	"github.com/google/uuid"
 )
 
-const consumeEmailVerification = `-- name: ConsumeEmailVerification :one
-DELETE FROM email_verifications WHERE token_hash = $1 RETURNING user_id, token_hash, expires_at, created_at
-`
-
-// Single-use: the row is deleted as it is read.
-func (q *Queries) ConsumeEmailVerification(ctx context.Context, tokenHash string) (EmailVerification, error) {
-	row := q.db.QueryRow(ctx, consumeEmailVerification, tokenHash)
-	var i EmailVerification
-	err := row.Scan(
-		&i.UserID,
-		&i.TokenHash,
-		&i.ExpiresAt,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 const consumePasskeyChallenge = `-- name: ConsumePasskeyChallenge :one
 DELETE FROM passkey_challenges WHERE token_hash = $1 RETURNING token_hash, user_id, state, expires_at, created_at
 `
@@ -41,23 +24,6 @@ func (q *Queries) ConsumePasskeyChallenge(ctx context.Context, tokenHash string)
 		&i.TokenHash,
 		&i.UserID,
 		&i.State,
-		&i.ExpiresAt,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
-const consumePasswordReset = `-- name: ConsumePasswordReset :one
-DELETE FROM password_resets WHERE token_hash = $1 RETURNING user_id, token_hash, expires_at, created_at
-`
-
-// Single-use: the row is deleted as it is read.
-func (q *Queries) ConsumePasswordReset(ctx context.Context, tokenHash string) (PasswordReset, error) {
-	row := q.db.QueryRow(ctx, consumePasswordReset, tokenHash)
-	var i PasswordReset
-	err := row.Scan(
-		&i.UserID,
-		&i.TokenHash,
 		&i.ExpiresAt,
 		&i.CreatedAt,
 	)
@@ -117,56 +83,20 @@ func (q *Queries) CreatePasskeyChallenge(ctx context.Context, arg CreatePasskeyC
 	return err
 }
 
-const createSession = `-- name: CreateSession :one
-
-INSERT INTO sessions (user_id, family_id, token_hash, expires_at, created_at)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id, user_id, family_id, token_hash, expires_at, revoked_at, created_at
-`
-
-type CreateSessionParams struct {
-	UserID    uuid.UUID
-	FamilyID  uuid.UUID
-	TokenHash string
-	ExpiresAt time.Time
-	CreatedAt time.Time
-}
-
-// sessions
-func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error) {
-	row := q.db.QueryRow(ctx, createSession,
-		arg.UserID,
-		arg.FamilyID,
-		arg.TokenHash,
-		arg.ExpiresAt,
-		arg.CreatedAt,
-	)
-	var i Session
-	err := row.Scan(
-		&i.ID,
-		&i.UserID,
-		&i.FamilyID,
-		&i.TokenHash,
-		&i.ExpiresAt,
-		&i.RevokedAt,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 const createUser = `-- name: CreateUser :one
 
 
-INSERT INTO users (name, email, password_hash, created_at)
-VALUES ($1, $2, $3, $4)
-RETURNING id, name, email, created_at, password_hash, email_verified_at, token_version
+INSERT INTO users (name, email, firebase_uid, email_verified_at, created_at)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, name, email, created_at, password_hash, email_verified_at, token_version, firebase_uid, sessions_valid_after
 `
 
 type CreateUserParams struct {
-	Name         string
-	Email        string
-	PasswordHash string
-	CreatedAt    time.Time
+	Name            string
+	Email           string
+	FirebaseUid     *string
+	EmailVerifiedAt *time.Time
+	CreatedAt       time.Time
 }
 
 // Queries owned by the identity module. Regenerate with `make sqlc`.
@@ -175,7 +105,8 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 	row := q.db.QueryRow(ctx, createUser,
 		arg.Name,
 		arg.Email,
-		arg.PasswordHash,
+		arg.FirebaseUid,
+		arg.EmailVerifiedAt,
 		arg.CreatedAt,
 	)
 	var i User
@@ -187,17 +118,10 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.PasswordHash,
 		&i.EmailVerifiedAt,
 		&i.TokenVersion,
+		&i.FirebaseUid,
+		&i.SessionsValidAfter,
 	)
 	return i, err
-}
-
-const deleteEmailVerification = `-- name: DeleteEmailVerification :exec
-DELETE FROM email_verifications WHERE user_id = $1
-`
-
-func (q *Queries) DeleteEmailVerification(ctx context.Context, userID uuid.UUID) error {
-	_, err := q.db.Exec(ctx, deleteEmailVerification, userID)
-	return err
 }
 
 const deleteExpiredPasskeyChallenges = `-- name: DeleteExpiredPasskeyChallenges :exec
@@ -226,15 +150,6 @@ func (q *Queries) DeletePasskey(ctx context.Context, arg DeletePasskeyParams) (i
 		return 0, err
 	}
 	return result.RowsAffected(), nil
-}
-
-const deletePasswordReset = `-- name: DeletePasswordReset :exec
-DELETE FROM password_resets WHERE user_id = $1
-`
-
-func (q *Queries) DeletePasswordReset(ctx context.Context, userID uuid.UUID) error {
-	_, err := q.db.Exec(ctx, deletePasswordReset, userID)
-	return err
 }
 
 const deleteUser = `-- name: DeleteUser :execrows
@@ -267,36 +182,8 @@ func (q *Queries) DeleteUserPasskeys(ctx context.Context, userID uuid.UUID) erro
 	return err
 }
 
-const deleteUserSessions = `-- name: DeleteUserSessions :exec
-DELETE FROM sessions WHERE user_id = $1
-`
-
-func (q *Queries) DeleteUserSessions(ctx context.Context, userID uuid.UUID) error {
-	_, err := q.db.Exec(ctx, deleteUserSessions, userID)
-	return err
-}
-
-const getSessionByTokenHash = `-- name: GetSessionByTokenHash :one
-SELECT id, user_id, family_id, token_hash, expires_at, revoked_at, created_at FROM sessions WHERE token_hash = $1
-`
-
-func (q *Queries) GetSessionByTokenHash(ctx context.Context, tokenHash string) (Session, error) {
-	row := q.db.QueryRow(ctx, getSessionByTokenHash, tokenHash)
-	var i Session
-	err := row.Scan(
-		&i.ID,
-		&i.UserID,
-		&i.FamilyID,
-		&i.TokenHash,
-		&i.ExpiresAt,
-		&i.RevokedAt,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, name, email, created_at, password_hash, email_verified_at, token_version FROM users WHERE email = $1
+SELECT id, name, email, created_at, password_hash, email_verified_at, token_version, firebase_uid, sessions_valid_after FROM users WHERE email = $1
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
@@ -310,12 +197,35 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.PasswordHash,
 		&i.EmailVerifiedAt,
 		&i.TokenVersion,
+		&i.FirebaseUid,
+		&i.SessionsValidAfter,
+	)
+	return i, err
+}
+
+const getUserByFirebaseUID = `-- name: GetUserByFirebaseUID :one
+SELECT id, name, email, created_at, password_hash, email_verified_at, token_version, firebase_uid, sessions_valid_after FROM users WHERE firebase_uid = $1
+`
+
+func (q *Queries) GetUserByFirebaseUID(ctx context.Context, firebaseUid *string) (User, error) {
+	row := q.db.QueryRow(ctx, getUserByFirebaseUID, firebaseUid)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Email,
+		&i.CreatedAt,
+		&i.PasswordHash,
+		&i.EmailVerifiedAt,
+		&i.TokenVersion,
+		&i.FirebaseUid,
+		&i.SessionsValidAfter,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, name, email, created_at, password_hash, email_verified_at, token_version FROM users WHERE id = $1
+SELECT id, name, email, created_at, password_hash, email_verified_at, token_version, firebase_uid, sessions_valid_after FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
@@ -329,16 +239,24 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 		&i.PasswordHash,
 		&i.EmailVerifiedAt,
 		&i.TokenVersion,
+		&i.FirebaseUid,
+		&i.SessionsValidAfter,
 	)
 	return i, err
 }
 
-const incrementTokenVersion = `-- name: IncrementTokenVersion :execrows
-UPDATE users SET token_version = token_version + 1 WHERE id = $1
+const linkFirebaseUID = `-- name: LinkFirebaseUID :execrows
+UPDATE users SET firebase_uid = $2 WHERE id = $1 AND firebase_uid IS NULL
 `
 
-func (q *Queries) IncrementTokenVersion(ctx context.Context, id uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, incrementTokenVersion, id)
+type LinkFirebaseUIDParams struct {
+	ID          uuid.UUID
+	FirebaseUid *string
+}
+
+// Only links an account that has no Firebase user yet.
+func (q *Queries) LinkFirebaseUID(ctx context.Context, arg LinkFirebaseUIDParams) (int64, error) {
+	result, err := q.db.Exec(ctx, linkFirebaseUID, arg.ID, arg.FirebaseUid)
 	if err != nil {
 		return 0, err
 	}
@@ -415,121 +333,19 @@ func (q *Queries) RecordPasskeyUse(ctx context.Context, arg RecordPasskeyUsePara
 	return result.RowsAffected(), nil
 }
 
-const revokeSession = `-- name: RevokeSession :execrows
-UPDATE sessions SET revoked_at = $2 WHERE id = $1 AND revoked_at IS NULL
-`
-
-type RevokeSessionParams struct {
-	ID        uuid.UUID
-	RevokedAt *time.Time
-}
-
-// Conditional on revoked_at IS NULL, so exactly one concurrent caller wins.
-func (q *Queries) RevokeSession(ctx context.Context, arg RevokeSessionParams) (int64, error) {
-	result, err := q.db.Exec(ctx, revokeSession, arg.ID, arg.RevokedAt)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const revokeSessionFamily = `-- name: RevokeSessionFamily :exec
-UPDATE sessions SET revoked_at = $2 WHERE family_id = $1 AND revoked_at IS NULL
-`
-
-type RevokeSessionFamilyParams struct {
-	FamilyID  uuid.UUID
-	RevokedAt *time.Time
-}
-
-func (q *Queries) RevokeSessionFamily(ctx context.Context, arg RevokeSessionFamilyParams) error {
-	_, err := q.db.Exec(ctx, revokeSessionFamily, arg.FamilyID, arg.RevokedAt)
-	return err
-}
-
-const revokeUserSessions = `-- name: RevokeUserSessions :exec
-UPDATE sessions SET revoked_at = $2 WHERE user_id = $1 AND revoked_at IS NULL
+const revokeUserSessions = `-- name: RevokeUserSessions :execrows
+UPDATE users SET sessions_valid_after = $2 WHERE id = $1
 `
 
 type RevokeUserSessionsParams struct {
-	UserID    uuid.UUID
-	RevokedAt *time.Time
+	ID                 uuid.UUID
+	SessionsValidAfter *time.Time
 }
 
-func (q *Queries) RevokeUserSessions(ctx context.Context, arg RevokeUserSessionsParams) error {
-	_, err := q.db.Exec(ctx, revokeUserSessions, arg.UserID, arg.RevokedAt)
-	return err
-}
-
-const setPasswordHash = `-- name: SetPasswordHash :execrows
-UPDATE users SET password_hash = $2 WHERE id = $1
-`
-
-type SetPasswordHashParams struct {
-	ID           uuid.UUID
-	PasswordHash string
-}
-
-func (q *Queries) SetPasswordHash(ctx context.Context, arg SetPasswordHashParams) (int64, error) {
-	result, err := q.db.Exec(ctx, setPasswordHash, arg.ID, arg.PasswordHash)
+func (q *Queries) RevokeUserSessions(ctx context.Context, arg RevokeUserSessionsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeUserSessions, arg.ID, arg.SessionsValidAfter)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
-}
-
-const upsertEmailVerification = `-- name: UpsertEmailVerification :exec
-
-INSERT INTO email_verifications (user_id, token_hash, expires_at, created_at)
-VALUES ($1, $2, $3, $4)
-ON CONFLICT (user_id) DO UPDATE
-SET token_hash = EXCLUDED.token_hash,
-    expires_at = EXCLUDED.expires_at,
-    created_at = EXCLUDED.created_at
-`
-
-type UpsertEmailVerificationParams struct {
-	UserID    uuid.UUID
-	TokenHash string
-	ExpiresAt time.Time
-	CreatedAt time.Time
-}
-
-// email verifications
-func (q *Queries) UpsertEmailVerification(ctx context.Context, arg UpsertEmailVerificationParams) error {
-	_, err := q.db.Exec(ctx, upsertEmailVerification,
-		arg.UserID,
-		arg.TokenHash,
-		arg.ExpiresAt,
-		arg.CreatedAt,
-	)
-	return err
-}
-
-const upsertPasswordReset = `-- name: UpsertPasswordReset :exec
-
-INSERT INTO password_resets (user_id, token_hash, expires_at, created_at)
-VALUES ($1, $2, $3, $4)
-ON CONFLICT (user_id) DO UPDATE
-SET token_hash = EXCLUDED.token_hash,
-    expires_at = EXCLUDED.expires_at,
-    created_at = EXCLUDED.created_at
-`
-
-type UpsertPasswordResetParams struct {
-	UserID    uuid.UUID
-	TokenHash string
-	ExpiresAt time.Time
-	CreatedAt time.Time
-}
-
-// password resets (same shape and rules as email verifications)
-func (q *Queries) UpsertPasswordReset(ctx context.Context, arg UpsertPasswordResetParams) error {
-	_, err := q.db.Exec(ctx, upsertPasswordReset,
-		arg.UserID,
-		arg.TokenHash,
-		arg.ExpiresAt,
-		arg.CreatedAt,
-	)
-	return err
 }

@@ -13,14 +13,11 @@ import (
 func TestContract(t *testing.T) {
 	storetest.Run(t, func(t *testing.T) storetest.Stores {
 		return storetest.Stores{
-			Users:          memstore.NewUsers(),
-			Sessions:       memstore.NewSessions(),
-			Verifications:  memstore.NewVerifications(),
-			PasswordResets: memstore.NewPasswordResets(),
-			Passkeys:       memstore.NewPasskeys(),
-			Challenges:     memstore.NewPasskeyChallenges(),
-			Tx:             tx.None{},
-			MissingID:      "missing",
+			Users:      memstore.NewUsers(),
+			Passkeys:   memstore.NewPasskeys(),
+			Challenges: memstore.NewPasskeyChallenges(),
+			Tx:         tx.None{},
+			MissingID:  "missing",
 		}
 	})
 }

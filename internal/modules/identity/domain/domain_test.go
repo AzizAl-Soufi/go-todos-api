@@ -41,47 +41,39 @@ func TestNormalizeName(t *testing.T) {
 	}
 }
 
-func TestValidatePassword(t *testing.T) {
-	cases := map[string]error{
-		"1234567":               ErrWeakPassword,
-		"12345678":              nil,
-		strings.Repeat("x", 72): nil,
-		strings.Repeat("x", 73): ErrPasswordTooLong,
-		strings.Repeat("ü", 37): ErrPasswordTooLong, // 74 bytes: bcrypt's limit is in bytes
-	}
-	for pw, want := range cases {
-		if err := ValidatePassword(pw); !errors.Is(err, want) && !(want == nil && err == nil) {
-			t.Errorf("ValidatePassword(len %d) = %v, want %v", len(pw), err, want)
-		}
-	}
-}
-
 func TestNewUser(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.FixedZone("x", 3600))
-	u, err := NewUser(" Ann ", "ANN@example.com", "hash", now)
+	u, err := NewUser("uid-1", " Ann ", "ANN@example.com", false, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u.Name != "Ann" || u.Email != "ann@example.com" || u.PasswordHash != "hash" || u.CreatedAt.Location() != time.UTC {
+	if u.FirebaseUID != "uid-1" || u.Name != "Ann" || u.Email != "ann@example.com" || u.CreatedAt.Location() != time.UTC || u.EmailVerified() {
 		t.Fatalf("unexpected user: %+v", u)
 	}
-	if u.EmailVerified() || !u.HasPassword() || u.TokenVersion != 0 {
-		t.Fatalf("unexpected state: %+v", u)
+	if u, _ := NewUser("uid-2", " ", "bo.smith@example.com", true, now); u.Name != "bo.smith" || !u.EmailVerified() {
+		t.Fatalf("name falls back to the email's local part, verified as given: %+v", u)
+	}
+	if _, err := NewUser("", "Ann", "ann@example.com", true, now); !errors.Is(err, ErrInvalidIDToken) {
+		t.Fatalf("no Firebase UID: err = %v", err)
+	}
+	if _, err := NewUser("uid", "Ann", "nope", true, now); !errors.Is(err, ErrInvalidEmail) {
+		t.Fatalf("bad email: err = %v", err)
 	}
 }
 
-func TestSessionAndVerificationExpiry(t *testing.T) {
-	now := time.Now()
-	s := Session{ExpiresAt: now}
-	if !s.Expired(now) || s.Expired(now.Add(-time.Nanosecond)) {
-		t.Fatal("session expiry boundary is wrong")
+func TestSignInRevoked(t *testing.T) {
+	cutoff := time.Date(2026, 1, 1, 10, 0, 0, 500_000_000, time.UTC)
+	u := User{}
+	if u.SignInRevoked(cutoff.Add(-time.Hour)) {
+		t.Fatal("nothing is revoked before logging out everywhere")
 	}
-	if s.Revoked() {
-		t.Fatal("new session must not be revoked")
+	u.SessionsValidAfter = &cutoff
+	if !u.SignInRevoked(cutoff.Add(-time.Second)) {
+		t.Fatal("an earlier sign-in must be revoked")
 	}
-	v := OneTimeToken{ExpiresAt: now}
-	if !v.Expired(now) || v.Expired(now.Add(-time.Second)) {
-		t.Fatal("verification expiry boundary is wrong")
+	// auth_time has whole seconds: a sign-in in the same second still counts.
+	if u.SignInRevoked(cutoff.Truncate(time.Second)) || u.SignInRevoked(cutoff.Add(time.Second)) {
+		t.Fatal("a sign-in in or after the cutoff second must stay valid")
 	}
 }
 

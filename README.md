@@ -6,108 +6,99 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md) · Changes: [CHANGELOG.md](CHANGELOG.
 
 ## Table of Contents
 
-- [Stack](#stack)
-- [Getting Started](#getting-started)
-  - [Run](#run)
-  - [Configuration](#configuration)
-- [Architecture](#architecture)
-- [Authentication](#authentication)
-  - [Access and refresh tokens](#access-and-refresh-tokens)
-  - [Verifying email](#verifying-email)
-  - [Resetting and changing passwords](#resetting-and-changing-passwords)
-  - [Rate limiting](#rate-limiting)
-- [Organizing Todos](#organizing-todos)
-  - [Collections, projects and the inbox](#collections-projects-and-the-inbox)
-  - [Todo fields](#todo-fields)
-  - [Archiving](#archiving)
-  - [Progress](#progress)
-- [Teams and Roles](#teams-and-roles)
-  - [Teams and team content](#teams-and-team-content)
-  - [Roles](#roles)
-  - [Invitation flow](#invitation-flow)
-  - [Audit logs](#audit-logs)
-- [Database Schema](#database-schema)
-  - [Enums](#enums)
-  - [PostgreSQL tables](#postgresql-tables)
-  - [MongoDB collections](#mongodb-collections)
-  - [Migrations](#migrations)
-- [Errors](#errors)
-  - [Error format](#error-format)
-  - [Common error codes](#common-error-codes)
-- [Endpoints](#endpoints)
-  - [Conventions](#conventions)
-  - [Health](#health)
-    - [GET `/health`](#get-health)
-  - [Auth](#auth)
-    - [POST `/auth/register`](#post-authregister)
-    - [POST `/auth/login`](#post-authlogin)
-    - [POST `/auth/refresh`](#post-authrefresh)
-    - [POST `/auth/logout`](#post-authlogout)
-    - [POST `/auth/logout-all`](#post-authlogout-all)
-  - [Email verification](#email-verification)
-    - [POST `/auth/verify-email`](#post-authverify-email)
-    - [GET `/auth/verify-email?token={token}`](#get-authverify-emailtokentoken)
-    - [POST `/auth/verify-email/resend`](#post-authverify-emailresend)
-  - [Password](#password)
-    - [POST `/auth/password/forgot`](#post-authpasswordforgot)
-    - [POST `/auth/password/reset`](#post-authpasswordreset)
-    - [POST `/auth/password/change`](#post-authpasswordchange)
-  - [Passkeys](#passkeys-1)
-    - [POST `/me/passkeys/options`](#post-mepasskeysoptions)
-    - [POST `/me/passkeys`](#post-mepasskeys)
-    - [GET `/me/passkeys`](#get-mepasskeys)
-    - [DELETE `/me/passkeys/{id}`](#delete-mepasskeysid)
-    - [POST `/auth/passkeys/login/options`](#post-authpasskeysloginoptions)
-    - [POST `/auth/passkeys/login`](#post-authpasskeyslogin)
-  - [Account](#account)
-    - [GET `/me`](#get-me)
-    - [DELETE `/me`](#delete-me)
-  - [Todos](#todos)
-    - [POST `/todos`](#post-todos)
-    - [GET `/todos`](#get-todos)
-    - [GET `/todos/{id}`](#get-todosid)
-    - [PATCH `/todos/{id}`](#patch-todosid)
-    - [DELETE `/todos/{id}`](#delete-todosid)
-  - [Projects](#projects)
-    - [POST `/projects`](#post-projects)
-    - [GET `/projects`](#get-projects)
-    - [GET `/projects/{id}`](#get-projectsid)
-    - [PATCH `/projects/{id}`](#patch-projectsid)
-    - [DELETE `/projects/{id}`](#delete-projectsid)
-  - [Collections](#collections)
-    - [POST `/collections`](#post-collections)
-    - [GET `/collections`](#get-collections)
-    - [GET `/collections/{id}`](#get-collectionsid)
-    - [PATCH `/collections/{id}`](#patch-collectionsid)
-    - [DELETE `/collections/{id}`](#delete-collectionsid)
-  - [Teams](#teams)
-    - [POST `/teams`](#post-teams)
-    - [GET `/teams`](#get-teams)
-    - [GET `/teams/{id}`](#get-teamsid)
-    - [PATCH `/teams/{id}`](#patch-teamsid)
-    - [DELETE `/teams/{id}`](#delete-teamsid)
-    - [PATCH `/teams/{id}/members/{userId}`](#patch-teamsidmembersuserid)
-    - [DELETE `/teams/{id}/members/{userId}`](#delete-teamsidmembersuserid)
-    - [POST `/teams/{id}/transfer-ownership`](#post-teamsidtransfer-ownership)
-  - [Invitations](#invitations)
-    - [POST `/teams/{id}/invitations`](#post-teamsidinvitations)
-    - [GET `/teams/{id}/invitations`](#get-teamsidinvitations)
-    - [DELETE `/teams/{id}/invitations/{invitationId}`](#delete-teamsidinvitationsinvitationid)
-    - [POST `/invitations/accept`](#post-invitationsaccept)
-    - [POST `/invitations/decline`](#post-invitationsdecline)
-  - [Audit](#audit)
-    - [GET `/teams/{id}/audit-log`](#get-teamsidaudit-log)
-    - [GET `/me/audit-log`](#get-meaudit-log)
-- [Testing](#testing)
-  - [Unit tests](#unit-tests)
-  - [Integration tests](#integration-tests)
-- [TO-DO](#to-do)
+- [Todos Stateless API](#todos-stateless-api)
+  - [Table of Contents](#table-of-contents)
+  - [Stack](#stack)
+  - [Getting Started](#getting-started)
+    - [Run](#run)
+    - [Configuration](#configuration)
+  - [Architecture](#architecture)
+  - [Authentication](#authentication)
+    - [Signing in with Firebase](#signing-in-with-firebase)
+    - [Accounts from before Firebase](#accounts-from-before-firebase)
+    - [Passkeys](#passkeys)
+    - [Rate limiting](#rate-limiting)
+  - [Organizing Todos](#organizing-todos)
+    - [Collections, projects and the inbox](#collections-projects-and-the-inbox)
+    - [Todo fields](#todo-fields)
+    - [Archiving](#archiving)
+    - [Progress](#progress)
+  - [Teams and Roles](#teams-and-roles)
+    - [Teams and team content](#teams-and-team-content)
+    - [Roles](#roles)
+    - [Invitation flow](#invitation-flow)
+    - [Audit logs](#audit-logs)
+  - [Database Schema](#database-schema)
+    - [Enums](#enums)
+    - [PostgreSQL tables](#postgresql-tables)
+    - [MongoDB collections](#mongodb-collections)
+    - [Migrations](#migrations)
+  - [Errors](#errors)
+    - [Error format](#error-format)
+    - [Common error codes](#common-error-codes)
+  - [Endpoints](#endpoints)
+    - [Conventions](#conventions)
+    - [Health](#health)
+      - [GET `/health`](#get-health)
+    - [Auth](#auth)
+      - [POST `/auth`](#post-auth)
+      - [POST `/auth/logout-all`](#post-authlogout-all)
+    - [Passkeys](#passkeys-1)
+      - [POST `/me/passkeys/options`](#post-mepasskeysoptions)
+      - [POST `/me/passkeys`](#post-mepasskeys)
+      - [GET `/me/passkeys`](#get-mepasskeys)
+      - [DELETE `/me/passkeys/{id}`](#delete-mepasskeysid)
+      - [POST `/auth/passkeys/login/options`](#post-authpasskeysloginoptions)
+      - [POST `/auth/passkeys/login`](#post-authpasskeyslogin)
+    - [Account](#account)
+      - [GET `/me`](#get-me)
+      - [DELETE `/me`](#delete-me)
+    - [Todos](#todos)
+      - [POST `/todos`](#post-todos)
+      - [GET `/todos`](#get-todos)
+      - [GET `/todos/{id}`](#get-todosid)
+      - [PATCH `/todos/{id}`](#patch-todosid)
+      - [DELETE `/todos/{id}`](#delete-todosid)
+    - [Projects](#projects)
+      - [POST `/projects`](#post-projects)
+      - [GET `/projects`](#get-projects)
+      - [GET `/projects/{id}`](#get-projectsid)
+      - [PATCH `/projects/{id}`](#patch-projectsid)
+      - [DELETE `/projects/{id}`](#delete-projectsid)
+    - [Collections](#collections)
+      - [POST `/collections`](#post-collections)
+      - [GET `/collections`](#get-collections)
+      - [GET `/collections/{id}`](#get-collectionsid)
+      - [PATCH `/collections/{id}`](#patch-collectionsid)
+      - [DELETE `/collections/{id}`](#delete-collectionsid)
+    - [Teams](#teams)
+      - [POST `/teams`](#post-teams)
+      - [GET `/teams`](#get-teams)
+      - [GET `/teams/{id}`](#get-teamsid)
+      - [PATCH `/teams/{id}`](#patch-teamsid)
+      - [DELETE `/teams/{id}`](#delete-teamsid)
+      - [PATCH `/teams/{id}/members/{userId}`](#patch-teamsidmembersuserid)
+      - [DELETE `/teams/{id}/members/{userId}`](#delete-teamsidmembersuserid)
+      - [POST `/teams/{id}/transfer-ownership`](#post-teamsidtransfer-ownership)
+    - [Invitations](#invitations)
+      - [POST `/teams/{id}/invitations`](#post-teamsidinvitations)
+      - [GET `/teams/{id}/invitations`](#get-teamsidinvitations)
+      - [DELETE `/teams/{id}/invitations/{invitationId}`](#delete-teamsidinvitationsinvitationid)
+      - [POST `/invitations/accept`](#post-invitationsaccept)
+      - [POST `/invitations/decline`](#post-invitationsdecline)
+    - [Audit](#audit)
+      - [GET `/teams/{id}/audit-log`](#get-teamsidaudit-log)
+      - [GET `/me/audit-log`](#get-meaudit-log)
+  - [Testing](#testing)
+    - [Unit tests](#unit-tests)
+    - [Integration tests](#integration-tests)
+  - [TO-DO](#to-do)
 
 ## Stack
 
 - Go (toolchain pinned in `go.mod`), `net/http` method patterns
 - MongoDB (driver v2) / PostgreSQL (`pgx/v5` + `sqlc` + embedded `goose` migrations) / memory
-- `golang-jwt/jwt/v5` (RS256 only), `bcrypt` password hashing
+- Firebase Authentication (`firebase.google.com/go/v4` Admin SDK) for sign-in; `go-webauthn/webauthn` for passkeys
 - Viper for env config
 
 ## Getting Started
@@ -127,75 +118,81 @@ DB_TYPE=mongo DATABASE_URI=mongodb://localhost:27017 DATABASE_NAME=todos make mi
 DB_TYPE=mongo DATABASE_URI=mongodb://localhost:27017 DATABASE_NAME=todos make run
 ```
 
-`JWT_PRIVATE_KEY_PATH` and `JWT_PUBLIC_KEY_PATH` (PEM RSA key pair) are required in all modes. Without `SMTP_HOST`, verification and password reset emails are written to the log instead of being sent. `tests/api.http` walks through every endpoint.
+`FIREBASE_PROJECT_ID` is required in all modes: sign-in happens in Firebase Authentication (see [Signing in with Firebase](#signing-in-with-firebase)). `FIREBASE_CREDENTIALS_FILE` (a service account key) is optional and enables passkey sign-in. Without `SMTP_HOST`, team invitation emails are written to the log instead of being sent. `tests/api.http` walks through every endpoint.
 
 ### Configuration
 
 All settings are environment variables (a `.env` file in the working directory is read too); see `.env.example`.
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `PORT` | – | HTTP port |
-| `DEBUG` | `false` | Debug logging |
-| `APP_BASE_URL` | `http://localhost:8000` | Public API URL, used in email verification links |
-| `MIGRATE_ON_START` | `false` | Apply pending migrations at startup |
-| `DB_TYPE` | `memory` | `memory`, `mongo` or `postgres` |
-| `DATABASE_URI` | – | Connection string (mongo, postgres) |
-| `DATABASE_NAME` | – | Database name (mongo) |
-| `MONGO_MIGRATIONS_CONFIG` | `./cmd/migrate/mongo.yaml` | MongoDB migrator config |
-| `JWT_PRIVATE_KEY_PATH` | – | RSA private key (PEM) |
-| `JWT_PUBLIC_KEY_PATH` | – | RSA public key (PEM) |
-| `AUTH_REQUIRE_VERIFIED_EMAIL` | `false` | Block the todos API until the email is verified |
-| `AUTH_RATE_LIMIT_PER_MINUTE` | `20` | Per-IP budget for the rate-limited auth endpoints |
-| `AUTH_RATE_LIMIT_BURST` | `10` | Burst on top of that budget |
-| `AUTH_PASSWORD_RESET_URL` | `APP_BASE_URL` + `/reset-password` | Page the reset email links to (see [Resetting and changing passwords](#resetting-and-changing-passwords)) |
-| `PASSKEY_RP_ID` | host of `APP_BASE_URL` | Domain passkeys are bound to: the site's host or a parent domain of it (see [Passkeys](#passkeys)) |
-| `PASSKEY_RP_NAME` | `Todos` | Name the browser shows when creating a passkey |
-| `PASSKEY_ORIGINS` | origin of `APP_BASE_URL` | Comma-separated origins (`https://app.example.com`) of the pages allowed to use passkeys |
-| `SMTP_HOST` | – | SMTP server; empty means emails are logged |
-| `SMTP_PORT` | `587` | SMTP port (STARTTLS when offered) |
-| `SMTP_USERNAME`, `SMTP_PASSWORD` | – | SMTP credentials |
-| `SMTP_FROM` | – | Sender address |
+| Key                              | Default                    | Description                                                                                                       |
+| -------------------------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `PORT`                           | –                          | HTTP port                                                                                                         |
+| `DEBUG`                          | `false`                    | Debug logging                                                                                                     |
+| `APP_BASE_URL`                   | `http://localhost:8000`    | Public URL, used in invitation links and as the passkey default                                                   |
+| `MIGRATE_ON_START`               | `false`                    | Apply pending migrations at startup                                                                               |
+| `DB_TYPE`                        | `memory`                   | `memory`, `mongo` or `postgres`                                                                                   |
+| `DATABASE_URI`                   | –                          | Connection string (mongo, postgres)                                                                               |
+| `DATABASE_NAME`                  | –                          | Database name (mongo)                                                                                             |
+| `MONGO_MIGRATIONS_CONFIG`        | `./cmd/migrate/mongo.yaml` | MongoDB migrator config                                                                                           |
+| `FIREBASE_PROJECT_ID`            | –                          | Firebase project whose ID tokens the API accepts (required)                                                       |
+| `FIREBASE_CREDENTIALS_FILE`      | –                          | Service account JSON key. Enables passkey sign-in (custom tokens) and deleting the Firebase user with the account |
+| `AUTH_REQUIRE_VERIFIED_EMAIL`    | `false`                    | Block the todos API until the email is verified                                                                   |
+| `AUTH_RATE_LIMIT_PER_MINUTE`     | `20`                       | Per-IP budget for the rate-limited auth endpoints                                                                 |
+| `AUTH_RATE_LIMIT_BURST`          | `10`                       | Burst on top of that budget                                                                                       |
+| `PASSKEY_RP_ID`                  | host of `APP_BASE_URL`     | Domain passkeys are bound to: the site's host or a parent domain of it (see [Passkeys](#passkeys))                |
+| `PASSKEY_RP_NAME`                | `Todos`                    | Name the browser shows when creating a passkey                                                                    |
+| `PASSKEY_ORIGINS`                | origin of `APP_BASE_URL`   | Comma-separated origins (`https://app.example.com`) of the pages allowed to use passkeys                          |
+| `SMTP_HOST`                      | –                          | SMTP server for invitation emails; empty means they are logged                                                    |
+| `SMTP_PORT`                      | `587`                      | SMTP port (STARTTLS when offered)                                                                                 |
+| `SMTP_USERNAME`, `SMTP_PASSWORD` | –                          | SMTP credentials                                                                                                  |
+| `SMTP_FROM`                      | –                          | Sender address                                                                                                    |
 
 ## Architecture
 
-A **feature-based modular monolith**: `internal/modules/identity` (accounts, passwords, sessions, email verification, authentication), `internal/modules/todos` (todos, projects, collections), `internal/modules/teams` (teams, roles, invitations) and `internal/modules/audit` (team and security logs), on top of a shared kernel in `internal/platform`. Inside each module, **Clean Architecture / Hexagonal** layering with **CQRS** in the application layer: `domain` → `application` (ports, plus `command/` for writes and `query/` for reads, one handler per use case) → `transport/httpapi` (driving: run a command, read the result with a query) and `adapters/` (driven: persistence, security, mail, other modules). Modules talk only through each other's public API, and only `cmd/api` knows the concrete adapters.
+A **feature-based modular monolith**: `internal/modules/identity` (accounts of Firebase users, passkeys, authentication), `internal/modules/todos` (todos, projects, collections), `internal/modules/teams` (teams, roles, invitations) and `internal/modules/audit` (team and security logs), on top of a shared kernel in `internal/platform`. Inside each module, **Clean Architecture / Hexagonal** layering with **CQRS** in the application layer: `domain` → `application` (ports, plus `command/` for writes and `query/` for reads, one handler per use case) → `transport/httpapi` (driving: run a command, read the result with a query) and `adapters/` (driven: persistence, Firebase, WebAuthn, mail, other modules). Modules talk only through each other's public API, and only `cmd/api` knows the concrete adapters.
 
 See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the layout, dependency rules, request lifecycle, transactions, persistence and testing strategy, and how to add a use case, module or storage backend.
 
 ## Authentication
 
-### Access and refresh tokens
+### Signing in with Firebase
 
-- **Passwords**: bcrypt (cost 12), 8–72 bytes. Login compares against a dummy hash for unknown emails, so timing doesn't reveal which accounts exist.
-- **Access tokens**: RS256 JWT, 15 min, claims `sub`, `ver`, `token_type=access`. Only RS256 is accepted (no `none`, no HS256).
-- **Revocation checks**: every authenticated request loads the user and compares the token's `ver` with the user's token version. Logout-all, password reset and change, and account deletion therefore take effect immediately.
-- **Refresh tokens**: opaque random 256-bit strings, stored only as SHA-256 hashes, valid 7 days. Each refresh rotates the token: the old session is revoked (conditionally, so concurrent refreshes have exactly one winner) and a new one is created in the same family. Presenting an already-used token revokes the whole family (reuse detection).
-- **Logout** revokes the refresh token's family (that login). **Logout-all** bumps the token version and revokes every session.
+Sign-in happens in [Firebase Authentication](https://firebase.google.com/docs/auth): the client uses the Firebase SDK to sign in with **Google** or **email and password**, and Firebase takes care of passwords, email verification and password reset. The API never sees a password.
 
-### Verifying email
+1. After every sign-in, the client calls `POST /auth` with its Firebase ID token in the `Authorization: Bearer` header. The first time, this creates the account (`201`); afterwards it finds it (`200`) and records the sign-in.
+2. Every other call carries the ID token: `Authorization: Bearer <Firebase ID token>`. Get a fresh one with `user.getIdToken()`; the SDK refreshes it hourly.
 
-A single-use token (hashed, 24 h) is emailed on registration and on resend; resending invalidates the previous link. With `AUTH_REQUIRE_VERIFIED_EMAIL=true` the todos API answers 403 until the email is verified. Completing a password reset also verifies the address, since the user just proved they receive mail there.
+```js
+import { getAuth, signInWithPopup, GoogleAuthProvider, signInWithEmailAndPassword } from "firebase/auth";
 
-### Resetting and changing passwords
+const auth = getAuth(app);
+const { user } = await signInWithPopup(auth, new GoogleAuthProvider());
+// or: await signInWithEmailAndPassword(auth, email, password)
+await fetch(`${API}/auth`, { method: "POST", headers: { Authorization: `Bearer ${await user.getIdToken()}` } });
+// later calls: headers: { Authorization: `Bearer ${await auth.currentUser.getIdToken()}` }
+```
 
-- **Forgot**: `POST /auth/password/forgot` always answers 202, whether or not the account exists. For an existing account it stores a single-use reset token (hashed, 1 h; a new request replaces the previous one) and emails a link to `AUTH_PASSWORD_RESET_URL?token=…`. The email is sent after the response, so SMTP latency can't reveal which addresses have accounts.
-- **Reset**: the page behind that link asks for a new password and calls `POST /auth/password/reset` with the token. The API has no HTML pages, so point `AUTH_PASSWORD_RESET_URL` at your client.
-- **Change**: a logged-in user calls `POST /auth/password/change` with the current and new password and gets a fresh token pair back.
-- Both reset and change revoke every session and access token issued before, and cancel any pending reset link.
-- Accounts created before password auth have no password. They can't log in or change their password, but the reset flow gives them one.
+- **Verification**: the API checks each ID token's signature (Google's keys), expiry and project (`FIREBASE_PROJECT_ID`), then looks up the account by Firebase UID, on every request. An ID token of a Firebase user without an account gets `401 ACCOUNT_NOT_REGISTERED`.
+- **Email verification** is Firebase's (`sendEmailVerification`). The API takes `email_verified` from the token and records it on the account; `AUTH_REQUIRE_VERIFIED_EMAIL=true` still blocks the todos, teams and audit endpoints until it's true.
+- **Password reset and change** are Firebase's (`sendPasswordResetEmail`, `updatePassword`).
+- **Log out** is the client's `signOut()`. **Log out everywhere** (`POST /auth/logout-all`) makes the API refuse every ID token from a sign-in before now, refreshed ones included (Firebase keeps the original `auth_time`), so every device has to sign in again.
+- **Deleting the account** (`DELETE /me`) also deletes the Firebase user when `FIREBASE_CREDENTIALS_FILE` is set. Without it, the client should delete the Firebase user itself (`user.delete()`); until then, signing in again would create a new, empty account.
+
+### Accounts from before Firebase
+
+Accounts created with the earlier email-and-password API have no Firebase user. The first time someone signs in to Firebase with the same email address, the API links that Firebase user to the existing account (same todos, teams and history), but only if Firebase says the email is **verified**. Google accounts are; email-and-password users verify through Firebase first (otherwise `409 EMAIL_NOT_VERIFIED`). This keeps someone who registers another person's address in Firebase from taking over their account. Old passwords are not carried over: users sign in with Google, or use Firebase's password reset once.
 
 ### Passkeys
 
 Users can sign in with a **passkey** (WebAuthn) instead of their email and password. A passkey is a key pair kept by the device or password manager (Touch ID, Windows Hello, a phone, a security key); the API stores only the public key and checks a signature, so there is nothing to phish or leak.
 
 - **Adding one** (signed in): `POST /me/passkeys/options` returns the options for `navigator.credentials.create()` and a single-use `token`; the client sends the browser's answer back to `POST /me/passkeys` with that token.
-- **Signing in** (no email needed): `POST /auth/passkeys/login/options` returns the options for `navigator.credentials.get()`; the browser lets the user pick a passkey, and `POST /auth/passkeys/login` returns the same user and tokens as a password login.
+- **Signing in** (no email needed): `POST /auth/passkeys/login/options` returns the options for `navigator.credentials.get()`; the browser lets the user pick a passkey, and `POST /auth/passkeys/login` returns a **Firebase custom token**. The client exchanges it with `signInWithCustomToken()` and from then on uses Firebase ID tokens as after any other sign-in. Minting custom tokens needs `FIREBASE_CREDENTIALS_FILE`; without it passkey sign-in answers `403 PASSKEY_LOGIN_DISABLED` (adding and listing passkeys still work). An account from before Firebase must sign in with Firebase once before its passkeys work (`409 ACCOUNT_NOT_LINKED`).
 - Passkeys are discoverable and require user verification (biometrics or device PIN), so one passkey stands in for both factors. Existing passkeys are excluded when adding another, so a device can't register twice.
 - Each challenge is single-use and valid 5 minutes, and is tied to its purpose (a sign-in challenge can't add a passkey, and one account's can't add a passkey to another). Only a hash of the challenge token is stored.
 - A sign counter that goes backwards (a possibly cloned security key) fails the sign-in. Failed passkey sign-ins on an existing account go to its security log, as do added and removed passkeys.
 - Passkeys are bound to `PASSKEY_RP_ID` and only work on pages served from `PASSKEY_ORIGINS`. Both default to `APP_BASE_URL`; when the web client runs elsewhere (say `https://app.example.com` with the API on `https://api.example.com`), set `PASSKEY_RP_ID=example.com` and `PASSKEY_ORIGINS=https://app.example.com`. Changing the RP ID later invalidates every registered passkey.
-- An account has at most 20 passkeys. Passkeys are an addition to the password: registering still needs one, and a password reset or change doesn't remove passkeys (review them with `GET /me/passkeys`).
+- An account has at most 20 passkeys. Passkeys are an addition to the Firebase sign-in: the account is created through Firebase first, and a password reset in Firebase doesn't remove passkeys (review them with `GET /me/passkeys`).
 
 Client sketch:
 
@@ -212,12 +209,13 @@ const login = await api.post("/auth/passkeys/login/options");
 const assertion = await navigator.credentials.get({
   publicKey: PublicKeyCredential.parseRequestOptionsFromJSON(login.options.publicKey),
 });
-const { user, authorization } = await api.post("/auth/passkeys/login", { token: login.token, credential: assertion.toJSON() });
+const { firebase_custom_token } = await api.post("/auth/passkeys/login", { token: login.token, credential: assertion.toJSON() });
+await signInWithCustomToken(getAuth(app), firebase_custom_token);
 ```
 
 ### Rate limiting
 
-A per-client-IP token bucket guards the public `/auth/*` endpoints (including passkey sign-in) and password change (`429` with `Retry-After`). It's in-process, so the limit applies per replica. `X-Forwarded-For` is not trusted.
+A per-client-IP token bucket guards the public `/auth/*` endpoints (`POST /auth` and passkey sign-in) (`429` with `Retry-After`). It's in-process, so the limit applies per replica. `X-Forwarded-For` is not trusted.
 
 ## Organizing Todos
 
@@ -246,14 +244,14 @@ Inbox                                  todos without a project
 
 ### Todo fields
 
-| Field | Values | Notes |
-|-------|--------|-------|
-| `status` | `pending`, `in_progress`, `blocked`, `done`, `cancelled` | Default `pending`. `completedAt` is set when it becomes `done` and cleared when it leaves `done` |
-| `priority` | `none`, `low`, `medium`, `high`, `urgent` | Default `none` |
-| `dueAt` | RFC 3339 timestamp, or `YYYY-MM-DD` (midnight UTC) | The deadline; `null` clears it. `overdue` is true while an open todo is past it |
-| `notes` | Free text, up to 10,000 characters | |
-| `tags` | Up to 20 strings of 1–50 characters | Trimmed and de-duplicated; matched exactly by `?tag=` |
-| `completed` | `true` / `false` | Kept for earlier clients: derived from `status` in responses; sending `true` sets `done`, `false` reopens a done todo as `pending` |
+| Field       | Values                                                   | Notes                                                                                                                              |
+| ----------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `status`    | `pending`, `in_progress`, `blocked`, `done`, `cancelled` | Default `pending`. `completedAt` is set when it becomes `done` and cleared when it leaves `done`                                   |
+| `priority`  | `none`, `low`, `medium`, `high`, `urgent`                | Default `none`                                                                                                                     |
+| `dueAt`     | RFC 3339 timestamp, or `YYYY-MM-DD` (midnight UTC)       | The deadline; `null` clears it. `overdue` is true while an open todo is past it                                                    |
+| `notes`     | Free text, up to 10,000 characters                       |                                                                                                                                    |
+| `tags`      | Up to 20 strings of 1–50 characters                      | Trimmed and de-duplicated; matched exactly by `?tag=`                                                                              |
+| `completed` | `true` / `false`                                         | Kept for earlier clients: derived from `status` in responses; sending `true` sets `done`, `false` reopens a done todo as `pending` |
 
 Timestamps are stored with millisecond precision.
 
@@ -306,12 +304,12 @@ Ann's view
 
 ### Roles
 
-| Role | Can |
-|------|-----|
-| `owner` | Everything an admin can, plus delete the team and transfer ownership. Exactly one per team |
-| `admin` | Invite and remove people, change roles, rename the team, delete team projects and collections, read the team audit log |
-| `member` | Create and edit team projects, collections and todos, delete todos |
-| `viewer` | Read only |
+| Role     | Can                                                                                                                    |
+| -------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `owner`  | Everything an admin can, plus delete the team and transfer ownership. Exactly one per team                             |
+| `admin`  | Invite and remove people, change roles, rename the team, delete team projects and collections, read the team audit log |
+| `member` | Create and edit team projects, collections and todos, delete todos                                                     |
+| `viewer` | Read only                                                                                                              |
 
 Owners and admins only act on people **strictly below** them, and only hand out roles strictly below their own: an admin manages members and viewers; the owner also manages admins. Ownership is never assigned, only transferred (`POST /teams/{id}/transfer-ownership`); the previous owner becomes an admin. The owner can't leave without transferring ownership or deleting the team, and can't delete their account while they own a team with other members (`OWNS_TEAMS`); teams they own alone are deleted with the account.
 
@@ -325,21 +323,21 @@ The client page behind the link should sign the user in and post the token. Memb
 
 ### Audit logs
 
-Every change in a team is written to the **team audit log**, in the same transaction as the change: team, membership, role, invitation and ownership changes, and creating, updating and deleting team projects, collections and todos. Each user also has a **security log** about their account: registration, logins (and failed login attempts), logouts, refresh-token reuse, email verification, password reset requests, resets and changes.
+Every change in a team is written to the **team audit log**, in the same transaction as the change: team, membership, role, invitation and ownership changes, and creating, updating and deleting team projects, collections and todos. Each user also has a **security log** about their account: registration, sign-ins (with the provider: `google.com`, `password`, `passkey`, ...), linking an account from before Firebase, failed passkey sign-ins, logging out everywhere, and added and removed passkeys.
 
-| Area | Actions |
-|------|---------|
-| Team | `team.created`, `team.renamed`, `team.ownership_transferred` |
-| Members | `member.joined`, `member.role_changed`, `member.removed`, `member.left` |
-| Invitations | `invitation.created`, `invitation.revoked`, `invitation.declined` |
-| Content | `project.*`, `collection.*`, `todo.*` with `created`, `updated`, `deleted` |
-| Security | `user.registered`, `session.login`, `session.login_failed`, `session.logout`, `session.logout_all`, `session.refresh_reuse_detected`, `email.verified`, `password.reset_requested`, `password.reset`, `password.changed` |
+| Area        | Actions                                                                                                                                                                                                                                                                                       |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Team        | `team.created`, `team.renamed`, `team.ownership_transferred`                                                                                                                                                                                                                                  |
+| Members     | `member.joined`, `member.role_changed`, `member.removed`, `member.left`                                                                                                                                                                                                                       |
+| Invitations | `invitation.created`, `invitation.revoked`, `invitation.declined`                                                                                                                                                                                                                             |
+| Content     | `project.*`, `collection.*`, `todo.*` with `created`, `updated`, `deleted`                                                                                                                                                                                                                    |
+| Security    | `user.registered`, `account.linked`, `session.login`, `session.login_failed` (passkeys), `session.logout_all`, `passkey.added`, `passkey.removed`; older logs may also hold `session.logout`, `session.refresh_reuse_detected`, `email.verified` and `password.*` events from before Firebase |
 
 An event records the actor, action, target, small `details` (a title, the changed fields, old and new role), the client IP and User-Agent, and the time. Personal records are not audited. Owners and admins read the team log with `GET /teams/{id}/audit-log`; everyone reads their own security log with `GET /me/audit-log`. A deleted account's security log is deleted with it.
 
 ## Database Schema
 
-Both databases hold the same data; only naming differs (`snake_case` columns in PostgreSQL, `camelCase` fields in MongoDB). Tokens are never stored, only their SHA-256 hashes. Every user owns at most one pending email verification and one pending password reset.
+Both databases hold the same data; only naming differs (`snake_case` columns in PostgreSQL, `camelCase` fields in MongoDB). Single-use tokens (passkey challenges, team invitations) are never stored, only their SHA-256 hashes.
 
 ### Enums
 
@@ -387,10 +385,11 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │   ├── id: uuid [PK] (default gen_random_uuid())
     │   ├── name: text
     │   ├── email: text [UNIQUE] (lower-cased)
-    │   ├── password_hash: text (default '': no password, legacy account)
+    │   ├── firebase_uid: text [UNIQUE] (nullable: account from before Firebase, not linked yet)
     │   ├── email_verified_at: timestamptz (nullable)
-    │   ├── token_version: integer (default 0)
-    │   └── created_at: timestamptz
+    │   ├── sessions_valid_after: timestamptz (nullable; set by logout-all)
+    │   ├── created_at: timestamptz
+    │   └── password_hash, token_version: unused since Firebase (dropped in a later migration)
     │
     ├── collections
     │   ├── id: uuid [PK]
@@ -495,7 +494,7 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │       ├── [Partial Index] idx_audit_events_team (team_id, created_at DESC, id DESC)
     │       └── [Partial Index] idx_audit_events_user (user_id, created_at DESC, id DESC)
     │
-    ├── sessions
+    ├── sessions (unused since Firebase; dropped in a later migration)
     │   ├── id: uuid [PK]
     │   ├── user_id: uuid [FK → users.id, ON DELETE CASCADE]
     │   ├── family_id: uuid (one family per login; rotation stays in it)
@@ -508,13 +507,13 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │       ├── [Index] idx_sessions_user_id (user_id)
     │       └── [Index] idx_sessions_family_id (family_id)
     │
-    ├── email_verifications
+    ├── email_verifications (unused since Firebase)
     │   ├── user_id: uuid [PK] [FK → users.id, ON DELETE CASCADE]
     │   ├── token_hash: text [UNIQUE]
     │   ├── expires_at: timestamptz
     │   └── created_at: timestamptz
     │
-    ├── password_resets
+    ├── password_resets (unused since Firebase)
     │   ├── user_id: uuid [PK] [FK → users.id, ON DELETE CASCADE]
     │   ├── token_hash: text [UNIQUE]
     │   ├── expires_at: timestamptz
@@ -553,13 +552,15 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │   ├── _id: objectId [PK]
     │   ├── name: string
     │   ├── email: string (lower-cased)
-    │   ├── passwordHash: string ("": no password, legacy account)
+    │   ├── firebaseUid: string (absent: account from before Firebase, not linked yet)
     │   ├── emailVerifiedAt: ISODate (absent until verified)
-    │   ├── tokenVersion: int
+    │   ├── sessionsValidAfter: ISODate (absent until logout-all)
     │   ├── createdAt: ISODate
+    │   ├── passwordHash, tokenVersion: unused since Firebase (removed in a later migration)
     │   │
     │   └── [Indexes]
-    │       └── [Unique Index] { email: -1 }
+    │       ├── [Unique Index] { email: -1 }
+    │       └── [Unique Index] { firebaseUid: 1 } (partial: where firebaseUid is a string)
     │
     ├── collections
     │   ├── _id: objectId [PK]
@@ -657,7 +658,7 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │       ├── [Index] { teamId: 1, createdAt: -1, _id: -1 }
     │       └── [Index] { userId: 1, createdAt: -1, _id: -1 }
     │
-    ├── sessions
+    ├── sessions (unused since Firebase; removed in a later migration)
     │   ├── _id: objectId [PK]
     │   ├── userId: objectId [FK → users._id]
     │   ├── familyId: string (UUID; one family per login)
@@ -672,7 +673,7 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │       ├── [Index] { familyId: 1 }
     │       └── [TTL Index] { expiresAt: 1 } (expireAfterSeconds: 0)
     │
-    ├── email_verifications
+    ├── email_verifications (unused since Firebase)
     │   ├── _id: objectId [PK] (= users._id)
     │   ├── tokenHash: string
     │   ├── expiresAt: ISODate
@@ -682,7 +683,7 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │       ├── [Unique Index] { tokenHash: 1 }
     │       └── [TTL Index] { expiresAt: 1 } (expireAfterSeconds: 0)
     │
-    ├── password_resets
+    ├── password_resets (unused since Firebase)
     │   ├── _id: objectId [PK] (= users._id)
     │   ├── tokenHash: string
     │   ├── expiresAt: ISODate
@@ -748,16 +749,17 @@ All API errors use the following structure:
 
 ### Common error codes
 
-| Status | Code | When |
-|--------|------|------|
-| 400 | `INVALID_BODY` | Malformed JSON, wrong types, trailing data, or a body over 1 MiB |
-| 401 | `MISSING_ACCESS_TOKEN` | Bearer endpoint called without `Authorization: Bearer <token>` |
-| 401 | `INVALID_ACCESS_TOKEN`, `MALFORMED_ACCESS_TOKEN`, `EXPIRED_ACCESS_TOKEN` | The access token can't be used |
-| 401 | `TOKEN_REVOKED` | The token was issued before a logout-all, password reset or change, or account deletion |
-| 403 | `EMAIL_NOT_VERIFIED` | Todos, teams and audit endpoints, only when `AUTH_REQUIRE_VERIFIED_EMAIL=true` |
-| 403 | `INSUFFICIENT_ROLE` | Your role in the team doesn't allow this (see [Roles](#roles)) |
-| 404 | `TEAM_NOT_FOUND` | The team doesn't exist or you're not a member |
-| 429 | `RATE_LIMITED` | Rate-limited endpoint called too often; see `Retry-After` |
+| Status | Code                                           | When                                                                                                            |
+| ------ | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| 400    | `INVALID_BODY`                                 | Malformed JSON, wrong types, trailing data, or a body over 1 MiB                                                |
+| 401    | `MISSING_ACCESS_TOKEN`                         | Bearer endpoint called without `Authorization: Bearer <token>`                                                  |
+| 401    | `INVALID_ACCESS_TOKEN`, `EXPIRED_ACCESS_TOKEN` | The Firebase ID token is invalid, for another project, or expired (get a fresh one with `getIdToken()`)         |
+| 401    | `ACCOUNT_NOT_REGISTERED`                       | Valid Firebase ID token, but no account yet: call [POST `/auth`](#post-auth) first (or the account was deleted) |
+| 401    | `TOKEN_REVOKED`                                | The token comes from a sign-in before a [logout-all](#post-authlogout-all)                                      |
+| 403    | `EMAIL_NOT_VERIFIED`                           | Todos, teams and audit endpoints, only when `AUTH_REQUIRE_VERIFIED_EMAIL=true`                                  |
+| 403    | `INSUFFICIENT_ROLE`                            | Your role in the team doesn't allow this (see [Roles](#roles))                                                  |
+| 404    | `TEAM_NOT_FOUND`                               | The team doesn't exist or you're not a member                                                                   |
+| 429    | `RATE_LIMITED`                                 | Rate-limited endpoint called too often; see `Retry-After`                                                       |
 
 Endpoint-specific codes are listed with each endpoint.
 
@@ -765,21 +767,9 @@ Endpoint-specific codes are listed with each endpoint.
 
 ### Conventions
 
-- **Bearer** endpoints need `Authorization: Bearer <access_token>`.
+- **Bearer** endpoints need `Authorization: Bearer <Firebase ID token>` of a user with an account (see [Signing in with Firebase](#signing-in-with-firebase)).
 - **Rate-limited** endpoints share a per-client-IP budget (`AUTH_RATE_LIMIT_PER_MINUTE`, `AUTH_RATE_LIMIT_BURST`).
 - Timestamps are RFC 3339 in UTC. IDs are 24-character hex strings on memory and MongoDB, and UUIDs on PostgreSQL.
-- Responses that return tokens use this `authorization` object:
-
-```json
-{
-  "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "refresh_token": "Q2x4dk1yb0pYbE5xV3Z0c2Fmb0l5bU9nR1lrS3dCcU4",
-  "token_type": "Bearer",
-  "expires_in": 900
-}
-```
-
-`expires_in` is the access token's lifetime in seconds (15 minutes). The refresh token is valid for 7 days and is stored only as a SHA-256 hash.
 
 ### Health
 
@@ -795,56 +785,19 @@ ok
 
 ### Auth
 
-#### POST `/auth/register`
+#### POST `/auth`
 
-Creates an account and logs it in. Rate-limited. A verification email is sent; without `SMTP_HOST` the link is written to the log.
+Signs in with a Firebase ID token: call it after every Firebase sign-in. Creates the account on the first one, links an [account from before Firebase](#accounts-from-before-firebase) with the same verified email, and records the sign-in in the security log. Rate-limited.
 
-Request
+Request: no body; the Firebase ID token goes in the header.
 
-```json
-{
-  "name": "Aziz Al-Soufi",
-  "email": "aziz@example.com",
-  "password": "correct horse battery"
-}
+```
+Authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6Ij...
 ```
 
-Response `201 Created`
+This endpoint reads the header itself: unlike the other Bearer endpoints, it accepts the token of a Firebase user who has no account yet.
 
-```json
-{
-  "user": {
-    "id": "672c5f3a9e1b4d0012a7c3e1",
-    "name": "Aziz Al-Soufi",
-    "email": "aziz@example.com",
-    "emailVerified": false,
-    "createdAt": "2026-11-07T10:15:22.427234Z"
-  },
-  "authorization": {
-    "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
-    "refresh_token": "Q2x4dk1yb0pYbE5xV3Z0c2Fmb0l5bU9nR1lrS3dCcU4",
-    "token_type": "Bearer",
-    "expires_in": 900
-  }
-}
-```
-
-`name` is required, trimmed, and at most 100 characters. `email` is trimmed and lower-cased. `password` must be 8–72 bytes. Errors: `INVALID_NAME`, `NAME_TOO_LONG`, `INVALID_EMAIL`, `WEAK_PASSWORD`, `PASSWORD_TOO_LONG` (400); `EMAIL_TAKEN` (409).
-
-#### POST `/auth/login`
-
-Logs in with email and password and starts a new session. Rate-limited.
-
-Request
-
-```json
-{
-  "email": "aziz@example.com",
-  "password": "correct horse battery"
-}
-```
-
-Response `200 OK`
+Response `201 Created` for a new account, `200 OK` otherwise
 
 ```json
 {
@@ -855,188 +808,23 @@ Response `200 OK`
     "emailVerified": true,
     "createdAt": "2026-11-07T10:15:22.427234Z"
   },
-  "authorization": {
-    "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
-    "refresh_token": "bW9yZVJhbmRvbUJ5dGVzRm9yVGhlUmVmcmVzaFRva2Vu",
-    "token_type": "Bearer",
-    "expires_in": 900
-  }
+  "created": true
 }
 ```
 
-Unknown emails and wrong passwords both return `INVALID_CREDENTIALS` (401) and take the same time, so the response doesn't reveal which accounts exist. Accounts created before password auth have no password and also get `INVALID_CREDENTIALS` until they [reset it](#post-authpasswordforgot).
+The name comes from the Firebase profile (Google accounts have one), or else the part of the email before `@`.
 
-#### POST `/auth/refresh`
-
-Exchanges a refresh token for a new token pair. Rate-limited. The presented token is rotated: it stops working and the response carries its replacement.
-
-Request
-
-```json
-{
-  "refresh_token": "Q2x4dk1yb0pYbE5xV3Z0c2Fmb0l5bU9nR1lrS3dCcU4"
-}
-```
-
-Response `200 OK`
-
-```json
-{
-  "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "refresh_token": "TmV4dFJvdGF0ZWRSZWZyZXNoVG9rZW5WYWx1ZUhlcmU",
-  "token_type": "Bearer",
-  "expires_in": 900
-}
-```
-
-Errors: `INVALID_VALUE` (400) when `refresh_token` is empty; `INVALID_REFRESH_TOKEN` (401) when it is unknown, expired, revoked, or the account is gone. Presenting a token that was already rotated returns `REFRESH_TOKEN_REUSED` (401) and revokes every token of that login, since it suggests the token was stolen. If two refreshes race with the same token, exactly one succeeds.
-
-#### POST `/auth/logout`
-
-Ends one login: revokes the refresh token and every token rotated from it. Rate-limited; no access token needed.
-
-Request
-
-```json
-{
-  "refresh_token": "TmV4dFJvdGF0ZWRSZWZyZXNoVG9rZW5WYWx1ZUhlcmU"
-}
-```
-
-Response `204 No Content`
-
-Unknown or already-revoked tokens also return 204, so logout is idempotent. Access tokens already issued stay valid until they expire (at most 15 minutes); use logout-all to cut them off immediately. Errors: `INVALID_VALUE` (400) when `refresh_token` is empty.
+Errors: `MISSING_ACCESS_TOKEN` (401) without the header; `EMAIL_REQUIRED` (400) for a Firebase user without an email address (e.g. phone sign-in); `INVALID_ACCESS_TOKEN`, `EXPIRED_ACCESS_TOKEN` (401); `TOKEN_REVOKED` (401) for a sign-in before a logout-all; `EMAIL_NOT_VERIFIED` (409) when an account with this email exists but Firebase hasn't verified the email; `EMAIL_TAKEN` (409) when it belongs to another Firebase user.
 
 #### POST `/auth/logout-all`
 
-Logs the caller out everywhere. Bearer. Bumps the account's token version, so every access token issued so far is rejected immediately (`TOKEN_REVOKED`), and revokes every refresh token.
-
-Request: no body.
+Signs the user out everywhere: ID tokens from every sign-in until now stop working, on every device. Bearer.
 
 Response `204 No Content`
-
-### Email verification
-
-#### POST `/auth/verify-email`
-
-Marks the email address as verified using the token from the verification email. Rate-limited.
-
-Request
-
-```json
-{
-  "token": "dmVyaWZpY2F0aW9uVG9rZW5Gcm9tVGhlRW1haWxMaW5r"
-}
-```
-
-Response `200 OK`
-
-```json
-{
-  "emailVerified": true
-}
-```
-
-Tokens are single-use, valid for 24 hours, and stored only as SHA-256 hashes. Errors: `INVALID_VERIFICATION_TOKEN` (400) when the token is empty, unknown, expired, already used, or replaced by a resend.
-
-#### GET `/auth/verify-email?token={token}`
-
-The link sent in the verification email (`APP_BASE_URL` + this path). Same behaviour, response and errors as [POST `/auth/verify-email`](#post-authverify-email). Rate-limited.
-
-Response `200 OK`
-
-```json
-{
-  "emailVerified": true
-}
-```
-
-#### POST `/auth/verify-email/resend`
-
-Sends a new verification email. Bearer. The previous link stops working.
-
-Request: no body.
-
-Response `202 Accepted`
-
-```json
-{
-  "sent": true
-}
-```
-
-Errors: `EMAIL_ALREADY_VERIFIED` (409).
-
-### Password
-
-#### POST `/auth/password/forgot`
-
-Starts a password reset. Rate-limited. If an account with this email exists, a single-use reset link (`AUTH_PASSWORD_RESET_URL?token=…`, valid 1 hour) is emailed to it; a new request replaces the previous link. The response is the same either way, so the endpoint can't be used to find out which emails have accounts.
-
-Request
-
-```json
-{
-  "email": "aziz@example.com"
-}
-```
-
-Response `202 Accepted`
-
-```json
-{
-  "accepted": true
-}
-```
-
-Malformed or unknown emails also return 202.
-
-#### POST `/auth/password/reset`
-
-Sets a new password with the token from the reset email. Rate-limited. Every session and access token of the account is revoked, and the email address is marked verified.
-
-Request
-
-```json
-{
-  "token": "cmVzZXRUb2tlbkZyb21UaGVQYXNzd29yZFJlc2V0TGluaw",
-  "password": "a brand new password"
-}
-```
-
-Response `204 No Content`
-
-The new password follows the registration rules. A rejected password doesn't use up the token, so the user can try again. Errors: `WEAK_PASSWORD`, `PASSWORD_TOO_LONG` (400); `INVALID_RESET_TOKEN` (400) when the token is empty, unknown, expired, already used, or replaced by a newer request.
-
-#### POST `/auth/password/change`
-
-Changes the password of the logged-in user. Bearer and rate-limited. Every other session and access token is revoked; the response carries a fresh token pair so the caller stays logged in.
-
-Request
-
-```json
-{
-  "current_password": "correct horse battery",
-  "new_password": "a brand new password"
-}
-```
-
-Response `200 OK`
-
-```json
-{
-  "authorization": {
-    "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
-    "refresh_token": "QWZ0ZXJDaGFuZ2luZ1RoZVBhc3N3b3JkVGhpc0lzTmV3",
-    "token_type": "Bearer",
-    "expires_in": 900
-  }
-}
-```
-
-Errors: `INCORRECT_PASSWORD` (400) when `current_password` is wrong, including for accounts without a password (they use [the reset flow](#post-authpasswordforgot)); `WEAK_PASSWORD`, `PASSWORD_TOO_LONG` (400).
 
 ### Passkeys
+
+See [Passkeys]### Passkeys
 
 See [Passkeys](#passkeys) for the flow. `options` is what the browser's `navigator.credentials` call takes (`{"publicKey": {...}}`, binary values base64url-encoded); `credential` is the `PublicKeyCredential` the browser returns, serialized with `toJSON()`.
 
@@ -1111,7 +899,7 @@ Response `200 OK`
 
 #### DELETE `/me/passkeys/{id}`
 
-Removes one of the caller's passkeys. Sessions it started stay valid; use [logout-all](#post-authlogout-all) to end them. Bearer.
+Removes one of the caller's passkeys. Sign-ins it made stay valid; use [logout-all](#post-authlogout-all) to end them. Bearer.
 
 Response `204 No Content`
 
@@ -1154,9 +942,18 @@ Request
 }
 ```
 
-Response `200 OK`: the same `user` and `authorization` as [POST `/auth/login`](#post-authlogin).
+Response `200 OK`
 
-Errors: `INVALID_VALUE` (400) without `credential`; `INVALID_PASSKEY_CHALLENGE` (400) for an unknown, used or expired token; `INVALID_PASSKEY` (401) when the passkey is unknown or removed, the signature or origin doesn't verify, or the sign counter went backwards.
+```json
+{
+  "user": { "id": "672c5f3a9e1b4d0012a7c3e1", "name": "Aziz Al-Soufi", "email": "aziz@example.com", "emailVerified": true, "createdAt": "2026-11-07T10:15:22.427234Z" },
+  "firebase_custom_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+```
+
+Exchange `firebase_custom_token` with Firebase `signInWithCustomToken()` for an ID token.
+
+Errors: `INVALID_VALUE` (400) without `credential`; `INVALID_PASSKEY_CHALLENGE` (400) for an unknown, used or expired token; `INVALID_PASSKEY` (401) when the passkey is unknown or removed, the signature or origin doesn't verify, or the sign counter went backwards; `PASSKEY_LOGIN_DISABLED` (403) without `FIREBASE_CREDENTIALS_FILE` (also from the options call); `ACCOUNT_NOT_LINKED` (409) for an account from before Firebase that hasn't signed in with Firebase yet.
 
 ### Account
 
@@ -1190,7 +987,7 @@ Response `200 OK`
 
 #### DELETE `/me`
 
-Deletes the account with its personal todos, projects and collections, its sessions, passkeys, security log and pending email verification and password reset, and takes it out of every team. Team records the user created stay with their team, and teams the user owns alone are deleted. Bearer. Everything is removed in one transaction (on MongoDB this needs a replica set; on a standalone server the deletes run without one), and all of the user's tokens stop working.
+Deletes the account with its personal todos, projects and collections, its passkeys and security log (and its Firebase user, when `FIREBASE_CREDENTIALS_FILE` is set), and takes it out of every team. Team records the user created stay with their team, and teams the user owns alone are deleted. Bearer. Everything is removed in one transaction (on MongoDB this needs a replica set; on a standalone server the deletes run without one), and all of the user's tokens stop working.
 
 Request: no body.
 
@@ -1248,19 +1045,19 @@ Omit `projectId` (or send `null`) for the inbox. Errors: `INVALID_TITLE`, `TITLE
 
 Lists the caller's personal todos and those of their teams, filtered and sorted. Without parameters: every todo except those in archived projects, newest first.
 
-| Parameter | Example | Meaning |
-|-----------|---------|---------|
-| `team` | `672c7011…` or `personal` | Only one team's todos, or only personal ones |
-| `project` | `672c61a0…` or `inbox` | Todos of one project (even an archived one), or of the inbox |
-| `status` | `pending,in_progress` | Any of these statuses |
-| `priority` | `high,urgent` | Any of these priorities |
-| `tag` | `website` | Has this tag (exact match) |
-| `due_before` | `2026-11-30` | Deadline strictly before (RFC 3339 or date) |
-| `due_after` | `2026-11-01T00:00:00Z` | Deadline at or after |
-| `overdue` | `true` | Open todos past their deadline |
-| `q` | `cms` | Case-insensitive text search in title and notes |
-| `sort` | `due` | `created` (newest first, default), `updated` (recently changed first), `due` (soonest deadline first, none last), `priority` (most important first, then soonest deadline) |
-| `include_archived` | `true` | Also list todos of archived projects |
+| Parameter          | Example                   | Meaning                                                                                                                                                                    |
+| ------------------ | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `team`             | `672c7011…` or `personal` | Only one team's todos, or only personal ones                                                                                                                               |
+| `project`          | `672c61a0…` or `inbox`    | Todos of one project (even an archived one), or of the inbox                                                                                                               |
+| `status`           | `pending,in_progress`     | Any of these statuses                                                                                                                                                      |
+| `priority`         | `high,urgent`             | Any of these priorities                                                                                                                                                    |
+| `tag`              | `website`                 | Has this tag (exact match)                                                                                                                                                 |
+| `due_before`       | `2026-11-30`              | Deadline strictly before (RFC 3339 or date)                                                                                                                                |
+| `due_after`        | `2026-11-01T00:00:00Z`    | Deadline at or after                                                                                                                                                       |
+| `overdue`          | `true`                    | Open todos past their deadline                                                                                                                                             |
+| `q`                | `cms`                     | Case-insensitive text search in title and notes                                                                                                                            |
+| `sort`             | `due`                     | `created` (newest first, default), `updated` (recently changed first), `due` (soonest deadline first, none last), `priority` (most important first, then soonest deadline) |
+| `include_archived` | `true`                    | Also list todos of archived projects                                                                                                                                       |
 
 Filters combine with AND. Todos without a deadline never match `due_before`, `due_after` or `overdue`.
 
@@ -1378,11 +1175,11 @@ Response `201 Created`
 
 Lists the caller's personal projects and those of their teams, with their progress, oldest first.
 
-| Parameter | Example | Meaning |
-|-----------|---------|---------|
-| `team` | `672c7011…` or `personal` | Only one team's projects, or only personal ones |
-| `collection` | `672c6170…` | Only projects in this collection |
-| `archived` | `true` | `false` (default): active only; `true`: archived only; `all`: both |
+| Parameter    | Example                   | Meaning                                                            |
+| ------------ | ------------------------- | ------------------------------------------------------------------ |
+| `team`       | `672c7011…` or `personal` | Only one team's projects, or only personal ones                    |
+| `collection` | `672c6170…`               | Only projects in this collection                                   |
+| `archived`   | `true`                    | `false` (default): active only; `true`: archived only; `all`: both |
 
 Response `200 OK`: an array of projects, as for [POST `/projects`](#post-projects).
 
@@ -1476,10 +1273,10 @@ Errors: `INVALID_NAME`, `NAME_TOO_LONG`, `DESCRIPTION_TOO_LONG`, `ICON_TOO_LONG`
 
 Lists the caller's personal collections and those of their teams, oldest first, each with its active projects and their combined progress (a ready-made sidebar).
 
-| Parameter | Example | Meaning |
-|-----------|---------|---------|
-| `team` | `672c7011…` or `personal` | Only one team's collections, or only personal ones |
-| `archived` | `all` | `false` (default): active only; `true`: archived only; `all`: both |
+| Parameter  | Example                   | Meaning                                                            |
+| ---------- | ------------------------- | ------------------------------------------------------------------ |
+| `team`     | `672c7011…` or `personal` | Only one team's collections, or only personal ones                 |
+| `archived` | `all`                     | `false` (default): active only; `true`: archived only; `all`: both |
 
 Response `200 OK`
 
@@ -1755,10 +1552,10 @@ Audit log endpoints are Bearer (+ verified email when required) and return one p
 }
 ```
 
-| Parameter | Example | Meaning |
-|-----------|---------|---------|
-| `limit` | `20` | Page size, 1–200 (default 50) |
-| `cursor` | `MTc2…` | `nextCursor` of the previous page; `nextCursor` is `null` on the last page |
+| Parameter | Example | Meaning                                                                    |
+| --------- | ------- | -------------------------------------------------------------------------- |
+| `limit`   | `20`    | Page size, 1–200 (default 50)                                              |
+| `cursor`  | `MTc2…` | `nextCursor` of the previous page; `nextCursor` is `null` on the last page |
 
 The IP is the connecting address (`X-Forwarded-For` is not trusted). Errors: `INVALID_LIMIT`, `INVALID_CURSOR` (400).
 
@@ -1770,7 +1567,7 @@ Errors: `INSUFFICIENT_ROLE` (403); `TEAM_NOT_FOUND` (404).
 
 #### GET `/me/audit-log`
 
-The caller's own security log. Events have `userId` set and `teamId` null; `actorId` is null when the actor is unknown (a failed login, a password reset request).
+The caller's own security log. Events have `userId` set and `teamId` null; `actorId` is null when the actor is unknown (a failed passkey sign-in).
 
 ## Testing
 

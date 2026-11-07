@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Go REST API for todos with accounts/auth (passwords and passkeys), teams with roles and invitations, and audit logs. [ARCHITECTURE.md](ARCHITECTURE.md) is the authoritative design doc (read it before adding a feature, module or backend); [README.md](README.md) documents the HTTP contract, config keys and error codes.
+Go REST API for todos with accounts (Firebase Authentication sign-in plus passkeys), teams with roles and invitations, and audit logs. [ARCHITECTURE.md](ARCHITECTURE.md) is the authoritative design doc (read it before adding a feature, module or backend); [README.md](README.md) documents the HTTP contract, config keys and error codes.
 
 ## Commands
 
@@ -31,7 +31,7 @@ TEST_MONGO_URI='mongodb://localhost:57017/?directConnection=true' \
 TEST_E2E_BACKEND=postgres TEST_POSTGRES_URI=... go test -race -count=1 ./cmd/api
 ```
 
-Running the API requires `JWT_PRIVATE_KEY_PATH` / `JWT_PUBLIC_KEY_PATH` (RSA PEM pair) in every mode. Without `SMTP_HOST`, verification/reset emails go to the log. `tests/api.http` exercises every endpoint.
+Running the API requires `FIREBASE_PROJECT_ID` in every mode; `FIREBASE_CREDENTIALS_FILE` (service account) is optional and enables passkey sign-in. Without `SMTP_HOST`, invitation emails go to the log. `tests/api.http` exercises every endpoint.
 
 ## Architecture
 
@@ -50,10 +50,10 @@ Rules that matter when changing code:
 - **Team authorization.** Todos/teams/audit routes run behind `auth.Middleware` + `access.Middleware(teams.Resolver())`; endpoints use `access.ForActor`. In todos, reads are limited by `domain.Scope` (personal + the actor's teams; `application.ScopeOf`), and commands check the role for team records (`CanEdit` create/update, `CanManage` delete projects/collections). The teams module checks roles against the stored membership. Non-members get `TEAM_NOT_FOUND`, low roles `INSUFFICIENT_ROLE`.
 - **Audit inside the unit of work.** Changes to team records and team/membership changes record an event through the module's `AuditLog` port in the same `WithinTx` as the change (todos: `commit`); identity records security events. Personal records aren't audited.
 - **Every backend must behave identically.** Each module has a store contract in `adapters/persistence/storetest`, run by memstore, mongostore and pgstore. A new repository or reader method needs: the port, all three stores, a storetest case, and for Postgres a query in that module's `pgstore/queries.sql` + `make sqlc` (never hand-edit `sqlcgen/`).
-- **Transactions travel in the context.** `tx.Runner.WithinTx(ctx, fn)`; repositories pick up the tx from ctx (`postgres.Executor`, Mongo session ctx), nested calls join the outer tx. Multi-record commands (register, login, refresh rotation, logout-all, password reset/change, deleting a project or collection, every team command, audited changes, team and account deletion) must use one unit of work. Mongo txs need a replica set; on standalone it falls back to `tx.None`.
+- **Transactions travel in the context.** `tx.Runner.WithinTx(ctx, fn)`; repositories pick up the tx from ctx (`postgres.Executor`, Mongo session ctx), nested calls join the outer tx. Multi-record commands (Firebase sign-in create/link, logout-all, passkey registration and sign-in, deleting a project or collection, every team command, audited changes, team and account deletion) must use one unit of work. Mongo txs need a replica set; on standalone it falls back to `tx.None`.
 - **Errors become HTTP exactly once.** Domain/application return `apperrors` values with a status and stable `code`; adapters map driver errors to port errors (`ErrNotFound`, `ErrInvalidID`, `ErrEmailTaken`); handlers call `httpx.RespondErr`. Non-app errors and 5xx are logged and returned as generic `500 INTERNAL`.
 - **Todos are scope-checked.** Every todos-module repository call takes a `domain.Scope`; a record outside it must look like a missing one (`NOT_FOUND`, `PROJECT_NOT_FOUND`, …). `DeleteByUser` removes personal records only; team records outlive their creator (no FKs to users/teams across modules). Filtering/sorting semantics are defined once in `domain.Query`; DB stores translate it and the contract checks they match.
-- **Auth**: RS256 access JWTs carry a token version (`ver`) checked against the user on every request, so revocation is immediate. Refresh tokens are opaque, stored as SHA-256, rotated per family; reuse revokes the family.
+- **Auth**: clients sign in with Firebase (Google, email/password) and send Firebase ID tokens on every request; `identity` verifies them (adapters/firebase), loads the account by `firebaseUid` and refuses sign-ins older than the logout-all cutoff (`sessionsValidAfter`). `POST /auth` (ID token as Bearer header, read by the handler since the account may not exist yet) creates the account or links a pre-Firebase one by verified email. Passkey sign-in returns a Firebase custom token. Tests use a fake Firebase (no network).
 - **Migrations**: Postgres in `internal/platform/database/postgres/migrations` (numbered goose SQL, also the sqlc schema); Mongo as Go files in `internal/platform/database/mongodb/migrations/versions` (contiguous versions, registered via blank import) plus indexes in `schema/*.json`. Released migrations are never edited — add a new file, for both backends.
 - IDs are 24-hex ObjectIDs on memory/Mongo and UUIDs on Postgres; parse with `platform/ids`.
 

@@ -37,10 +37,10 @@ func memberRoles(t *testing.T, r response) map[string]string {
 
 func TestTeamInvitations(t *testing.T) {
 	s := newTestServer(t)
-	ann := s.register("Ann", "ann@example.com", "password1")
-	bo := s.register("Bo", "bo@example.com", "password1")
-	cy := s.register("Cy", "cy@example.com", "password1")
-	eve := s.register("Eve", "eve@example.com", "password1")
+	ann := s.register("Ann", "ann@example.com")
+	bo := s.register("Bo", "bo@example.com")
+	cy := s.register("Cy", "cy@example.com")
+	eve := s.register("Eve", "eve@example.com")
 
 	teamID := s.team(ann, " Platform ")
 	r := s.do("POST", "/teams/"+teamID+"/invitations", ann.access, map[string]string{"email": "Bo@Example.com", "role": "member"}).expect(t, 201)
@@ -106,9 +106,9 @@ func TestTeamInvitations(t *testing.T) {
 
 func TestTeamRoles(t *testing.T) {
 	s := newTestServer(t)
-	ann := s.register("Ann", "ann@example.com", "password1")
-	bo := s.register("Bo", "bo@example.com", "password1")
-	cy := s.register("Cy", "cy@example.com", "password1")
+	ann := s.register("Ann", "ann@example.com")
+	bo := s.register("Bo", "bo@example.com")
+	cy := s.register("Cy", "cy@example.com")
 	teamID := s.team(ann, "Platform")
 	s.join(teamID, ann, bo, "bo@example.com", "member")
 	s.join(teamID, ann, cy, "cy@example.com", "viewer")
@@ -151,10 +151,10 @@ func TestTeamRoles(t *testing.T) {
 
 func TestTeamContent(t *testing.T) {
 	s := newTestServer(t)
-	ann := s.register("Ann", "ann@example.com", "password1")
-	bo := s.register("Bo", "bo@example.com", "password1")
-	vi := s.register("Vi", "vi@example.com", "password1")
-	eve := s.register("Eve", "eve@example.com", "password1")
+	ann := s.register("Ann", "ann@example.com")
+	bo := s.register("Bo", "bo@example.com")
+	vi := s.register("Vi", "vi@example.com")
+	eve := s.register("Eve", "eve@example.com")
 	teamID := s.team(ann, "Platform")
 	s.join(teamID, ann, bo, "bo@example.com", "member")
 	s.join(teamID, ann, vi, "vi@example.com", "viewer")
@@ -265,8 +265,8 @@ func actions(t *testing.T, r response) []string {
 
 func TestAuditLogs(t *testing.T) {
 	s := newTestServer(t)
-	ann := s.register("Ann", "ann@example.com", "password1")
-	bo := s.register("Bo", "bo@example.com", "password1")
+	ann := s.register("Ann", "ann@example.com")
+	bo := s.register("Bo", "bo@example.com")
 	teamID := s.team(ann, "Platform")
 	s.join(teamID, ann, bo, "bo@example.com", "member")
 	proj := s.do("POST", "/projects", bo.access, map[string]any{"name": "Launch", "teamId": teamID}).expect(t, 201)
@@ -301,15 +301,14 @@ func TestAuditLogs(t *testing.T) {
 	s.do("GET", "/teams/"+teamID+"/audit-log", bo.access, nil).expectCode(t, 403, "INSUFFICIENT_ROLE")
 
 	// The personal security log.
-	s.do("POST", "/auth/login", "", map[string]string{"email": "bo@example.com", "password": "wrong password"}).expect(t, 401)
-	s.login("bo@example.com", "password1")
+	s.login("bo@example.com")
 	r = s.do("GET", "/me/audit-log", bo.access, nil).expect(t, 200)
-	if got := actions(t, r); !slices.Equal(got, []string{"session.login", "session.login_failed", "user.registered"}) {
+	if got := actions(t, r); !slices.Equal(got, []string{"session.login", "user.registered"}) {
 		t.Fatalf("security log = %q", got)
 	}
-	failed := r.body["events"].([]any)[1].(map[string]any)
-	if failed["actorId"] != nil || failed["userId"] != bo.userID {
-		t.Fatalf("failed login event: %v", failed)
+	login := r.body["events"].([]any)[0].(map[string]any)
+	if login["actorId"] != bo.userID || login["details"].(map[string]any)["provider"] != "password" {
+		t.Fatalf("login event: %v", login)
 	}
 	if got := actions(t, s.do("GET", "/me/audit-log", ann.access, nil).expect(t, 200)); !slices.Equal(got, []string{"user.registered"}) {
 		t.Fatalf("Ann's security log = %q", got)
@@ -318,8 +317,8 @@ func TestAuditLogs(t *testing.T) {
 
 func TestDeleteAccountWithTeams(t *testing.T) {
 	s := newTestServer(t)
-	ann := s.register("Ann", "ann@example.com", "password1")
-	bo := s.register("Bo", "bo@example.com", "password1")
+	ann := s.register("Ann", "ann@example.com")
+	bo := s.register("Bo", "bo@example.com")
 	shared := s.team(ann, "Shared")
 	solo := s.team(ann, "Solo")
 	s.join(shared, ann, bo, "bo@example.com", "member")
@@ -341,6 +340,6 @@ func TestDeleteAccountWithTeams(t *testing.T) {
 
 	// Now Ann owns teams without other members: they go with the account.
 	s.do("DELETE", "/me", ann.access, nil).expect(t, 204)
-	carl := s.register("Carl", "carl@example.com", "password1")
+	carl := s.register("Carl", "carl@example.com")
 	s.do("GET", "/teams/"+solo, carl.access, nil).expectCode(t, 404, "TEAM_NOT_FOUND")
 }

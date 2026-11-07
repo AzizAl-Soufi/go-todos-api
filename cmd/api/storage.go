@@ -35,21 +35,18 @@ import (
 
 // storage bundles every persistence adapter for one backend.
 type storage struct {
-	todos          todos.TodoStore
-	projects       todos.ProjectStore
-	collections    todos.CollectionStore
-	users          application.UserRepository
-	sessions       application.SessionRepository
-	verifications  application.OneTimeTokenRepository
-	passwordResets application.OneTimeTokenRepository
-	passkeys       application.PasskeyRepository
-	challenges     application.PasskeyChallengeRepository
-	teams          teams.TeamStore
-	members        teams.MemberStore
-	invitations    teams.InvitationStore
-	events         audit.EventStore
-	tx             tx.Runner
-	close          func()
+	todos       todos.TodoStore
+	projects    todos.ProjectStore
+	collections todos.CollectionStore
+	users       application.UserRepository
+	passkeys    application.PasskeyRepository
+	challenges  application.PasskeyChallengeRepository
+	teams       teams.TeamStore
+	members     teams.MemberStore
+	invitations teams.InvitationStore
+	events      audit.EventStore
+	tx          tx.Runner
+	close       func()
 }
 
 func newStorage(ctx context.Context, cfg *config.Config) (*storage, error) {
@@ -67,21 +64,18 @@ func newStorage(ctx context.Context, cfg *config.Config) (*storage, error) {
 
 func newMemoryStorage() *storage {
 	return &storage{
-		todos:          todosmem.NewTodos(),
-		projects:       todosmem.NewProjects(),
-		collections:    todosmem.NewCollections(),
-		users:          identitymem.NewUsers(),
-		sessions:       identitymem.NewSessions(),
-		verifications:  identitymem.NewVerifications(),
-		passwordResets: identitymem.NewPasswordResets(),
-		passkeys:       identitymem.NewPasskeys(),
-		challenges:     identitymem.NewPasskeyChallenges(),
-		teams:          teamsmem.NewTeams(),
-		members:        teamsmem.NewMembers(),
-		invitations:    teamsmem.NewInvitations(),
-		events:         auditmem.NewEvents(),
-		tx:             tx.None{},
-		close:          func() {},
+		todos:       todosmem.NewTodos(),
+		projects:    todosmem.NewProjects(),
+		collections: todosmem.NewCollections(),
+		users:       identitymem.NewUsers(),
+		passkeys:    identitymem.NewPasskeys(),
+		challenges:  identitymem.NewPasskeyChallenges(),
+		teams:       teamsmem.NewTeams(),
+		members:     teamsmem.NewMembers(),
+		invitations: teamsmem.NewInvitations(),
+		events:      auditmem.NewEvents(),
+		tx:          tx.None{},
+		close:       func() {},
 	}
 }
 
@@ -117,21 +111,18 @@ func newMongoStorage(ctx context.Context, cfg *config.Config) (*storage, error) 
 func mongoStorage(ctx context.Context, client mongodb.MongoDBClient) *storage {
 	db := client.Database()
 	return &storage{
-		todos:          todosmongo.NewTodos(db),
-		projects:       todosmongo.NewProjects(db),
-		collections:    todosmongo.NewCollections(db),
-		users:          identitymongo.NewUsers(db),
-		sessions:       identitymongo.NewSessions(db),
-		verifications:  identitymongo.NewVerifications(db),
-		passwordResets: identitymongo.NewPasswordResets(db),
-		passkeys:       identitymongo.NewPasskeys(db),
-		challenges:     identitymongo.NewPasskeyChallenges(db),
-		teams:          teamsmongo.NewTeams(db),
-		members:        teamsmongo.NewMembers(db),
-		invitations:    teamsmongo.NewInvitations(db),
-		events:         auditmongo.NewEvents(db),
-		tx:             mongodb.NewTxRunner(ctx, client),
-		close:          func() {},
+		todos:       todosmongo.NewTodos(db),
+		projects:    todosmongo.NewProjects(db),
+		collections: todosmongo.NewCollections(db),
+		users:       identitymongo.NewUsers(db),
+		passkeys:    identitymongo.NewPasskeys(db),
+		challenges:  identitymongo.NewPasskeyChallenges(db),
+		teams:       teamsmongo.NewTeams(db),
+		members:     teamsmongo.NewMembers(db),
+		invitations: teamsmongo.NewInvitations(db),
+		events:      auditmongo.NewEvents(db),
+		tx:          mongodb.NewTxRunner(ctx, client),
+		close:       func() {},
 	}
 }
 
@@ -163,21 +154,18 @@ func newPostgresStorage(ctx context.Context, cfg *config.Config) (*storage, erro
 // postgresStorage builds the adapters on a connected, migrated pool.
 func postgresStorage(pool *pgxpool.Pool) *storage {
 	return &storage{
-		todos:          todospg.NewTodos(pool),
-		projects:       todospg.NewProjects(pool),
-		collections:    todospg.NewCollections(pool),
-		users:          identitypg.NewUsers(pool),
-		sessions:       identitypg.NewSessions(pool),
-		verifications:  identitypg.NewVerifications(pool),
-		passwordResets: identitypg.NewPasswordResets(pool),
-		passkeys:       identitypg.NewPasskeys(pool),
-		challenges:     identitypg.NewPasskeyChallenges(pool),
-		teams:          teamspg.NewTeams(pool),
-		members:        teamspg.NewMembers(pool),
-		invitations:    teamspg.NewInvitations(pool),
-		events:         auditpg.NewEvents(pool),
-		tx:             postgres.NewTxRunner(pool),
-		close:          func() {},
+		todos:       todospg.NewTodos(pool),
+		projects:    todospg.NewProjects(pool),
+		collections: todospg.NewCollections(pool),
+		users:       identitypg.NewUsers(pool),
+		passkeys:    identitypg.NewPasskeys(pool),
+		challenges:  identitypg.NewPasskeyChallenges(pool),
+		teams:       teamspg.NewTeams(pool),
+		members:     teamspg.NewMembers(pool),
+		invitations: teamspg.NewInvitations(pool),
+		events:      auditpg.NewEvents(pool),
+		tx:          postgres.NewTxRunner(pool),
+		close:       func() {},
 	}
 }
 

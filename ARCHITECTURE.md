@@ -38,7 +38,7 @@ The API is a **feature-based modular monolith**: one binary, split into modules 
 
 The goals behind that shape:
 
-- **Change in one place.** Everything about todos lives under `modules/todos`; accounts and sessions under `modules/identity`; teams, roles and invitations under `modules/teams`; the audit log under `modules/audit`.
+- **Change in one place.** Everything about todos lives under `modules/todos`; accounts and authentication under `modules/identity`; teams, roles and invitations under `modules/teams`; the audit log under `modules/audit`.
 - **Swap technology without touching business code.** The same use cases run on memory, MongoDB or PostgreSQL, and send mail through a log or SMTP, chosen at startup.
 - **Split later if needed.** Modules only talk through small public APIs, so one could become its own service without rewriting the others.
 
@@ -51,9 +51,9 @@ cmd/
 
 internal/
 ├── modules/                  one directory per feature (bounded context)
-│   ├── identity/             accounts, passwords, passkeys, sessions, email verification, authentication
+│   ├── identity/             accounts of Firebase users, passkeys, authentication of ID tokens
 │   │   ├── identity.go       the module's public API (New, RegisterRoutes, Authenticator)
-│   │   ├── domain/           entities + invariants (User, Session, OneTimeToken, errors)
+│   │   ├── domain/           entities + invariants (User, Passkey, PasskeyChallenge, errors)
 │   │   ├── application/      ports.go: write repositories and read-only readers
 │   │   │   ├── command/      write use cases: one command struct + handler each
 │   │   │   └── query/        read use cases: one query struct + handler each
@@ -61,9 +61,8 @@ internal/
 │   │   │   └── httpapi/      driving adapter: HTTP handlers, request/response shapes
 │   │   └── adapters/         driven adapters
 │   │       ├── persistence/  memstore | mongostore | pgstore (+ queries.sql, sqlcgen/), storetest/
-│   │       ├── security/     bcrypt hasher, RS256 JWT issuer/verifier
+│   │       ├── firebase/     Firebase Admin SDK: ID-token verifier, custom tokens, user deletion
 │   │       ├── passkeys/     WebAuthn relying party (go-webauthn); passkeytest/ software authenticator
-│   │       ├── mail/         verification and reset emails on a platform mail.Sender
 │   │       ├── todosgateway/ bridge to the todos module
 │   │       ├── teamsgateway/ bridge to the teams module (account deletion)
 │   │       └── auditgateway/ bridge to the audit module (security log)
@@ -114,12 +113,12 @@ internal/
 
 | Layer | Contains | Knows about |
 |-------|----------|-------------|
-| `domain` | Entities (`User`, `Session`, `Todo`, `Project`, `Team`, `Member`, `Invitation`, `Event`, …), invariants (`NormalizeEmail`, `ValidatePassword`, `NormalizeTitle`, `CanChangeRole`), domain errors | Nothing but `platform/apperrors` (and `platform/access` for roles) |
+| `domain` | Entities (`User`, `Passkey`, `Todo`, `Project`, `Team`, `Member`, `Invitation`, `Event`, …), invariants (`NormalizeEmail`, `SignInRevoked`, `NormalizeTitle`, `CanChangeRole`), domain errors | Nothing but `platform/apperrors` (and `platform/access` for roles) |
 | `application` | `ports.go`: the **ports**, split into write repositories (`UserRepository`, `TodoRepository`, `Mailer`, …) and read-only readers (`UserReader`, `TodoReader`, …) | `domain` |
 | `application/command` | One struct per write (`Register`, `CreateTodo`, …) and its handler | `application` ports, `domain`, `platform/tx` |
 | `application/query` | One struct per read (`GetOverview`, `ListTodos`, …), its handler and read views | `application` read ports, `domain`, `platform/auth`, `platform/access` |
 | `transport/httpapi` | Endpoints: decode request → run one command → read the response with a query | `command`, `query`, `domain` errors, `platform/httpx`, `platform/auth`, `platform/access` |
-| `adapters/*` | Implementations of the ports: databases, bcrypt, JWT, SMTP, other modules | `application` ports, drivers, `platform/database` |
+| `adapters/*` | Implementations of the ports: databases, Firebase, WebAuthn, SMTP, other modules | `application` ports, drivers, `platform/database` |
 | `<module>.go` | The module's public API: `New`, `RegisterRoutes`, plus what other modules may call | Its own layers |
 
 ### Commands and queries (CQRS)
@@ -133,8 +132,8 @@ POST /todos ─► decode ─► command.CreateTodo ─► CreateTodoHandler ─
                query.GetTodo ─► GetTodoHandler ─► TodoReader.Get ─► JSON response
 ```
 
-- **A command is a plain struct** (`command.CreateTodo{Actor, Changes}`) handled by its own handler (`CreateTodoHandler.Handle(ctx, cmd)`). It returns an error and at most what only the write can produce: a new ID, or freshly issued credentials (`Register`, `Login`, `Refresh`, `ChangePassword`). Everything else is read back through a query.
-- **A query is a plain struct** (`query.ListTodos{Actor, Query, Overdue, IncludeArchived}`) handled by its own handler, returning data. Query handlers depend only on read-only ports (`TodoReader`, `ProjectReader`, `UserReader`, `AccessTokenVerifier`), so the compiler guarantees they can't write.
+- **A command is a plain struct** (`command.CreateTodo{Actor, Changes}`) handled by its own handler (`CreateTodoHandler.Handle(ctx, cmd)`). It returns an error and at most what only the write can produce: a new ID, the account a sign-in names (`SignIn`), WebAuthn options, or a Firebase custom token (`FinishPasskeyLogin`). Everything else is read back through a query.
+- **A query is a plain struct** (`query.ListTodos{Actor, Query, Overdue, IncludeArchived}`) handled by its own handler, returning data. Query handlers depend only on read-only ports (`TodoReader`, `ProjectReader`, `UserReader`, `IDTokenVerifier`), so the compiler guarantees they can't write.
 - **Each module builds its handlers once**: `Module.Commands` (`command.Handlers`) and `Module.Queries` (`query.Handlers`). The transport receives both and composes them per endpoint.
 - **The read side has its own views.** `query.ProjectView` and `query.CollectionView` add the progress of their todos, and `query.Overview` adds the user's todos. The write side never computes them.
 - **One store serves both sides.** Each persistence adapter implements the repository and the reader of its aggregate (`application.TodoStore` = `TodoRepository` + `TodoReader`). The split is in the ports, not the database. A separate read model (a cache, a projection) could later replace the readers without touching commands.
@@ -154,27 +153,24 @@ POST /todos ─► decode ─► command.CreateTodo ─► CreateTodoHandler ─
 
 ### identity
 
-Accounts, passwords, passkeys, sessions, email verification and authentication of every request.
+Accounts and authentication of every request. Sign-in itself (Google, email and password, email verification, password reset) is Firebase Authentication's: clients send Firebase ID tokens, and an account is the API's record of a Firebase user, linked by `firebaseUid`.
 
 | Port (application/ports.go) | Adapters |
 |-----------------------------|----------|
 | `UserRepository` (commands) / `UserReader` (queries) | `memstore.Users`, `mongostore.Users`, `pgstore.Users` |
-| `SessionRepository` | `memstore.Sessions`, `mongostore.Sessions`, `pgstore.Sessions` |
-| `OneTimeTokenRepository` (used twice: email verifications, password resets) | `memstore.OneTimeTokens`, `mongostore.OneTimeTokens`, `pgstore.OneTimeTokens` |
 | `PasskeyRepository` (commands) / `PasskeyReader` (queries) | `memstore.Passkeys`, `mongostore.Passkeys`, `pgstore.Passkeys` |
 | `PasskeyChallengeRepository` (pending WebAuthn ceremonies) | `memstore.PasskeyChallenges`, `mongostore.PasskeyChallenges`, `pgstore.PasskeyChallenges` |
 | `RelyingParty` (WebAuthn ceremonies) | `passkeys.RelyingParty` (go-webauthn) |
-| `PasswordHasher` | `security.BcryptHasher` |
-| `AccessTokenIssuer` (commands) / `AccessTokenVerifier` (queries) | `security.JWT` (RS256) |
-| `Mailer` | `mail.Mailer` on a `platform/mail.Sender` (log or SMTP) |
+| `IDTokenVerifier` (both sides) | `firebase.Client` (Admin SDK `VerifyIDToken`) |
+| `FirebaseAdmin` (commands; nil without a service account) | `firebase.Client` (custom tokens, user deletion) |
 | `TodoDeleter` (commands) / `TodoLister` (queries) | `todosgateway.Gateway` → `todos.Module` |
 | `TeamMemberships` (account deletion) | `teamsgateway.Gateway` → `teams.Module` |
 | `AuditLog` (security log) | `auditgateway.Gateway` → `audit.Module` |
 | `tx.Runner` | `tx.None`, `postgres.TxRunner`, `mongodb.TxRunner` |
 
-Commands: `Register`, `Login`, `Refresh`, `Logout`, `LogoutAll`, `VerifyEmail`, `ResendVerification`, `RequestPasswordReset`, `ResetPassword`, `ChangePassword`, `DeleteAccount`, and for passkeys `BeginPasskeyRegistration`, `FinishPasskeyRegistration`, `BeginPasskeyLogin`, `FinishPasskeyLogin`, `DeletePasskey`. Shared steps (start a session, issue or redeem a one-time token, hash or check a password, revoke every credential, record a security event) live once in `command/command.go`. Logins, failed logins, logouts, refresh-token reuse, verification, password reset requests, resets and changes go to the user's security log; `DeleteAccount` first takes the user out of their teams (which fails with `OWNS_TEAMS` while they own a team with other members), then deletes their personal todos, credentials (passkeys included) and security log.
+Commands: `SignIn`, `LogoutAll`, `DeleteAccount`, and for passkeys `BeginPasskeyRegistration`, `FinishPasskeyRegistration`, `BeginPasskeyLogin`, `FinishPasskeyLogin`, `DeletePasskey`. `SignIn` runs after every Firebase sign-in: it finds the account by Firebase UID, or links an account from before Firebase with the same email (only when Firebase says the email is verified), or creates one, in one unit of work. `LogoutAll` sets `sessionsValidAfter`; ID tokens whose `auth_time` is earlier are refused from then on. Sign-ins, links, logout-all and passkey events go to the user's security log; `DeleteAccount` first takes the user out of their teams (which fails with `OWNS_TEAMS` while they own a team with other members), then deletes their personal todos, passkeys and security log, and after the transaction their Firebase user (when there is a service account).
 
-Passkeys keep WebAuthn out of the application layer. `RelyingParty` takes and returns opaque bytes: the options JSON for the browser, the ceremony state kept between the two calls, and the credential record (public key, sign counter, flags) that the adapter stores in `domain.Passkey.Credential` and updates on every sign-in. A ceremony is two commands: `Begin…` stores a `domain.PasskeyChallenge` named by a single-use opaque token (only its hash is stored, like the one-time tokens) and returns the options; `Finish…` consumes the challenge (used up even if the answer fails), lets the adapter verify the answer and then writes in one unit of work. A registration challenge carries the account's ID and a sign-in challenge none, so one can't stand in for the other. Sign-in uses discoverable credentials: the user handle the authenticator returns is the account ID, and `FinishPasskeyLogin` hands the adapter a lookup for that account's passkeys. A sign counter that went backwards fails the sign-in, and failures on an existing account are recorded like failed password logins.
+Passkeys keep WebAuthn out of the application layer. `RelyingParty` takes and returns opaque bytes: the options JSON for the browser, the ceremony state kept between the two calls, and the credential record (public key, sign counter, flags) that the adapter stores in `domain.Passkey.Credential` and updates on every sign-in. A ceremony is two commands: `Begin…` stores a `domain.PasskeyChallenge` named by a single-use opaque token (only its hash is stored, like the one-time tokens) and returns the options; `Finish…` consumes the challenge (used up even if the answer fails), lets the adapter verify the answer and then writes in one unit of work. A registration challenge carries the account's ID and a sign-in challenge none, so one can't stand in for the other. Sign-in uses discoverable credentials: the user handle the authenticator returns is the account ID, and `FinishPasskeyLogin` hands the adapter a lookup for that account's passkeys, then mints a Firebase custom token the client exchanges for an ID token, so a passkey sign-in ends like any other Firebase sign-in. A sign counter that went backwards fails the sign-in, and failures on an existing account are recorded like failed password logins.
 
 Queries: `GetUser`, `GetOverview`, `ListPasskeys`, and `Authenticate`, whose handler also implements `platform/auth.Authenticator` for the auth middleware.
 
@@ -297,7 +293,7 @@ main.go   run(ctx)
         │     memory   → memstores + tx.None
         │     postgres → connect, optional migrate, pgstores + postgres.TxRunner
         │     mongo    → connect, optional migrate, mongostores + mongodb.TxRunner
-        ├── security.NewJWTFromFiles (checks the key pair matches)
+        ├── newSignIn(cfg)           Firebase client (FIREBASE_PROJECT_ID, optional service account) + WebAuthn relying party
         ├── newMailers(cfg)          one mail.Sender (SMTP if SMTP_HOST is set, else log) for every module
         ├── wireModules(...)         in dependency order: audit → todos → teams → identity, gateways in between
         └── newRouter(cfg, modules)
@@ -319,12 +315,12 @@ Recovery            panic → 500 INTERNAL (logged with stack)
                           identity bearer routes:  auth.Middleware(identity.Authenticator())
                           todos, teams, audit:     auth + RequireVerifiedEmail (if enabled)
                                                    + access.Middleware(teams.Resolver())
-                          password change, invitation accept/decline: + ratelimit
+                          invitation accept/decline: + ratelimit
                     └── endpoint → command handler → repositories
                                  └──→ query handler   → readers → JSON
 ```
 
-`auth.Middleware` reads the bearer token and runs identity's `Authenticate` query. That checks the JWT signature and expiry, loads the user and compares the token version, so revocation is immediate. It then stores a `Principal` in the context. Handlers read it with `auth.PrincipalFrom`; the todos, teams and audit modules never see a token, only the `access.Actor` built from it.
+`auth.Middleware` reads the bearer token and runs identity's `Authenticate` query. That verifies the Firebase ID token (signature against Google's keys, expiry, project), loads the account by Firebase UID and checks the sign-in time against the account's logout-all cutoff, so revocation and account deletion are immediate. It then stores a `Principal` in the context. Handlers read it with `auth.PrincipalFrom`; the todos, teams and audit modules never see a token, only the `access.Actor` built from it.
 
 ## Persistence
 
@@ -336,13 +332,13 @@ Recovery            panic → 500 INTERNAL (logged with stack)
 | PostgreSQL | Production | `pgx/v5` pool; queries written in SQL and generated with `sqlc` per module; foreign keys only inside a module (IDs that cross modules, such as users and teams, are plain values) |
 | MongoDB | Production | Driver v2; one collection per aggregate; unique and TTL indexes from migrations |
 
-Repositories follow the contracts documented on the ports. For example, a missing record is `apperrors.ErrNotFound`, a malformed ID is `apperrors.ErrInvalidID`, and `SessionRepository.Revoke` reports whether this call did the revoking.
+Repositories follow the contracts documented on the ports. For example, a missing record is `apperrors.ErrNotFound`, a malformed ID is `apperrors.ErrInvalidID`, and `UserRepository.LinkFirebaseUID` refuses to relink an account.
 
-Each module has a **store contract** in `adapters/persistence/storetest`. Every backend runs the same suite, so a behaviour the application relies on cannot differ between backends. Examples: duplicate emails, owner and team scoping, one membership per user and team, one pending invitation per email, audit paging, single-use tokens, exactly one winner when a session is revoked concurrently, transaction rollback. For todo lists the contract runs many filter and sort combinations and compares each backend's answer with `domain.Query` applied to the same fixtures.
+Each module has a **store contract** in `adapters/persistence/storetest`. Every backend runs the same suite, so a behaviour the application relies on cannot differ between backends. Examples: duplicate emails, owner and team scoping, one membership per user and team, one pending invitation per email, audit paging, single-use challenges, one account per Firebase user, transaction rollback. For todo lists the contract runs many filter and sort combinations and compares each backend's answer with `domain.Query` applied to the same fixtures.
 
 Dynamic filters stay in static, type-checked SQL. `ListTodos` in `queries.sql` takes every filter as a parameter that is "off" when empty or NULL, for example `(cardinality(@statuses) = 0 OR status = ANY(@statuses))`, and orders with `CASE` on the sort key. sqlc generates one typed function for it. On MongoDB, missing values sort first, so "no deadline last" sorts on a computed flag in an aggregation.
 
-The two one-time-token tables (`email_verifications`, `password_resets`) have identical shapes, so a single `OneTimeTokens` implementation per backend serves both, parameterised by table or collection.
+The tables and collections of the password sign-in from before Firebase (`sessions`, `email_verifications`, `password_resets`, and `password_hash` / `token_version` on users) are no longer read or written. They stay until a later migration drops them, so the Firebase release can be rolled back.
 
 ### Transactions (unit of work)
 
@@ -352,7 +348,7 @@ The two one-time-token tables (`email_verifications`, `password_resets`) have id
 - **MongoDB**: the session context created by `WithTransaction` is passed down, and driver calls made with it join the transaction.
 - **Memory**: `tx.None` runs `fn` directly.
 
-Nested `WithinTx` calls join the outer transaction. Commands that write more than one record use one unit of work: register, login, refresh rotation, logout-all, password reset and change, deleting a project (with its todos), deleting a collection (detaching its projects), every team command, every audited change to a team record (the change and its event), team deletion and account deletion. Team and account deletion span modules: the gateways run inside the same transaction (teams → todos and audit; identity → teams, todos and audit), and the other modules' commands join it.
+Nested `WithinTx` calls join the outer transaction. Commands that write more than one record use one unit of work: sign-in (create or link, plus its audit event), logout-all, passkey registration and sign-in, deleting a project (with its todos), deleting a collection (detaching its projects), every team command, every audited change to a team record (the change and its event), team deletion and account deletion. Team and account deletion span modules: the gateways run inside the same transaction (teams → todos and audit; identity → teams, todos and audit), and the other modules' commands join it.
 
 MongoDB transactions need a replica set or sharded cluster. `mongodb.NewTxRunner` checks the topology at startup and falls back to `tx.None`, with a warning, on a standalone server.
 
@@ -376,13 +372,12 @@ Errors flow outwards as values and are turned into HTTP exactly once:
 | Concern | Design |
 |---------|--------|
 | Passkeys | WebAuthn with discoverable credentials and user verification required; only public keys are stored; challenges single-use, 5 minutes, bound to registration (and the account) or sign-in, stored hashed; bound to `PASSKEY_RP_ID` and `PASSKEY_ORIGINS`; a sign counter going backwards fails the sign-in |
-| Passwords | bcrypt cost 12; 8–72 bytes (bcrypt silently truncates longer input, so it is rejected); unknown emails are compared against a dummy hash to keep timing equal |
-| Access tokens | RS256 JWT, 15 minutes, claims `sub`, `ver`, `token_type`; only RS256 accepted; expiration required |
-| Revocation | Per-request token-version check against the user. Logout-all, password reset and change, and account deletion take effect immediately |
-| Refresh tokens | Opaque 256-bit random strings stored as SHA-256. Rotation inside a family; reuse revokes the family; the conditional `Revoke` guarantees one winner under concurrency |
-| One-time tokens | Email verification (24 h) and password reset (1 h): random, stored hashed, single-use, at most one pending per user per kind, replaced on re-issue |
-| Account enumeration | Login and forgot-password answer the same way for unknown emails; reset emails are sent after the response so SMTP latency doesn't leak |
-| Abuse | Per-IP token bucket on public auth endpoints and password change; 1 MiB body limit; `X-Forwarded-For` not trusted |
+| Sign-in | Firebase Authentication (Google, email and password); the API never handles passwords |
+| ID tokens | Verified per request with the Firebase Admin SDK: Google's RS256 keys (cached), expiry, audience and issuer of `FIREBASE_PROJECT_ID`; then the account is loaded by Firebase UID |
+| Revocation | Logout-all stores a cutoff; ID tokens whose `auth_time` is earlier (refreshed ones keep it) are refused. Account deletion takes effect immediately because the account is gone |
+| Account linking | An account from before Firebase is linked only when Firebase reports the email as verified, and only once; a second Firebase user with the same email gets `EMAIL_TAKEN` |
+| Service account | Optional (`FIREBASE_CREDENTIALS_FILE`); needed only to mint custom tokens (passkey sign-in) and delete Firebase users |
+| Abuse | Per-IP token bucket on public auth endpoints; 1 MiB body limit; `X-Forwarded-For` not trusted |
 | Email headers | SMTP sender rejects CR/LF in addresses and subjects; names and team names have them replaced with spaces |
 | Team access | Non-members can't tell a team exists (`TEAM_NOT_FOUND`); roles are read per request; managers act only below their own role; ownership only by transfer |
 | Invitations | Random token, stored hashed, single-use, 7 days; accepted only by the account with the invited email; re-inviting replaces the link; accept/decline rate-limited |
@@ -393,7 +388,7 @@ Errors flow outwards as values and are turned into HTTP exactly once:
 | Level | Where | Runs on |
 |-------|-------|---------|
 | Domain rules | `modules/*/domain/*_test.go` | pure Go |
-| Commands and queries | `modules/identity/application/usecases_test.go`, `passkeys_test.go` | memory stores, real bcrypt (min cost), JWT and WebAuthn with a software authenticator (`passkeys/passkeytest`), fake mailer, test clock |
+| Commands and queries | `modules/identity/application/usecases_test.go`, `passkeys_test.go` | memory stores, a fake Firebase (ID tokens, custom tokens), real WebAuthn with a software authenticator (`passkeys/passkeytest`), test clock |
 | Store contracts | `modules/*/adapters/persistence/storetest` run from each store package | memory always; PostgreSQL / MongoDB when `TEST_POSTGRES_URI` / `TEST_MONGO_URI` are set |
 | Adapter edge cases | e.g. invalid IDs rejected before the database, SMTP header injection | pure Go |
 | Platform | middleware, rate limiter, config, migrations, codegen | pure Go / real databases for migrations |
@@ -435,7 +430,6 @@ Errors flow outwards as values and are turned into HTTP exactly once:
 - **Shared database, owned tables.** All modules use one database (so cross-module transactions are possible), but each module touches only its own tables. Foreign keys stay inside a module: team records outlive their creator's account, and each module deletes its own data when asked through its public API.
 - **Memberships through the platform, not a gateway.** todos and audit read the caller's team roles from `access.Actor`, filled per request by the teams module's `Resolver`. That avoids a todos ↔ teams import cycle (teams already calls todos to delete team data) and keeps authorization data in one place.
 - **Audit inside the transaction.** An event is stored with its change or not at all; an audit store outage fails the request instead of losing events. Failed logins are recorded too, for existing accounts only.
-- **Token version check on every request.** It costs one user lookup per request, and buys immediate revocation without a token blacklist.
-- **Opaque refresh tokens, JWT access tokens.** Access tokens verify cheaply; refresh tokens stay revocable and are useless if the database leaks.
+- **Firebase ID tokens on every request.** No API-issued tokens or sessions: Firebase handles sign-in, refresh, verification and password reset. Each request costs a local signature check (Google's keys are cached) plus one account lookup, which also gives immediate logout-all (an `auth_time` cutoff) without calling Firebase. Passkeys fit in through Firebase custom tokens, which need a service account.
 - **In-process rate limiting.** Simple and dependency-free, but limits apply per replica. A shared store (e.g. Redis) is the next step once the API runs several replicas.
 - **No caching or distributed tracing yet.** There is no measured need. Request IDs and structured logs cover correlation for now.

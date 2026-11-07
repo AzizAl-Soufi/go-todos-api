@@ -28,9 +28,13 @@ type DatabaseConfig struct {
 	MongoMigrationsConfig string `mapstructure:"MONGO_MIGRATIONS_CONFIG" default:"./cmd/migrate/mongo.yaml"`
 }
 
-type JWTConfig struct {
-	PrivateKeyPath string `mapstructure:"JWT_PRIVATE_KEY_PATH"`
-	PublicKeyPath  string `mapstructure:"JWT_PUBLIC_KEY_PATH"`
+// FirebaseConfig points at the Firebase project whose ID tokens the API
+// accepts. CredentialsFile (a service account JSON key) is optional; it
+// enables passkey sign-in (custom tokens) and deleting the Firebase user with
+// the account.
+type FirebaseConfig struct {
+	ProjectID       string `mapstructure:"FIREBASE_PROJECT_ID"`
+	CredentialsFile string `mapstructure:"FIREBASE_CREDENTIALS_FILE"`
 }
 
 type AuthConfig struct {
@@ -39,10 +43,6 @@ type AuthConfig struct {
 	// Per-client-IP limit on the unauthenticated /auth endpoints.
 	RateLimitPerMinute int `mapstructure:"AUTH_RATE_LIMIT_PER_MINUTE" default:"20"`
 	RateLimitBurst     int `mapstructure:"AUTH_RATE_LIMIT_BURST" default:"10"`
-	// PasswordResetURL is the page the reset email links to (token appended as
-	// ?token=...). It should ask for a new password and call
-	// POST /auth/password/reset. Defaults to APP_BASE_URL + "/reset-password".
-	PasswordResetURL string `mapstructure:"AUTH_PASSWORD_RESET_URL"`
 }
 
 // PasskeyConfig names the WebAuthn relying party. Passkeys are bound to RPID
@@ -65,12 +65,12 @@ type SMTPConfig struct {
 }
 
 type Config struct {
-	App     AppConfig      `mapstructure:",squash"`
-	DB      DatabaseConfig `mapstructure:",squash"`
-	JWT     JWTConfig      `mapstructure:",squash"`
-	Auth    AuthConfig     `mapstructure:",squash"`
-	Passkey PasskeyConfig  `mapstructure:",squash"`
-	SMTP    SMTPConfig     `mapstructure:",squash"`
+	App      AppConfig      `mapstructure:",squash"`
+	DB       DatabaseConfig `mapstructure:",squash"`
+	Firebase FirebaseConfig `mapstructure:",squash"`
+	Auth     AuthConfig     `mapstructure:",squash"`
+	Passkey  PasskeyConfig  `mapstructure:",squash"`
+	SMTP     SMTPConfig     `mapstructure:",squash"`
 }
 
 // setting is one environment variable declared on Config.

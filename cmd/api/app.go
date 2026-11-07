@@ -13,9 +13,8 @@ import (
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity"
 	identityaudit "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/auditgateway"
-	identitymail "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/mail"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/firebase"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/passkeys"
-	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/security"
 	identityteams "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/teamsgateway"
 	identitytodos "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/todosgateway"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
@@ -48,19 +47,13 @@ func newApp(ctx context.Context, cfg *config.Config) (*app, error) {
 		return nil, err
 	}
 
-	tokens, err := security.NewJWTFromFiles(cfg.JWT.PrivateKeyPath, cfg.JWT.PublicKeyPath, security.DefaultAccessTokenTTL)
+	signIn, err := newSignIn(ctx, cfg)
 	if err != nil {
 		store.close()
-		return nil, fmt.Errorf("initialize JWT: %w", err)
+		return nil, err
 	}
 
-	rp, err := newRelyingParty(cfg)
-	if err != nil {
-		store.close()
-		return nil, fmt.Errorf("initialize passkeys: %w", err)
-	}
-
-	modules := wireModules(store, security.NewBcryptHasher(security.DefaultBcryptCost), tokens, rp, newMailers(cfg), cfg)
+	modules := wireModules(store, signIn, newMailers(cfg), cfg)
 	return &app{cfg: cfg, handler: newRouter(cfg, modules), close: store.close}, nil
 }
 
@@ -73,15 +66,43 @@ type modules struct {
 
 // mailers are the modules' email adapters.
 type mailers struct {
-	identity application.Mailer
-	teams    teamsapp.Mailer
+	teams teamsapp.Mailer
+}
+
+// signIn are the adapters identity authenticates with: Firebase and WebAuthn.
+type signIn struct {
+	idTokens application.IDTokenVerifier
+	firebase application.FirebaseAdmin // nil without a service account
+	passkeys application.RelyingParty
+}
+
+// newSignIn connects to the Firebase project (FIREBASE_PROJECT_ID) and sets
+// up passkeys. Without FIREBASE_CREDENTIALS_FILE the API only verifies ID
+// tokens: passkey sign-in is off and deleting an account leaves its Firebase
+// user (the client deletes it).
+func newSignIn(ctx context.Context, cfg *config.Config) (signIn, error) {
+	client, err := firebase.New(ctx, cfg.Firebase.ProjectID, cfg.Firebase.CredentialsFile)
+	if err != nil {
+		return signIn{}, fmt.Errorf("initialize Firebase: %w", err)
+	}
+	rp, err := newRelyingParty(cfg)
+	if err != nil {
+		return signIn{}, fmt.Errorf("initialize passkeys: %w", err)
+	}
+	s := signIn{idTokens: client, passkeys: rp}
+	if cfg.Firebase.CredentialsFile != "" {
+		s.firebase = client
+	} else {
+		slog.Warn("FIREBASE_CREDENTIALS_FILE not set: passkey sign-in is disabled and deleted accounts keep their Firebase user")
+	}
+	return s, nil
 }
 
 // wireModules builds the modules in dependency order: audit is a leaf, todos
 // records into it, teams deletes team data in todos, identity reaches all of
 // them on account deletion. Team memberships flow to todos and audit through
 // platform/access (teams.Resolver), not through imports.
-func wireModules(store *storage, hasher application.PasswordHasher, tokens application.AccessTokens, rp application.RelyingParty, mailer mailers, cfg *config.Config) modules {
+func wireModules(store *storage, signIn signIn, mailer mailers, cfg *config.Config) modules {
 	auditModule := audit.New(audit.Deps{Events: store.events})
 	todosModule := todos.New(todos.Deps{
 		Todos:       store.todos,
@@ -101,31 +122,19 @@ func wireModules(store *storage, hasher application.PasswordHasher, tokens appli
 		Config:      teams.DefaultConfig(cfg.App.BaseURL),
 	})
 	identityModule := identity.New(identity.Deps{
-		Users:          store.users,
-		Sessions:       store.sessions,
-		Verifications:  store.verifications,
-		PasswordResets: store.passwordResets,
-		Passkeys:       store.passkeys,
-		Challenges:     store.challenges,
-		RelyingParty:   rp,
-		Hasher:         hasher,
-		Tokens:         tokens,
-		Mailer:         mailer.identity,
-		Todos:          identitytodos.New(todosModule),
-		Teams:          identityteams.New(teamsModule),
-		Audit:          identityaudit.New(auditModule),
-		Tx:             store.tx,
-		Config:         identityConfig(cfg),
+		Users:        store.users,
+		Passkeys:     store.passkeys,
+		Challenges:   store.challenges,
+		RelyingParty: signIn.passkeys,
+		IDTokens:     signIn.idTokens,
+		Firebase:     signIn.firebase,
+		Todos:        identitytodos.New(todosModule),
+		Teams:        identityteams.New(teamsModule),
+		Audit:        identityaudit.New(auditModule),
+		Tx:           store.tx,
+		Config:       identity.DefaultConfig(),
 	})
 	return modules{audit: auditModule, todos: todosModule, teams: teamsModule, identity: identityModule}
-}
-
-func identityConfig(cfg *config.Config) identity.Config {
-	c := identity.DefaultConfig(cfg.App.BaseURL)
-	if cfg.Auth.PasswordResetURL != "" {
-		c.PasswordResetURL = cfg.Auth.PasswordResetURL
-	}
-	return c
 }
 
 // newRelyingParty configures passkeys for PASSKEY_RP_ID and PASSKEY_ORIGINS,
@@ -148,21 +157,21 @@ func newRelyingParty(cfg *config.Config) (*passkeys.RelyingParty, error) {
 		}
 	}
 	pc.RPName = cmp.Or(pc.RPName, "Todos")
-	pc.Timeout = identityConfig(cfg).PasskeyChallengeTTL
+	pc.Timeout = identity.DefaultConfig().PasskeyChallengeTTL
 	return passkeys.New(pc)
 }
 
 func newMailers(cfg *config.Config) mailers {
 	var sender mail.Sender = mail.LogSender{}
 	if cfg.SMTP.Host == "" {
-		slog.Warn("SMTP_HOST not set: verification, password reset and invitation emails are logged, not sent")
+		slog.Warn("SMTP_HOST not set: invitation emails are logged, not sent")
 	} else {
 		sender = mail.SMTP{
 			Host: cfg.SMTP.Host, Port: cfg.SMTP.Port,
 			Username: cfg.SMTP.Username, Password: cfg.SMTP.Password, From: cfg.SMTP.From,
 		}
 	}
-	return mailers{identity: identitymail.Mailer{Sender: sender}, teams: teamsmail.Mailer{Sender: sender}}
+	return mailers{teams: teamsmail.Mailer{Sender: sender}}
 }
 
 func newRouter(cfg *config.Config, m modules) http.Handler {

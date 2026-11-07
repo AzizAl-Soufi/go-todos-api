@@ -137,11 +137,13 @@ type Todo struct {
 }
 
 type User struct {
-	ID              uuid.UUID
-	Name            string
-	Email           string
-	CreatedAt       time.Time
-	PasswordHash    string
-	EmailVerifiedAt *time.Time
-	TokenVersion    int32
+	ID                 uuid.UUID
+	Name               string
+	Email              string
+	CreatedAt          time.Time
+	PasswordHash       string
+	EmailVerifiedAt    *time.Time
+	TokenVersion       int32
+	FirebaseUid        *string
+	SessionsValidAfter *time.Time
 }

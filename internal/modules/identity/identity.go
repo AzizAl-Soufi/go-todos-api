@@ -1,7 +1,7 @@
-// Package identity is the identity module's public surface: accounts,
-// password and passkey login, password reset and change, refresh-token sessions, email
-// verification and the Authenticator other modules rely on (via
-// platform/auth).
+// Package identity is the identity module's public surface: accounts of
+// Firebase Authentication users (Google, email and password), passkeys, and
+// the Authenticator other modules rely on (via platform/auth), which accepts
+// Firebase ID tokens.
 //
 // Layout (CQRS inside hexagonal layers):
 //
@@ -10,7 +10,7 @@
 //	application/command/   write use cases, one handler per command
 //	application/query/     read use cases, one handler per query
 //	transport/             driving adapters (HTTP)
-//	adapters/              driven adapters (persistence, security, passkeys (WebAuthn), mail, todos, teams and audit gateways)
+//	adapters/              driven adapters (persistence, Firebase, passkeys (WebAuthn), todos, teams and audit gateways)
 package identity
 
 import (
@@ -28,27 +28,23 @@ import (
 
 type Config = command.Config
 
-// DefaultConfig returns production TTLs and email links under baseURL.
-func DefaultConfig(baseURL string) Config { return command.DefaultConfig(baseURL) }
+// DefaultConfig returns the production settings.
+func DefaultConfig() Config { return command.DefaultConfig() }
 
 // Deps are the adapters the module runs on.
 type Deps struct {
-	Users          application.UserRepository
-	Sessions       application.SessionRepository
-	Verifications  application.OneTimeTokenRepository
-	PasswordResets application.OneTimeTokenRepository
-	Passkeys       application.PasskeyRepository
-	Challenges     application.PasskeyChallengeRepository
-	RelyingParty   application.RelyingParty
-	Hasher         application.PasswordHasher
-	Tokens         application.AccessTokens
-	Mailer         application.Mailer
-	Todos          application.TodoGateway
-	Teams          application.TeamMemberships // nil: no teams to leave
-	Audit          application.AuditLog        // nil records nothing
-	Tx             tx.Runner
-	Config         Config
-	Now            func() time.Time // nil means time.Now
+	Users        application.UserRepository
+	Passkeys     application.PasskeyRepository
+	Challenges   application.PasskeyChallengeRepository
+	RelyingParty application.RelyingParty
+	IDTokens     application.IDTokenVerifier
+	Firebase     application.FirebaseAdmin // nil without a service account
+	Todos        application.TodoGateway
+	Teams        application.TeamMemberships // nil: no teams to leave
+	Audit        application.AuditLog        // nil records nothing
+	Tx           tx.Runner
+	Config       Config
+	Now          func() time.Time // nil means time.Now
 }
 
 type Module struct {
@@ -59,19 +55,19 @@ type Module struct {
 func New(d Deps) *Module {
 	return &Module{
 		Commands: command.New(command.Deps{
-			Users: d.Users, Sessions: d.Sessions, Verifications: d.Verifications, PasswordResets: d.PasswordResets,
-			Passkeys: d.Passkeys, Challenges: d.Challenges, RelyingParty: d.RelyingParty, Hasher: d.Hasher, Tokens: d.Tokens, Mailer: d.Mailer, Todos: d.Todos, Teams: d.Teams, Audit: d.Audit,
+			Users: d.Users, Passkeys: d.Passkeys, Challenges: d.Challenges, RelyingParty: d.RelyingParty,
+			IDTokens: d.IDTokens, Firebase: d.Firebase, Todos: d.Todos, Teams: d.Teams, Audit: d.Audit,
 			Tx: d.Tx, Config: d.Config, Now: d.Now,
 		}),
-		Queries: query.New(query.Deps{Users: d.Users, Passkeys: d.Passkeys, Tokens: d.Tokens, Todos: d.Todos}),
+		Queries: query.New(query.Deps{Users: d.Users, Passkeys: d.Passkeys, IDTokens: d.IDTokens, Todos: d.Todos}),
 	}
 }
 
-// Authenticator verifies access tokens for platform/auth.Middleware.
+// Authenticator verifies Firebase ID tokens for platform/auth.Middleware.
 func (m *Module) Authenticator() auth.Authenticator { return m.Queries.Authenticate }
 
-// RegisterRoutes mounts /auth/*, /me and /me/passkeys. limit rate-limits the public auth
-// endpoints (and password change); protect authenticates the caller.
+// RegisterRoutes mounts /auth/*, /me and /me/passkeys. limit rate-limits the
+// public auth endpoints; protect authenticates the caller.
 func (m *Module) RegisterRoutes(mux *http.ServeMux, protect, limit httpx.Middleware) {
 	httpapi.Register(mux, m.Commands, m.Queries, protect, limit)
 }

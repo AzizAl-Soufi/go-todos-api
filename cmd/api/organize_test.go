@@ -45,7 +45,7 @@ func progressOf(t *testing.T, v any) map[string]float64 {
 
 func TestTodoFields(t *testing.T) {
 	s := newTestServer(t)
-	u := s.register("Jo", "jo@example.com", "password1")
+	u := s.register("Jo", "jo@example.com")
 
 	due := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
 	r := s.do("POST", "/todos", u.access, map[string]any{
@@ -91,8 +91,8 @@ func TestTodoFields(t *testing.T) {
 
 func TestProjectsAndCollections(t *testing.T) {
 	s := newTestServer(t)
-	u := s.register("Kai", "kai@example.com", "password1")
-	other := s.register("Lu", "lu@example.com", "password1")
+	u := s.register("Kai", "kai@example.com")
+	other := s.register("Lu", "lu@example.com")
 
 	col := s.do("POST", "/collections", u.access, map[string]any{"name": "Work", "icon": "💼", "color": "blue"}).expect(t, 201)
 	colID := col.str("id")
@@ -188,7 +188,7 @@ func TestProjectsAndCollections(t *testing.T) {
 
 func TestTodoFiltersAndSorting(t *testing.T) {
 	s := newTestServer(t)
-	u := s.register("Mo", "mo@example.com", "password1")
+	u := s.register("Mo", "mo@example.com")
 	day := func(d int) string { return time.Now().UTC().AddDate(0, 0, d).Format(time.DateOnly) }
 	for _, todo := range []map[string]any{
 		{"title": "A", "priority": "low", "dueAt": day(3), "tags": []string{"x"}},
@@ -232,13 +232,13 @@ func TestTodoFiltersAndSorting(t *testing.T) {
 
 func TestAccountDeletionRemovesProjectsAndCollections(t *testing.T) {
 	s := newTestServer(t)
-	u := s.register("Ny", "ny@example.com", "password1")
+	u := s.register("Ny", "ny@example.com")
 	col := s.do("POST", "/collections", u.access, map[string]any{"name": "C"}).expect(t, 201).str("id")
 	proj := s.do("POST", "/projects", u.access, map[string]any{"name": "P", "collectionId": col}).expect(t, 201).str("id")
 	s.do("POST", "/todos", u.access, map[string]any{"title": "t", "projectId": proj}).expect(t, 201)
 
 	s.do("DELETE", "/me", u.access, nil).expect(t, 204)
-	again := s.register("Ny", "ny@example.com", "password1")
+	again := s.register("Ny", "ny@example.com")
 	for _, path := range []string{"/todos?include_archived=true", "/projects?archived=all", "/collections?archived=all"} {
 		if got := s.do("GET", path, again.access, nil).expect(t, 200).items(t); len(got) != 0 {
 			t.Fatalf("%s after account deletion: %v", path, got)

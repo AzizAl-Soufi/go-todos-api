@@ -148,6 +148,9 @@ type BeginPasskeyLogin struct{}
 type BeginPasskeyLoginHandler struct{ *base }
 
 func (h BeginPasskeyLoginHandler) Handle(ctx context.Context, _ BeginPasskeyLogin) (PasskeyOptions, error) {
+	if h.Firebase == nil {
+		return PasskeyOptions{}, domain.ErrPasskeyLoginOff
+	}
 	options, state, err := h.RelyingParty.BeginLogin()
 	if err != nil {
 		return PasskeyOptions{}, apperrors.InternalWrap("PASSKEY_OPTIONS_FAILED", "failed to start passkey sign-in", err)
@@ -159,24 +162,34 @@ func (h BeginPasskeyLoginHandler) Handle(ctx context.Context, _ BeginPasskeyLogi
 	return PasskeyOptions{Token: token, Options: options}, nil
 }
 
-// FinishPasskeyLogin verifies the authenticator's signature and starts a
-// session, like a password login. Failures on an existing account go to its
-// security log. A sign counter that went backwards (a possibly cloned
-// authenticator) fails the sign-in.
+// FinishPasskeyLogin verifies the authenticator's signature and returns a
+// Firebase custom token for the account; the client exchanges it with
+// signInWithCustomToken for a regular Firebase sign-in. Failures on an
+// existing account go to its security log. A sign counter that went
+// backwards (a possibly cloned authenticator) fails the sign-in.
 type FinishPasskeyLogin struct {
 	Token    string
 	Response []byte // the PublicKeyCredential from navigator.credentials.get, as JSON
 }
 
+// PasskeySignIn is a verified passkey sign-in.
+type PasskeySignIn struct {
+	UserID      string
+	CustomToken string // for Firebase signInWithCustomToken
+}
+
 type FinishPasskeyLoginHandler struct{ *base }
 
-func (h FinishPasskeyLoginHandler) Handle(ctx context.Context, cmd FinishPasskeyLogin) (Credentials, error) {
+func (h FinishPasskeyLoginHandler) Handle(ctx context.Context, cmd FinishPasskeyLogin) (PasskeySignIn, error) {
+	if h.Firebase == nil {
+		return PasskeySignIn{}, domain.ErrPasskeyLoginOff
+	}
 	c, err := h.consumeChallenge(ctx, cmd.Token)
 	if err != nil {
-		return Credentials{}, err
+		return PasskeySignIn{}, err
 	}
 	if !c.ForLogin() {
-		return Credentials{}, domain.ErrInvalidPasskeyChallenge
+		return PasskeySignIn{}, domain.ErrInvalidPasskeyChallenge
 	}
 
 	var passkeys []*domain.Passkey
@@ -193,7 +206,7 @@ func (h FinishPasskeyLoginHandler) Handle(ctx context.Context, cmd FinishPasskey
 	}
 	user, use, err := h.RelyingParty.FinishLogin(c.State, cmd.Response, owner)
 	if lookupErr != nil {
-		return Credentials{}, lookupErr
+		return PasskeySignIn{}, lookupErr
 	}
 	if err == nil && use.CloneWarning {
 		slog.Warn("passkey sign counter went backwards; refusing sign-in", "user_id", user.ID)
@@ -207,28 +220,31 @@ func (h FinishPasskeyLoginHandler) Handle(ctx context.Context, cmd FinishPasskey
 	}
 	if err != nil {
 		if user != nil && errors.Is(err, domain.ErrInvalidPasskeyCredential) {
-			entry := application.AuditEntry{UserID: user.ID, Action: "session.login_failed", Details: map[string]string{"method": "passkey"}}
+			entry := application.AuditEntry{UserID: user.ID, Action: "session.login_failed", Details: map[string]string{"provider": "passkey"}}
 			if err := h.Audit.Record(ctx, entry); err != nil {
-				return Credentials{}, err
+				return PasskeySignIn{}, err
 			}
 		}
-		return Credentials{}, err
+		return PasskeySignIn{}, err
 	}
 
-	var tokens Tokens
+	if user.FirebaseUID == "" {
+		return PasskeySignIn{}, domain.ErrAccountNotLinked
+	}
+	token, err := h.Firebase.CustomToken(ctx, user.FirebaseUID)
+	if err != nil {
+		return PasskeySignIn{}, apperrors.InternalWrap("CUSTOM_TOKEN_FAILED", "failed to issue a Firebase token", err)
+	}
 	err = h.Tx.WithinTx(ctx, func(ctx context.Context) error {
 		if err := h.Passkeys.RecordUse(ctx, passkey.ID, use.Credential, h.Now()); err != nil {
 			return err
 		}
-		if tokens, err = h.startSession(ctx, user, ""); err != nil {
-			return err
-		}
-		return h.record(ctx, user.ID, "session.login", map[string]string{"method": "passkey", "passkeyId": passkey.ID})
+		return h.record(ctx, user.ID, "session.login", map[string]string{"provider": "passkey", "passkeyId": passkey.ID})
 	})
 	if err != nil {
-		return Credentials{}, err
+		return PasskeySignIn{}, err
 	}
-	return Credentials{UserID: user.ID, Tokens: tokens}, nil
+	return PasskeySignIn{UserID: user.ID, CustomToken: token}, nil
 }
 
 func findPasskey(passkeys []*domain.Passkey, credentialID []byte) *domain.Passkey {
@@ -240,8 +256,8 @@ func findPasskey(passkeys []*domain.Passkey, credentialID []byte) *domain.Passke
 	return nil
 }
 
-// DeletePasskey removes one of the caller's passkeys. Sessions it started
-// stay valid; log out everywhere to end them.
+// DeletePasskey removes one of the caller's passkeys. Sign-ins it made stay
+// valid; log out everywhere to end them.
 type DeletePasskey struct {
 	UserID    string
 	PasskeyID string

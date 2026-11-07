@@ -5,6 +5,7 @@ package mongostore
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
@@ -18,12 +19,9 @@ import (
 )
 
 const (
-	UsersCollection          = "users"
-	SessionsCollection       = "sessions"
-	VerificationsCollection  = "email_verifications"
-	PasswordResetsCollection = "password_resets"
-	PasskeysCollection       = "passkeys"
-	ChallengesCollection     = "passkey_challenges"
+	UsersCollection      = "users"
+	PasskeysCollection   = "passkeys"
+	ChallengesCollection = "passkey_challenges"
 )
 
 // ---- users ----
@@ -35,31 +33,42 @@ var _ application.UserRepository = (*Users)(nil)
 func NewUsers(db *mongo.Database) *Users { return &Users{coll: db.Collection(UsersCollection)} }
 
 type userDoc struct {
-	ID              bson.ObjectID `bson:"_id,omitempty"`
-	Name            string        `bson:"name"`
-	Email           string        `bson:"email"`
-	PasswordHash    string        `bson:"passwordHash"`
-	EmailVerifiedAt *time.Time    `bson:"emailVerifiedAt,omitempty"`
-	TokenVersion    int           `bson:"tokenVersion"`
-	CreatedAt       time.Time     `bson:"createdAt"`
+	ID                 bson.ObjectID `bson:"_id,omitempty"`
+	Name               string        `bson:"name"`
+	Email              string        `bson:"email"`
+	FirebaseUID        string        `bson:"firebaseUid,omitempty"`
+	EmailVerifiedAt    *time.Time    `bson:"emailVerifiedAt,omitempty"`
+	SessionsValidAfter *time.Time    `bson:"sessionsValidAfter,omitempty"`
+	CreatedAt          time.Time     `bson:"createdAt"`
 }
 
 func (d *userDoc) toDomain() *domain.User {
 	return &domain.User{
-		ID: d.ID.Hex(), Name: d.Name, Email: d.Email, PasswordHash: d.PasswordHash,
-		EmailVerifiedAt: d.EmailVerifiedAt, TokenVersion: d.TokenVersion, CreatedAt: d.CreatedAt,
+		ID: d.ID.Hex(), Name: d.Name, Email: d.Email, FirebaseUID: d.FirebaseUID,
+		EmailVerifiedAt: d.EmailVerifiedAt, SessionsValidAfter: d.SessionsValidAfter, CreatedAt: d.CreatedAt,
 	}
+}
+
+// duplicateKey maps a duplicate key error to the port error of its index
+// (created by the migrations).
+func duplicateKey(err error) error {
+	if !mongo.IsDuplicateKeyError(err) {
+		return nil
+	}
+	if strings.Contains(err.Error(), "uniq_firebase_uid") {
+		return domain.ErrFirebaseUIDTaken
+	}
+	return domain.ErrEmailTaken
 }
 
 func (s *Users) Create(ctx context.Context, u *domain.User) error {
 	doc := userDoc{
-		ID: bson.NewObjectID(), Name: u.Name, Email: u.Email, PasswordHash: u.PasswordHash,
-		EmailVerifiedAt: u.EmailVerifiedAt, TokenVersion: u.TokenVersion, CreatedAt: u.CreatedAt,
+		ID: bson.NewObjectID(), Name: u.Name, Email: u.Email, FirebaseUID: u.FirebaseUID,
+		EmailVerifiedAt: u.EmailVerifiedAt, SessionsValidAfter: u.SessionsValidAfter, CreatedAt: u.CreatedAt,
 	}
 	if _, err := s.coll.InsertOne(ctx, doc); err != nil {
-		// Relies on the unique email index created by the migrations.
-		if mongo.IsDuplicateKeyError(err) {
-			return domain.ErrEmailTaken
+		if mapped := duplicateKey(err); mapped != nil {
+			return mapped
 		}
 		return err
 	}
@@ -87,6 +96,13 @@ func (s *Users) FindByEmail(ctx context.Context, email string) (*domain.User, er
 	return s.findOne(ctx, bson.M{"email": email})
 }
 
+func (s *Users) FindByFirebaseUID(ctx context.Context, firebaseUID string) (*domain.User, error) {
+	if firebaseUID == "" {
+		return nil, apperrors.ErrNotFound
+	}
+	return s.findOne(ctx, bson.M{"firebaseUid": firebaseUID})
+}
+
 func (s *Users) updateOne(ctx context.Context, id string, filter, update bson.M) error {
 	oid, err := ids.ObjectID(id)
 	if err != nil {
@@ -103,6 +119,20 @@ func (s *Users) updateOne(ctx context.Context, id string, filter, update bson.M)
 	return nil
 }
 
+func (s *Users) LinkFirebaseUID(ctx context.Context, id, firebaseUID string) error {
+	err := s.updateOne(ctx, id, bson.M{"firebaseUid": bson.M{"$exists": false}}, bson.M{"$set": bson.M{"firebaseUid": firebaseUID}})
+	if mapped := duplicateKey(err); mapped != nil {
+		return mapped
+	}
+	if errors.Is(err, apperrors.ErrNotFound) {
+		if _, err := s.FindByID(ctx, id); err != nil {
+			return err
+		}
+		return domain.ErrFirebaseUIDTaken // the account is linked already
+	}
+	return err
+}
+
 func (s *Users) MarkEmailVerified(ctx context.Context, id string, at time.Time) error {
 	// Keep the first verification time: only set the field when it is unset.
 	err := s.updateOne(ctx, id, bson.M{"emailVerifiedAt": bson.M{"$exists": false}},
@@ -113,12 +143,8 @@ func (s *Users) MarkEmailVerified(ctx context.Context, id string, at time.Time) 
 	return err
 }
 
-func (s *Users) IncrementTokenVersion(ctx context.Context, id string) error {
-	return s.updateOne(ctx, id, bson.M{}, bson.M{"$inc": bson.M{"tokenVersion": 1}})
-}
-
-func (s *Users) SetPasswordHash(ctx context.Context, id, hash string) error {
-	return s.updateOne(ctx, id, bson.M{}, bson.M{"$set": bson.M{"passwordHash": hash}})
+func (s *Users) RevokeSessions(ctx context.Context, id string, at time.Time) error {
+	return s.updateOne(ctx, id, bson.M{}, bson.M{"$set": bson.M{"sessionsValidAfter": at}})
 }
 
 func (s *Users) Delete(ctx context.Context, id string) error {
@@ -127,145 +153,6 @@ func (s *Users) Delete(ctx context.Context, id string) error {
 		return err
 	}
 	return mongodb.RequireDeleted(s.coll.DeleteOne(ctx, bson.M{"_id": oid}))
-}
-
-// ---- sessions ----
-
-type Sessions struct{ coll *mongo.Collection }
-
-var _ application.SessionRepository = (*Sessions)(nil)
-
-func NewSessions(db *mongo.Database) *Sessions {
-	return &Sessions{coll: db.Collection(SessionsCollection)}
-}
-
-type sessionDoc struct {
-	ID        bson.ObjectID `bson:"_id,omitempty"`
-	UserID    bson.ObjectID `bson:"userId"`
-	FamilyID  string        `bson:"familyId"`
-	TokenHash string        `bson:"tokenHash"`
-	ExpiresAt time.Time     `bson:"expiresAt"`
-	RevokedAt *time.Time    `bson:"revokedAt,omitempty"`
-	CreatedAt time.Time     `bson:"createdAt"`
-}
-
-func (s *Sessions) Create(ctx context.Context, sess *domain.Session) error {
-	userOID, err := ids.ObjectID(sess.UserID)
-	if err != nil {
-		return err
-	}
-	doc := sessionDoc{
-		ID: bson.NewObjectID(), UserID: userOID, FamilyID: sess.FamilyID, TokenHash: sess.TokenHash,
-		ExpiresAt: sess.ExpiresAt, RevokedAt: sess.RevokedAt, CreatedAt: sess.CreatedAt,
-	}
-	if _, err := s.coll.InsertOne(ctx, doc); err != nil {
-		return err
-	}
-	sess.ID = doc.ID.Hex()
-	return nil
-}
-
-func (s *Sessions) FindByTokenHash(ctx context.Context, tokenHash string) (*domain.Session, error) {
-	var doc sessionDoc
-	if err := s.coll.FindOne(ctx, bson.M{"tokenHash": tokenHash}).Decode(&doc); err != nil {
-		return nil, mongodb.MapNotFound(err)
-	}
-	return &domain.Session{
-		ID: doc.ID.Hex(), UserID: doc.UserID.Hex(), FamilyID: doc.FamilyID, TokenHash: doc.TokenHash,
-		ExpiresAt: doc.ExpiresAt, RevokedAt: doc.RevokedAt, CreatedAt: doc.CreatedAt,
-	}, nil
-}
-
-// active narrows filter to sessions that are not revoked yet.
-func active(filter bson.M) bson.M {
-	filter["revokedAt"] = bson.M{"$exists": false}
-	return filter
-}
-
-func revokeUpdate(at time.Time) bson.M { return bson.M{"$set": bson.M{"revokedAt": at}} }
-
-func (s *Sessions) Revoke(ctx context.Context, id string, at time.Time) (bool, error) {
-	oid, err := ids.ObjectID(id)
-	if err != nil {
-		return false, err
-	}
-	res, err := s.coll.UpdateOne(ctx, active(bson.M{"_id": oid}), revokeUpdate(at))
-	if err != nil {
-		return false, err
-	}
-	return res.ModifiedCount == 1, nil
-}
-
-func (s *Sessions) RevokeFamily(ctx context.Context, familyID string, at time.Time) error {
-	_, err := s.coll.UpdateMany(ctx, active(bson.M{"familyId": familyID}), revokeUpdate(at))
-	return err
-}
-
-func (s *Sessions) RevokeAllForUser(ctx context.Context, userID string, at time.Time) error {
-	oid, err := ids.ObjectID(userID)
-	if err != nil {
-		return err
-	}
-	_, err = s.coll.UpdateMany(ctx, active(bson.M{"userId": oid}), revokeUpdate(at))
-	return err
-}
-
-func (s *Sessions) DeleteAllForUser(ctx context.Context, userID string) error {
-	oid, err := ids.ObjectID(userID)
-	if err != nil {
-		return err
-	}
-	_, err = s.coll.DeleteMany(ctx, bson.M{"userId": oid})
-	return err
-}
-
-// ---- one-time tokens (one document per user, _id = user ID) ----
-
-// OneTimeTokens holds one kind of one-time token in its own collection.
-type OneTimeTokens struct{ coll *mongo.Collection }
-
-var _ application.OneTimeTokenRepository = (*OneTimeTokens)(nil)
-
-func NewVerifications(db *mongo.Database) *OneTimeTokens {
-	return &OneTimeTokens{coll: db.Collection(VerificationsCollection)}
-}
-
-func NewPasswordResets(db *mongo.Database) *OneTimeTokens {
-	return &OneTimeTokens{coll: db.Collection(PasswordResetsCollection)}
-}
-
-type oneTimeTokenDoc struct {
-	UserID    bson.ObjectID `bson:"_id"`
-	TokenHash string        `bson:"tokenHash"`
-	ExpiresAt time.Time     `bson:"expiresAt"`
-	CreatedAt time.Time     `bson:"createdAt"`
-}
-
-func (s *OneTimeTokens) Save(ctx context.Context, v *domain.OneTimeToken) error {
-	userOID, err := ids.ObjectID(v.UserID)
-	if err != nil {
-		return err
-	}
-	doc := oneTimeTokenDoc{UserID: userOID, TokenHash: v.TokenHash, ExpiresAt: v.ExpiresAt, CreatedAt: v.CreatedAt}
-	_, err = s.coll.ReplaceOne(ctx, bson.M{"_id": userOID}, doc, options.Replace().SetUpsert(true))
-	return err
-}
-
-func (s *OneTimeTokens) Consume(ctx context.Context, tokenHash string) (*domain.OneTimeToken, error) {
-	var doc oneTimeTokenDoc
-	if err := s.coll.FindOneAndDelete(ctx, bson.M{"tokenHash": tokenHash}).Decode(&doc); err != nil {
-		return nil, mongodb.MapNotFound(err)
-	}
-	return &domain.OneTimeToken{UserID: doc.UserID.Hex(), TokenHash: doc.TokenHash, ExpiresAt: doc.ExpiresAt, CreatedAt: doc.CreatedAt}, nil
-}
-
-func (s *OneTimeTokens) DeleteForUser(ctx context.Context, userID string) error {
-	oid, err := ids.ObjectID(userID)
-	if err != nil {
-		return err
-	}
-	_, err = s.coll.DeleteOne(ctx, bson.M{"_id": oid})
-	return err
 }
 
 // ---- passkeys ----
