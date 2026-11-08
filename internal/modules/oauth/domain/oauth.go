@@ -28,6 +28,10 @@ const (
 	CodeTTL         = 5 * time.Minute
 	AccessTokenTTL  = time.Hour
 	RefreshTokenTTL = 30 * 24 * time.Hour
+	// UnusedClientTTL is how long a registered client nothing references
+	// is kept before the cleanup job deletes it. Hosts such as Claude
+	// register a new client on every fresh connection.
+	UnusedClientTTL = 30 * 24 * time.Hour
 
 	MaxRedirectURIs     = 10
 	MaxRedirectURILen   = 2000

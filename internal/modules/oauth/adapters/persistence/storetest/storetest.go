@@ -28,6 +28,9 @@ func Run(t *testing.T, newStores func(t *testing.T) Stores) {
 	t.Run("Codes", func(t *testing.T) { testCodes(t, newStores(t)) })
 	t.Run("Grants", func(t *testing.T) { testGrants(t, newStores(t)) })
 	t.Run("Rotation", func(t *testing.T) { testRotation(t, newStores(t)) })
+	t.Run("DeleteExpiredCodes", func(t *testing.T) { testDeleteExpiredCodes(t, newStores(t)) })
+	t.Run("DeleteExpiredGrants", func(t *testing.T) { testDeleteExpiredGrants(t, newStores(t)) })
+	t.Run("DeleteUnusedClients", func(t *testing.T) { testDeleteUnusedClients(t, newStores(t)) })
 }
 
 var ctx = context.Background()
@@ -205,4 +208,116 @@ func testRotation(t *testing.T, s Stores) {
 	expectNotFound(t, "rotating with a used refresh token", s.Grants.Rotate(ctx, r))
 	r.GrantID = s.NewID()
 	expectNotFound(t, "rotating a missing grant", s.Grants.Rotate(ctx, r))
+}
+
+func expectDeleted(t *testing.T, what string, n int64, err error, want int64) {
+	t.Helper()
+	if err != nil || n != want {
+		t.Fatalf("%s: deleted %d (%v), want %d", what, n, err, want)
+	}
+}
+
+func testDeleteExpiredCodes(t *testing.T, s Stores) {
+	at := now()
+	// Saved in this order because saving a code deletes the codes that
+	// expired before it was created.
+	for _, c := range []*domain.Code{
+		newCode(s, "fresh", s.NewID(), at),
+		newCode(s, "expires-now", s.NewID(), at.Add(-domain.CodeTTL)),
+		newCode(s, "stale-1", s.NewID(), at.Add(-time.Hour)),
+		newCode(s, "stale-2", s.NewID(), at.Add(-time.Hour)),
+	} {
+		if err := s.Codes.Save(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := s.Codes.DeleteExpired(ctx, at, 2)
+	expectDeleted(t, "first batch", n, err, 2)
+	n, err = s.Codes.DeleteExpired(ctx, at, 2)
+	expectDeleted(t, "second batch", n, err, 1)
+	n, err = s.Codes.DeleteExpired(ctx, at, 2)
+	expectDeleted(t, "nothing left", n, err, 0)
+	for _, hash := range []string{"expires-now", "stale-1", "stale-2"} {
+		_, err := s.Codes.Consume(ctx, hash)
+		expectNotFound(t, "expired code "+hash, err)
+	}
+	if _, err := s.Codes.Consume(ctx, "fresh"); err != nil {
+		t.Fatalf("DeleteExpired removed a code that hasn't expired: %v", err)
+	}
+}
+
+func testDeleteExpiredGrants(t *testing.T, s Stores) {
+	at := now()
+	// Different users: creating a grant clears its own user's expired ones.
+	fresh := newGrant(t, s, s.NewID(), "fresh", at.Add(-time.Hour))
+	expiresNow := newGrant(t, s, s.NewID(), "expires-now", at.Add(-domain.RefreshTokenTTL))
+	stale := newGrant(t, s, s.NewID(), "stale", at.Add(-2*domain.RefreshTokenTTL))
+
+	n, err := s.Grants.DeleteExpired(ctx, at, 1)
+	expectDeleted(t, "first batch", n, err, 1)
+	n, err = s.Grants.DeleteExpired(ctx, at, 10)
+	expectDeleted(t, "second batch", n, err, 1)
+	n, err = s.Grants.DeleteExpired(ctx, at, 10)
+	expectDeleted(t, "nothing left", n, err, 0)
+	for _, g := range []*domain.Grant{expiresNow, stale} {
+		_, err := s.Grants.Get(ctx, g.ID)
+		expectNotFound(t, "grant with an expired refresh token "+g.ClientID, err)
+	}
+	if _, err := s.Grants.Get(ctx, fresh.ID); err != nil {
+		t.Fatalf("DeleteExpired removed a grant that can be refreshed: %v", err)
+	}
+}
+
+func testDeleteUnusedClients(t *testing.T, s Stores) {
+	at := now()
+	cutoff := at.Add(-domain.UnusedClientTTL)
+	newClient := func(created time.Time) *domain.Client {
+		t.Helper()
+		c := &domain.Client{Name: "Claude", RedirectURIs: []string{"https://claude.ai/cb"}, Kind: domain.Registered, CreatedAt: created}
+		if err := s.Clients.Create(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	old := cutoff.Add(-time.Hour)
+	unused1, unused2 := newClient(old.Add(-time.Minute)), newClient(old)
+	withGrant, withCode := newClient(old), newClient(old)
+	recent := newClient(cutoff.Add(time.Hour))
+
+	grant := newGrant(t, s, s.NewID(), withGrant.ID, at)
+	code := newCode(s, "code", s.NewID(), at)
+	code.ClientID = withCode.ID
+	if err := s.Codes.Save(ctx, code); err != nil {
+		t.Fatal(err)
+	}
+	// A metadata document client's grant names a URL, not a stored client.
+	newGrant(t, s, s.NewID(), "https://claude.ai/oauth/claude-code-client-metadata", at)
+
+	n, err := s.Clients.DeleteUnused(ctx, cutoff, 1)
+	expectDeleted(t, "first batch", n, err, 1)
+	_, err = s.Clients.Get(ctx, unused1.ID)
+	expectNotFound(t, "the oldest unused client goes first", err)
+	n, err = s.Clients.DeleteUnused(ctx, cutoff, 10)
+	expectDeleted(t, "second batch", n, err, 1)
+	n, err = s.Clients.DeleteUnused(ctx, cutoff, 10)
+	expectDeleted(t, "nothing left", n, err, 0)
+
+	_, err = s.Clients.Get(ctx, unused2.ID)
+	expectNotFound(t, "old unused client", err)
+	for what, c := range map[string]*domain.Client{
+		"a client a grant references":    withGrant,
+		"a client a code references":     withCode,
+		"a client newer than the cutoff": recent,
+	} {
+		if _, err := s.Clients.Get(ctx, c.ID); err != nil {
+			t.Fatalf("DeleteUnused removed %s: %v", what, err)
+		}
+	}
+
+	// Once its grant is gone, the client is unused.
+	if err := s.Grants.Revoke(ctx, grant.ID); err != nil {
+		t.Fatal(err)
+	}
+	n, err = s.Clients.DeleteUnused(ctx, cutoff, 10)
+	expectDeleted(t, "after its grant was deleted", n, err, 1)
 }

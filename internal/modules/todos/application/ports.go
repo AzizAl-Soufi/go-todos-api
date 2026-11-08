@@ -10,10 +10,10 @@ package application
 
 import (
 	"context"
-	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
 	"time"
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/domain"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
 )
 
 // Every lookup takes a domain.Scope (the caller's personal records plus their
@@ -37,6 +37,30 @@ type TodoRepository interface {
 	DeleteByProject(ctx context.Context, s domain.Scope, projectID string) error
 	DeleteByUser(ctx context.Context, userID string) error
 	DeleteByTeam(ctx context.Context, teamID string) error
+	DueAlertRepository
+}
+
+// DueAlert is a todo that needs a due-date alert, and which one
+// (domain.NextDueAlert).
+type DueAlert struct {
+	Todo *domain.Todo
+	Kind domain.DueAlertKind
+}
+
+// DueAlertRepository is the system-level part of the todo store, for the
+// due-date alert job. Unlike every other call it is NOT scoped: it sees every
+// user's and team's todos, so only background jobs may use it, never a
+// request made on behalf of a caller.
+type DueAlertRepository interface {
+	// ListPendingDueAlertsSystemWide returns up to limit open todos, of any
+	// user or team, that need an alert at now (domain.NextDueAlert), earliest
+	// deadline first (then by ID). Todos of archived projects are left out.
+	ListPendingDueAlertsSystemWide(ctx context.Context, now time.Time, limit int) ([]DueAlert, error)
+	// MarkDueAlerted records that the alert of kind was sent for the todo's
+	// deadline dueAt. It is conditional: it reports false, changing nothing,
+	// unless the todo exists, is open, still has deadline dueAt and wasn't
+	// marked for it yet, so of two concurrent runs only one marks it.
+	MarkDueAlerted(ctx context.Context, id string, kind domain.DueAlertKind, dueAt time.Time) (bool, error)
 }
 
 type ProjectRepository interface {
@@ -88,10 +112,24 @@ type NewTeamTodo struct {
 }
 
 // Notifier is how commands reach the notifications module. It is called
-// after the change is committed and never fails the command: delivery is
-// the notifier's business.
+// inside the change's unit of work: it records that a notification is due
+// (a job in the outbox), which commits or rolls back with the change, and
+// the worker delivers it afterwards.
 type Notifier interface {
-	TodoCreated(ctx context.Context, t NewTeamTodo)
+	TodoCreated(ctx context.Context, t NewTeamTodo) error
+	// TodoDue sends a due-date alert (at most once per todo, kind and
+	// deadline). at is when the alert was raised, for its wording.
+	TodoDue(ctx context.Context, a TodoDueAlert, at time.Time) error
+}
+
+// TodoDueAlert is a due-date alert, as the todos module reports it to
+// notifications. It goes to UserID: the owner of a personal todo, the
+// creator of a team todo (todos have no assignee).
+type TodoDueAlert struct {
+	UserID, TodoID, Title string
+	TeamID, ProjectID     string // "" when personal / in the inbox
+	Kind                  domain.DueAlertKind
+	DueAt                 time.Time
 }
 
 // ---- read side (queries) ----

@@ -333,6 +333,30 @@ func (s *Invitations) ListByTeam(ctx context.Context, teamID string) ([]*domain.
 	return out, nil
 }
 
+func (s *Invitations) DeleteExpired(ctx context.Context, before time.Time, limit int) (int64, error) {
+	// Bounded like the other stores: look up a batch of IDs, delete those.
+	opts := options.Find().SetProjection(bson.M{"_id": 1}).SetSort(bson.D{{Key: "expiresAt", Value: 1}}).SetLimit(int64(limit))
+	cur, err := s.coll.Find(ctx, bson.M{"expiresAt": bson.M{"$lt": before}}, opts)
+	if err != nil {
+		return 0, err
+	}
+	var docs []struct {
+		ID bson.ObjectID `bson:"_id"`
+	}
+	if err := cur.All(ctx, &docs); err != nil || len(docs) == 0 {
+		return 0, err
+	}
+	batch := make([]bson.ObjectID, len(docs))
+	for i, d := range docs {
+		batch[i] = d.ID
+	}
+	res, err := s.coll.DeleteMany(ctx, bson.M{"_id": bson.M{"$in": batch}})
+	if err != nil {
+		return 0, err
+	}
+	return res.DeletedCount, nil
+}
+
 func (s *Invitations) DeleteByTeam(ctx context.Context, teamID string) error {
 	oid, err := ids.ObjectID(teamID)
 	if err != nil {

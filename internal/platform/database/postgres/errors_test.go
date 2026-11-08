@@ -55,7 +55,7 @@ func TestMigrationsAreEmbedded(t *testing.T) {
 		names = append(names, e.Name())
 	}
 	want := []string{"00001_create_users.sql", "00002_create_todos.sql", "00003_identity_auth.sql", "00004_password_resets.sql", "00005_todos_user_index.sql", "00006_projects_collections.sql",
-		"00007_teams.sql", "00008_audit_events.sql", "00009_team_workspaces.sql", "00010_passkeys.sql", "00011_firebase_auth.sql", "00012_devices.sql", "00013_invitation_sent_at.sql", "00014_oauth.sql"}
+		"00007_teams.sql", "00008_audit_events.sql", "00009_team_workspaces.sql", "00010_passkeys.sql", "00011_firebase_auth.sql", "00012_devices.sql", "00013_invitation_sent_at.sql", "00014_oauth.sql", "00015_jobs.sql", "00016_todo_due_alerts.sql", "00017_oauth_cleanup.sql"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("embedded migrations = %v, want %v", names, want)
 	}

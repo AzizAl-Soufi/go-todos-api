@@ -8,6 +8,19 @@ INSERT INTO oauth_clients (name, redirect_uris, created_at) VALUES ($1, $2, $3) 
 -- name: GetClient :one
 SELECT * FROM oauth_clients WHERE id = $1;
 
+-- Registered clients nothing references any more (cleanup job), oldest
+-- first, at most max_rows. client_id is TEXT: it also holds metadata
+-- document URLs.
+-- name: DeleteUnusedClients :execrows
+DELETE FROM oauth_clients WHERE id IN (
+    SELECT c.id FROM oauth_clients c
+    WHERE c.created_at < @created_before
+      AND NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id = c.id::text)
+      AND NOT EXISTS (SELECT 1 FROM oauth_codes o WHERE o.client_id = c.id::text)
+    ORDER BY c.created_at
+    LIMIT @max_rows::int
+);
+
 -- codes
 
 -- name: DeleteExpiredCodes :exec
@@ -24,6 +37,11 @@ DELETE FROM oauth_codes WHERE code_hash = $1 RETURNING *;
 
 -- name: DeleteUserCodes :exec
 DELETE FROM oauth_codes WHERE user_id = $1;
+
+-- name: DeleteExpiredCodesBatch :execrows
+DELETE FROM oauth_codes WHERE code_hash IN (
+    SELECT e.code_hash FROM oauth_codes e WHERE e.expires_at <= @now ORDER BY e.expires_at LIMIT @max_rows::int
+);
 
 -- grants
 
@@ -59,3 +77,8 @@ DELETE FROM oauth_grants WHERE id = $1;
 
 -- name: DeleteUserGrants :exec
 DELETE FROM oauth_grants WHERE user_id = $1;
+
+-- name: DeleteExpiredGrants :execrows
+DELETE FROM oauth_grants WHERE id IN (
+    SELECT e.id FROM oauth_grants e WHERE e.refresh_expires_at <= @now ORDER BY e.refresh_expires_at LIMIT @max_rows::int
+);

@@ -19,12 +19,13 @@ ifeq (goose,$(firstword $(MAKECMDGOALS)))
   $(foreach arg,$(GOOSE_ARGS),$(eval $(arg):;@:))
 else
 
-.PHONY: help run build test test-integration test-db-down fmt migrate sqlc
+.PHONY: help run worker build test test-integration test-db-down fmt migrate sqlc
 
 # Databases from docker-compose.test.yml. directConnection skips replica-set
 # discovery, whose member address is only reachable inside the container.
 TEST_POSTGRES_URI ?= postgres://postgres:postgres@localhost:55432/postgres?sslmode=disable
 TEST_MONGO_URI ?= mongodb://localhost:57017/?directConnection=true
+TEST_REDIS_URL ?= redis://localhost:56379/0
 
 help: ## Show this help message
 	@echo "Usage:  make [OPTIONS] COMMAND"
@@ -40,16 +41,20 @@ help: ## Show this help message
 run:    ## Run the API
 	go run ./cmd/api
 
-build:  ## Build the api and migrate binaries into bin/
+worker: ## Run the background worker (not with DB_TYPE=memory: set JOBS_RUN_IN_API instead)
+	go run ./cmd/worker
+
+build:  ## Build the api, worker and migrate binaries into bin/
 	go build -o bin/api ./cmd/api
+	go build -o bin/worker ./cmd/worker
 	go build -o bin/migrate ./cmd/migrate
 
 test:   ## Run unit tests (database integration tests are skipped)
 	go test -race ./...
 
-test-integration: ## Run all tests against real PostgreSQL and MongoDB (needs Docker)
+test-integration: ## Run all tests against real PostgreSQL, MongoDB and Redis (needs Docker)
 	docker compose -f docker-compose.test.yml up -d --wait
-	TEST_POSTGRES_URI="$(TEST_POSTGRES_URI)" TEST_MONGO_URI="$(TEST_MONGO_URI)" go test -race -count=1 ./...
+	TEST_POSTGRES_URI="$(TEST_POSTGRES_URI)" TEST_MONGO_URI="$(TEST_MONGO_URI)" TEST_REDIS_URL="$(TEST_REDIS_URL)" go test -race -count=1 ./...
 	@for backend in postgres mongo; do \
 		echo "$(CYAN)end-to-end suite on $$backend$(RESET)"; \
 		TEST_E2E_BACKEND=$$backend TEST_POSTGRES_URI="$(TEST_POSTGRES_URI)" TEST_MONGO_URI="$(TEST_MONGO_URI)" \

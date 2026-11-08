@@ -20,6 +20,7 @@ import (
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/jobs"
 )
 
 // Handler is a tool's logic: the caller and the decoded input in, the
@@ -91,4 +92,27 @@ func Outbound(title string) *mcp.ToolAnnotations {
 type Deleted struct {
 	ID      string `json:"id" jsonschema:"the ID of what was deleted"`
 	Deleted bool   `json:"deleted"`
+}
+
+type operationInput struct {
+	ID string `json:"id" jsonschema:"the operation's ID, from the tool that started it"`
+}
+
+// RegisterOperations adds get_operation: the status of background work a
+// tool started (deleting a team's content).
+func RegisterOperations(s *mcp.Server, store jobs.Store) {
+	Add(s, &mcp.Tool{
+		Name:        "get_operation",
+		Description: "Get the status of background work started by another tool (e.g. delete_team): pending, running, succeeded or failed.",
+		Annotations: Read("Get operation status"),
+	}, func(ctx context.Context, a access.Actor, in operationInput) (jobs.Operation, error) {
+		j, err := store.Get(ctx, in.ID)
+		if errors.Is(err, apperrors.ErrNotFound) || errors.Is(err, apperrors.ErrInvalidID) || err == nil && j.OwnerID != a.UserID {
+			return jobs.Operation{}, jobs.ErrJobNotFound
+		}
+		if err != nil {
+			return jobs.Operation{}, err
+		}
+		return jobs.ToOperation(j), nil
+	})
 }

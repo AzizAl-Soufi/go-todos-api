@@ -13,6 +13,7 @@ import (
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/httpx"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/jobs"
 )
 
 type handler struct {
@@ -208,8 +209,14 @@ func (h handler) renameTeam(r *http.Request, a access.Actor) (int, any, error) {
 	return h.readTeam(r, http.StatusOK, a, id)
 }
 
+// deleteTeam answers 202: the team is gone, and its content is being
+// deleted in the background (GET /operations/{id}).
 func (h handler) deleteTeam(r *http.Request, a access.Actor) (int, any, error) {
-	return http.StatusNoContent, nil, h.cmd.DeleteTeam.Handle(r.Context(), command.DeleteTeam{Actor: a, TeamID: r.PathValue("id")})
+	opID, err := h.cmd.DeleteTeam.Handle(r.Context(), command.DeleteTeam{Actor: a, TeamID: r.PathValue("id")})
+	if err != nil {
+		return 0, nil, err
+	}
+	return http.StatusAccepted, jobs.NewAccepted(opID), nil
 }
 
 // ---- members ----

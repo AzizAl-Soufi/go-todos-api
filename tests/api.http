@@ -206,8 +206,13 @@ Authorization: Bearer {{access}}
 GET {{base}}/me/audit-log
 Authorization: Bearer {{access}}
 
-### Delete the team with all its content
+### Delete the team: gone at once; its content is deleted in the background (202 with an operation)
+# @name teamDeletion
 DELETE {{base}}/teams/{{team.response.body.id}}
+Authorization: Bearer {{access}}
+
+### Follow the background deletion (pending, running, succeeded or failed)
+GET {{base}}{{teamDeletion.response.body.operation.url}}
 Authorization: Bearer {{access}}
 
 ### Register this device for push notifications (paste its FCM token)

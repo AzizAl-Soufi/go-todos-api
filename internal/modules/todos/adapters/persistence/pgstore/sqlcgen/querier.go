@@ -37,11 +37,17 @@ type Querier interface {
 	GetProject(ctx context.Context, arg GetProjectParams) (Project, error)
 	GetTodo(ctx context.Context, arg GetTodoParams) (Todo, error)
 	ListCollections(ctx context.Context, arg ListCollectionsParams) ([]Collection, error)
+	// Due-date alerts (system-level: not scoped, for the alert job only). The
+	// semantics mirror domain.NextDueAlert; the first three conditions are the
+	// predicate of idx_todos_due_alerts, so the scan uses it.
+	ListPendingDueAlerts(ctx context.Context, arg ListPendingDueAlertsParams) ([]ListPendingDueAlertsRow, error)
 	// archive: 0 active only, 1 archived only, 2 any (domain.ArchiveFilter).
 	ListProjects(ctx context.Context, arg ListProjectsParams) ([]Project, error)
 	// Every filter is off when its parameter is empty or NULL; the semantics
 	// mirror domain.Query (the store contract tests check they agree).
 	ListTodos(ctx context.Context, arg ListTodosParams) ([]Todo, error)
+	MarkDueSoonAlerted(ctx context.Context, arg MarkDueSoonAlertedParams) (int64, error)
+	MarkOverdueAlerted(ctx context.Context, arg MarkOverdueAlertedParams) (int64, error)
 	TodoProgress(ctx context.Context, arg TodoProgressParams) ([]TodoProgressRow, error)
 	UpdateCollection(ctx context.Context, arg UpdateCollectionParams) (int64, error)
 	UpdateProject(ctx context.Context, arg UpdateProjectParams) (int64, error)

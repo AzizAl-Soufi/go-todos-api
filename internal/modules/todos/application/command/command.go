@@ -44,6 +44,7 @@ type Handlers struct {
 	DeleteCollection DeleteCollectionHandler
 	DeleteUserData   DeleteUserDataHandler
 	DeleteTeamData   DeleteTeamDataHandler
+	SendDueAlerts    SendDueAlertsHandler
 }
 
 func New(d Deps) Handlers {
@@ -65,6 +66,7 @@ func New(d Deps) Handlers {
 		CreateProject: CreateProjectHandler{b}, UpdateProject: UpdateProjectHandler{b}, DeleteProject: DeleteProjectHandler{b},
 		CreateCollection: CreateCollectionHandler{b}, UpdateCollection: UpdateCollectionHandler{b}, DeleteCollection: DeleteCollectionHandler{b},
 		DeleteUserData: DeleteUserDataHandler{b}, DeleteTeamData: DeleteTeamDataHandler{b},
+		SendDueAlerts: SendDueAlertsHandler{b},
 	}
 }
 
@@ -73,7 +75,9 @@ type (
 	noNotifier struct{}
 )
 
-func (noNotifier) TodoCreated(context.Context, application.NewTeamTodo) {}
+func (noNotifier) TodoCreated(context.Context, application.NewTeamTodo) error { return nil }
+
+func (noNotifier) TodoDue(context.Context, application.TodoDueAlert, time.Time) error { return nil }
 
 func (noAudit) Record(context.Context, application.AuditEntry) error { return nil }
 

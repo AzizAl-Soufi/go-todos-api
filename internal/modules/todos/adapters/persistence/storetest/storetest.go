@@ -48,6 +48,8 @@ func Run(t *testing.T, newBackend func(t *testing.T) Backend) {
 	t.Run("Collections", func(t *testing.T) { testCollections(t, newBackend(t)) })
 	t.Run("TeamScope", func(t *testing.T) { testTeamScope(t, newBackend(t)) })
 	t.Run("TeamBulkOperations", func(t *testing.T) { testTeamBulk(t, newBackend(t)) })
+	t.Run("DueAlertsListing", func(t *testing.T) { testDueAlertsListing(t, newBackend(t)) })
+	t.Run("DueAlertsMarking", func(t *testing.T) { testDueAlertsMarking(t, newBackend(t)) })
 	t.Run("Transactions", func(t *testing.T) {
 		b := newBackend(t)
 		if !b.AtomicTx {
@@ -691,5 +693,224 @@ func testTeamBulk(t *testing.T, b Backend) {
 	}
 	if _, err := b.Collections.Get(ctx, otherScope, other.collection.ID); err != nil {
 		t.Fatalf("DeleteByTeam removed another team's collection: %v", err)
+	}
+}
+
+// ---- due-date alerts (system-level) ----
+
+// dueTodo creates an open todo of user due at now+due.
+func dueTodo(t *testing.T, b Backend, user string, now time.Time, due time.Duration) *domain.Todo {
+	t.Helper()
+	todo := newTodo(user, 0)
+	d := now.Add(due)
+	todo.DueAt = &d
+	return create(t, b, todo)
+}
+
+// pendingAlerts lists every pending alert at now as todo ID -> kind, and
+// checks the order (earliest deadline first, then ID).
+func pendingAlerts(t *testing.T, b Backend, now time.Time) map[string]domain.DueAlertKind {
+	t.Helper()
+	list, err := b.Todos.ListPendingDueAlertsSystemWide(ctx, now, 1000)
+	if err != nil {
+		t.Fatalf("list pending due alerts: %v", err)
+	}
+	out := map[string]domain.DueAlertKind{}
+	for i, a := range list {
+		if i > 0 {
+			prev := list[i-1].Todo
+			if c := prev.DueAt.Compare(*a.Todo.DueAt); c > 0 || c == 0 && prev.ID > a.Todo.ID {
+				t.Fatalf("alerts out of order: %v before %v", prev.DueAt, a.Todo.DueAt)
+			}
+		}
+		out[a.Todo.ID] = a.Kind
+	}
+	return out
+}
+
+func expectAlerts(t *testing.T, got map[string]domain.DueAlertKind, want map[string]domain.DueAlertKind) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("pending alerts = %v, want %v", got, want)
+	}
+	for id, kind := range want {
+		if got[id] != kind {
+			t.Fatalf("pending alerts = %v, want %v", got, want)
+		}
+	}
+}
+
+func mark(t *testing.T, b Backend, todo *domain.Todo, kind domain.DueAlertKind) bool {
+	t.Helper()
+	ok, err := b.Todos.MarkDueAlerted(ctx, todo.ID, kind, *todo.DueAt)
+	if err != nil {
+		t.Fatalf("mark %s: %v", kind, err)
+	}
+	return ok
+}
+
+func testDueAlertsListing(t *testing.T, b Backend) {
+	owner, other := b.NewUser(t), b.NewUser(t)
+	now := base.Add(240 * time.Hour)
+
+	soon := dueTodo(t, b, owner, now, time.Hour)
+	overdue := dueTodo(t, b, other, now, -time.Hour)
+	edge := dueTodo(t, b, owner, now, domain.DueSoonWindow) // the window includes its end
+	dueTodo(t, b, owner, now, domain.DueSoonWindow+time.Millisecond)
+	create(t, b, newTodo(owner, 0)) // no deadline
+
+	team := newTodo(owner, 0)
+	team.TeamID = b.NewID()
+	team.DueAt = at(240*time.Hour + 2*time.Hour)
+	create(t, b, team)
+
+	for _, st := range []domain.Status{domain.StatusDone, domain.StatusCancelled} {
+		closed := newTodo(owner, 0)
+		closed.Status, closed.DueAt = st, at(240*time.Hour-time.Hour)
+		create(t, b, closed)
+	}
+	inBlocked := dueTodo(t, b, owner, now, 3*time.Hour)
+	inBlocked.Status = domain.StatusBlocked
+	if err := b.Todos.Update(ctx, me(owner), inBlocked); err != nil {
+		t.Fatal(err)
+	}
+
+	active := newProject(t, b, owner, "Active", "", 0)
+	inActive := newTodo(owner, 0)
+	inActive.ProjectID, inActive.DueAt = active.ID, at(240*time.Hour-2*time.Hour)
+	create(t, b, inActive)
+	archived := newProject(t, b, owner, "Archived", "", 0)
+	archived.ArchivedAt = at(time.Hour)
+	if err := b.Projects.Update(ctx, me(owner), archived); err != nil {
+		t.Fatal(err)
+	}
+	inArchived := newTodo(owner, 0)
+	inArchived.ProjectID, inArchived.DueAt = archived.ID, at(240*time.Hour-time.Hour)
+	create(t, b, inArchived)
+
+	want := map[string]domain.DueAlertKind{
+		soon.ID: domain.AlertDueSoon, edge.ID: domain.AlertDueSoon, team.ID: domain.AlertDueSoon,
+		inBlocked.ID: domain.AlertDueSoon, overdue.ID: domain.AlertOverdue, inActive.ID: domain.AlertOverdue,
+	}
+	expectAlerts(t, pendingAlerts(t, b, now), want)
+
+	// Bounded batches, earliest deadline first, todos fully read.
+	first, err := b.Todos.ListPendingDueAlertsSystemWide(ctx, now, 2)
+	if err != nil || len(first) != 2 || first[0].Todo.ID != inActive.ID || first[1].Todo.ID != overdue.ID {
+		t.Fatalf("first batch of 2 = %+v (%v), want the two overdue todos", first, err)
+	}
+	if !sameTodo(first[0].Todo, inActive) || first[0].Todo.TeamID != "" {
+		t.Fatalf("listed todo = %+v, want %+v", first[0].Todo, inActive)
+	}
+	if none, err := b.Todos.ListPendingDueAlertsSystemWide(ctx, now, 0); err != nil || len(none) != 0 {
+		t.Fatalf("limit 0 = %v (%v)", none, err)
+	}
+
+	// Alerted for this deadline: left out, even after an unrelated update.
+	if !mark(t, b, soon, domain.AlertDueSoon) || !mark(t, b, overdue, domain.AlertOverdue) {
+		t.Fatal("marking pending alerts must succeed")
+	}
+	soon.Title, soon.UpdatedAt = "renamed", soon.UpdatedAt.Add(time.Minute)
+	if err := b.Todos.Update(ctx, me(owner), soon); err != nil {
+		t.Fatal(err)
+	}
+	delete(want, soon.ID)
+	delete(want, overdue.ID)
+	expectAlerts(t, pendingAlerts(t, b, now), want)
+
+	// Due soon was sent; once the deadline passes, overdue is still due.
+	later := soon.DueAt.Add(time.Minute)
+	if got := pendingAlerts(t, b, later); got[soon.ID] != domain.AlertOverdue {
+		t.Fatalf("after the deadline: %v, want %s overdue", got, soon.ID)
+	}
+	// Overdue was sent for this deadline: nothing more for it, ever.
+	if got := pendingAlerts(t, b, now.Add(48*time.Hour)); got[overdue.ID] != "" {
+		t.Fatalf("overdue sent: %v, want %s left out", got, overdue.ID)
+	}
+
+	// Alerted for an older deadline: a new deadline re-arms the alerts.
+	soon.DueAt = at(240*time.Hour + 3*time.Hour)
+	overdue.DueAt = at(240*time.Hour - 2*time.Hour)
+	for user, todo := range map[string]*domain.Todo{owner: soon, other: overdue} {
+		if err := b.Todos.Update(ctx, me(user), todo); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want[soon.ID], want[overdue.ID] = domain.AlertDueSoon, domain.AlertOverdue
+	expectAlerts(t, pendingAlerts(t, b, now), want)
+
+	// Restoring the archived project brings its todos back.
+	archived.ArchivedAt = nil
+	if err := b.Projects.Update(ctx, me(owner), archived); err != nil {
+		t.Fatal(err)
+	}
+	want[inArchived.ID] = domain.AlertOverdue
+	expectAlerts(t, pendingAlerts(t, b, now), want)
+}
+
+func testDueAlertsMarking(t *testing.T, b Backend) {
+	user := b.NewUser(t)
+	now := base.Add(240 * time.Hour)
+	todo := dueTodo(t, b, user, now, time.Hour)
+	due := *todo.DueAt
+
+	markAt := func(id string, kind domain.DueAlertKind, dueAt time.Time) bool {
+		t.Helper()
+		ok, err := b.Todos.MarkDueAlerted(ctx, id, kind, dueAt)
+		if err != nil {
+			t.Fatalf("mark %s: %v", kind, err)
+		}
+		return ok
+	}
+	// Only for the todo's current deadline, and only for a todo that exists.
+	if markAt(todo.ID, domain.AlertDueSoon, due.Add(time.Minute)) || markAt(b.MissingID, domain.AlertDueSoon, due) {
+		t.Fatal("marking another deadline or a missing todo must report false")
+	}
+	if !markAt(todo.ID, domain.AlertDueSoon, due) {
+		t.Fatal("first mark must succeed")
+	}
+	if markAt(todo.ID, domain.AlertDueSoon, due) {
+		t.Fatal("marking twice for the same deadline must report false")
+	}
+	// The kinds are independent.
+	if !markAt(todo.ID, domain.AlertOverdue, due) || markAt(todo.ID, domain.AlertOverdue, due) {
+		t.Fatal("overdue is marked once, independently of due soon")
+	}
+
+	// A closed todo is never marked.
+	done := dueTodo(t, b, user, now, -time.Hour)
+	done.Status, done.CompletedAt = domain.StatusDone, at(time.Hour)
+	if err := b.Todos.Update(ctx, me(user), done); err != nil {
+		t.Fatal(err)
+	}
+	if markAt(done.ID, domain.AlertOverdue, *done.DueAt) {
+		t.Fatal("a done todo must not be marked")
+	}
+
+	// Concurrent runs: exactly one marks.
+	contested := dueTodo(t, b, user, now, -time.Minute)
+	const n = 8
+	var (
+		wg     sync.WaitGroup
+		mu     sync.Mutex
+		marked int
+	)
+	for range n {
+		wg.Go(func() {
+			ok, err := b.Todos.MarkDueAlerted(ctx, contested.ID, domain.AlertOverdue, *contested.DueAt)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if ok {
+				mu.Lock()
+				marked++
+				mu.Unlock()
+			}
+		})
+	}
+	wg.Wait()
+	if marked != 1 {
+		t.Fatalf("%d concurrent marks succeeded, want exactly 1", marked)
 	}
 }

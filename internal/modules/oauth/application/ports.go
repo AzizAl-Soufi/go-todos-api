@@ -25,6 +25,10 @@ type ClientRepository interface {
 	ClientReader
 	// Create stores a registered client and assigns c.ID.
 	Create(ctx context.Context, c *domain.Client) error
+	// DeleteUnused deletes up to limit registered clients created before
+	// createdBefore that no grant or code references by client ID, oldest
+	// first, and returns how many it deleted.
+	DeleteUnused(ctx context.Context, createdBefore time.Time, limit int) (int64, error)
 }
 
 type CodeRepository interface {
@@ -33,6 +37,9 @@ type CodeRepository interface {
 	// Consume atomically finds and deletes the code with hash.
 	Consume(ctx context.Context, hash string) (*domain.Code, error)
 	DeleteForUser(ctx context.Context, userID string) error
+	// DeleteExpired deletes up to limit codes of any user that are expired
+	// at now (ExpiresAt <= now) and returns how many it deleted.
+	DeleteExpired(ctx context.Context, now time.Time, limit int) (int64, error)
 }
 
 type GrantRepository interface {
@@ -49,6 +56,10 @@ type GrantRepository interface {
 	// old refresh token). A missing grant is not an error.
 	Revoke(ctx context.Context, id string) error
 	DeleteForUser(ctx context.Context, userID string) error
+	// DeleteExpired deletes up to limit grants of any user whose refresh
+	// token is expired at now (RefreshExpiresAt <= now) and returns how many
+	// it deleted.
+	DeleteExpired(ctx context.Context, now time.Time, limit int) (int64, error)
 }
 
 // Rotation is a refresh: the grant's new tokens.

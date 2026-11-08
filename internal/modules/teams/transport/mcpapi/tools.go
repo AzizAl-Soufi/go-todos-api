@@ -14,6 +14,7 @@ import (
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/transport/httpapi"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/jobs"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/mcpx"
 )
 
@@ -50,8 +51,8 @@ func Register(s *mcp.Server, cmd command.Handlers, qry query.Handlers) {
 	}, t.renameTeam)
 	mcpx.Add(s, &mcp.Tool{
 		Name: "delete_team",
-		Description: "Delete a team with all its members, invitations, audit log and team-owned projects, collections and todos. " +
-			"Owner only.",
+		Description: "Delete a team: it and its members and invitations are gone at once; its projects, collections, todos " +
+			"and audit log are deleted in the background (the returned operation; check it with get_operation). Owner only.",
 		Annotations: mcpx.Destructive("Delete team and its data"),
 	}, t.deleteTeam)
 
@@ -219,11 +220,23 @@ func (t tools) renameTeam(ctx context.Context, a access.Actor, in renameInput) (
 	return t.readTeam(ctx, a, in.TeamID)
 }
 
-func (t tools) deleteTeam(ctx context.Context, a access.Actor, in teamInput) (mcpx.Deleted, error) {
-	if err := t.cmd.DeleteTeam.Handle(ctx, command.DeleteTeam{Actor: a, TeamID: in.TeamID}); err != nil {
-		return mcpx.Deleted{}, err
+// deletedTeam: the team is gone; its content is being deleted in the
+// background (the operation).
+type deletedTeam struct {
+	ID        string         `json:"id" jsonschema:"the deleted team's ID"`
+	Deleted   bool           `json:"deleted"`
+	Operation jobs.Operation `json:"operation" jsonschema:"the background deletion of its projects, todos and audit log; see get_operation"`
+}
+
+func (t tools) deleteTeam(ctx context.Context, a access.Actor, in teamInput) (deletedTeam, error) {
+	opID, err := t.cmd.DeleteTeam.Handle(ctx, command.DeleteTeam{Actor: a, TeamID: in.TeamID})
+	if err != nil {
+		return deletedTeam{}, err
 	}
-	return mcpx.Deleted{ID: in.TeamID, Deleted: true}, nil
+	accepted := jobs.NewAccepted(opID)
+	return deletedTeam{ID: in.TeamID, Deleted: true, Operation: jobs.Operation{
+		ID: opID, Kind: command.JobPurgeTeam, Status: accepted.Operation.Status, URL: accepted.Operation.URL,
+	}}, nil
 }
 
 // ---- members ----

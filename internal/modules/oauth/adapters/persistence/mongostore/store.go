@@ -51,6 +51,75 @@ var _ application.ClientRepository = (*Clients)(nil)
 
 func NewClients(db *mongo.Database) *Clients { return &Clients{coll: db.Collection(ClientsCollection)} }
 
+// DeleteUnused finds old clients that no grant or code names (clientId is
+// a string: the hex ID, or a metadata document URL), then deletes them.
+func (s *Clients) DeleteUnused(ctx context.Context, createdBefore time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+	old := bson.M{"createdAt": bson.M{"$lt": createdBefore}}
+	refs := func(from string) bson.D {
+		return bson.D{{Key: "$lookup", Value: bson.M{
+			"from": from, "localField": "idString", "foreignField": "clientId",
+			"pipeline": bson.A{bson.M{"$limit": 1}, bson.M{"$project": bson.M{"_id": 1}}},
+			"as":       from,
+		}}}
+	}
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: old}},
+		{{Key: "$sort", Value: bson.D{{Key: "createdAt", Value: 1}, {Key: "_id", Value: 1}}}},
+		{{Key: "$addFields", Value: bson.M{"idString": bson.M{"$toString": "$_id"}}}},
+		refs(GrantsCollection),
+		refs(CodesCollection),
+		{{Key: "$match", Value: bson.M{GrantsCollection: bson.A{}, CodesCollection: bson.A{}}}},
+		{{Key: "$limit", Value: limit}},
+		{{Key: "$project", Value: bson.M{"_id": 1}}},
+	}
+	cur, err := s.coll.Aggregate(ctx, pipeline)
+	if err != nil {
+		return 0, err
+	}
+	return deleteFound(ctx, s.coll, cur, old)
+}
+
+// deleteFound deletes the documents cur lists (by _id) that still match
+// filter.
+func deleteFound(ctx context.Context, coll *mongo.Collection, cur *mongo.Cursor, filter bson.M) (int64, error) {
+	var found []struct {
+		ID any `bson:"_id"`
+	}
+	if err := cur.All(ctx, &found); err != nil {
+		return 0, err
+	}
+	if len(found) == 0 {
+		return 0, nil
+	}
+	ids := make(bson.A, 0, len(found))
+	for _, f := range found {
+		ids = append(ids, f.ID)
+	}
+	res, err := coll.DeleteMany(ctx, bson.M{"$and": bson.A{bson.M{"_id": bson.M{"$in": ids}}, filter}})
+	if err != nil {
+		return 0, err
+	}
+	return res.DeletedCount, nil
+}
+
+// deleteBatch deletes up to limit documents matching filter, in sortKey
+// order.
+func deleteBatch(ctx context.Context, coll *mongo.Collection, filter bson.M, sortKey string, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+	opts := options.Find().SetSort(bson.D{{Key: sortKey, Value: 1}}).SetLimit(int64(limit)).
+		SetProjection(bson.M{"_id": 1})
+	cur, err := coll.Find(ctx, filter, opts)
+	if err != nil {
+		return 0, err
+	}
+	return deleteFound(ctx, coll, cur, filter)
+}
+
 type clientDoc struct {
 	ID           bson.ObjectID `bson:"_id"`
 	Name         string        `bson:"name"`
@@ -143,6 +212,11 @@ func (s *Codes) DeleteForUser(ctx context.Context, userID string) error {
 	}
 	_, err = s.coll.DeleteMany(ctx, bson.M{"userId": oid})
 	return err
+}
+
+// DeleteExpired doesn't wait for the TTL index (which runs once a minute).
+func (s *Codes) DeleteExpired(ctx context.Context, now time.Time, limit int) (int64, error) {
+	return deleteBatch(ctx, s.coll, bson.M{"expiresAt": bson.M{"$lte": now}}, "expiresAt", limit)
 }
 
 // ---- grants ----
@@ -283,4 +357,9 @@ func (s *Grants) DeleteForUser(ctx context.Context, userID string) error {
 	}
 	_, err = s.coll.DeleteMany(ctx, bson.M{"userId": oid})
 	return err
+}
+
+// DeleteExpired doesn't wait for the TTL index (which runs once a minute).
+func (s *Grants) DeleteExpired(ctx context.Context, now time.Time, limit int) (int64, error) {
+	return deleteBatch(ctx, s.coll, bson.M{"refreshExpiresAt": bson.M{"$lte": now}}, "refreshExpiresAt", limit)
 }

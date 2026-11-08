@@ -13,6 +13,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/jobs"
+
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/tx"
 )
@@ -42,8 +44,10 @@ type Deps struct {
 	Devices  application.Devices         // nil: no devices to forget
 	// Connections is nil when there are no connected apps to revoke.
 	Connections application.Connections
-	Tx          tx.Runner
-	Config      Config
+	// Jobs runs the account data purge in the worker.
+	Jobs   jobs.Enqueuer
+	Tx     tx.Runner
+	Config Config
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
 }
@@ -53,6 +57,7 @@ type Handlers struct {
 	SignIn        SignInHandler
 	LogoutAll     LogoutAllHandler
 	DeleteAccount DeleteAccountHandler
+	PurgeAccount  PurgeAccountHandler
 
 	BeginPasskeyRegistration  BeginPasskeyRegistrationHandler
 	FinishPasskeyRegistration FinishPasskeyRegistrationHandler
@@ -82,7 +87,7 @@ func New(d Deps) Handlers {
 	}
 	b := &base{Deps: d}
 	return Handlers{
-		SignIn: SignInHandler{b}, LogoutAll: LogoutAllHandler{b}, DeleteAccount: DeleteAccountHandler{b},
+		SignIn: SignInHandler{b}, LogoutAll: LogoutAllHandler{b}, DeleteAccount: DeleteAccountHandler{b}, PurgeAccount: PurgeAccountHandler{b},
 		BeginPasskeyRegistration: BeginPasskeyRegistrationHandler{b}, FinishPasskeyRegistration: FinishPasskeyRegistrationHandler{b},
 		BeginPasskeyLogin: BeginPasskeyLoginHandler{b}, FinishPasskeyLogin: FinishPasskeyLoginHandler{b},
 		DeletePasskey: DeletePasskeyHandler{b},

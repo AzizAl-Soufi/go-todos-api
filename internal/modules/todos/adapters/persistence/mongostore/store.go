@@ -5,6 +5,7 @@ package mongostore
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"time"
 
@@ -172,7 +173,16 @@ type todoDoc struct {
 	CompletedAt *time.Time     `bson:"completedAt"`
 	CreatedAt   time.Time      `bson:"createdAt"`
 	UpdatedAt   time.Time      `bson:"updatedAt"`
+	// The due-date alert state: the deadline each alert was sent for. Only
+	// MarkDueAlerted writes it; Create and Update leave it out.
+	DueSoonAlertedFor *time.Time `bson:"dueSoonAlertedFor,omitempty"`
+	OverdueAlertedFor *time.Time `bson:"overdueAlertedFor,omitempty"`
 }
+
+const (
+	dueSoonAlertedField = "dueSoonAlertedFor"
+	overdueAlertedField = "overdueAlertedFor"
+)
 
 func newTodoDoc(t *domain.Todo, id bson.ObjectID) (*todoDoc, error) {
 	userOID, err := ids.ObjectID(t.UserID)
@@ -243,7 +253,43 @@ func (s *Todos) Update(ctx context.Context, sc domain.Scope, t *domain.Todo) err
 	if err != nil {
 		return err
 	}
-	return replaceInScope(ctx, s.coll, sc, t.ID, doc)
+	// $set rather than a replacement, which would drop the alert state.
+	fields, err := setFields(doc)
+	if err != nil {
+		return err
+	}
+	filter, err := byIDInScope(sc, t.ID)
+	if err != nil {
+		return err
+	}
+	res, err := s.coll.UpdateOne(ctx, filter, bson.M{"$set": fields})
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return apperrors.ErrNotFound
+	}
+	return nil
+}
+
+// setFields is doc's fields for $set: all but _id (immutable) and those
+// left empty (the alert state).
+func setFields(doc *todoDoc) (bson.D, error) {
+	raw, err := bson.Marshal(doc)
+	if err != nil {
+		return nil, err
+	}
+	var all bson.D
+	if err := bson.Unmarshal(raw, &all); err != nil {
+		return nil, err
+	}
+	out := make(bson.D, 0, len(all))
+	for _, e := range all {
+		if e.Key != "_id" {
+			out = append(out, e)
+		}
+	}
+	return out, nil
 }
 
 func (s *Todos) Delete(ctx context.Context, sc domain.Scope, id string) error {
@@ -425,6 +471,83 @@ func (s *Todos) DeleteByUser(ctx context.Context, userID string) error {
 
 func (s *Todos) DeleteByTeam(ctx context.Context, teamID string) error {
 	return deleteTeam(ctx, s.coll, teamID)
+}
+
+var openStatuses = bson.A{string(domain.StatusPending), string(domain.StatusInProgress), string(domain.StatusBlocked)}
+
+// ListPendingDueAlertsSystemWide is system-level: not scoped (see
+// application.DueAlertRepository). The match narrows to the candidates on
+// idx_due_alerts; domain.NextDueAlert then decides each, so the semantics
+// can't drift from the other stores.
+func (s *Todos) ListPendingDueAlertsSystemWide(ctx context.Context, now time.Time, limit int) ([]application.DueAlert, error) {
+	out := make([]application.DueAlert, 0)
+	if limit <= 0 {
+		return out, nil
+	}
+	notSentFor := func(field string) bson.M { return bson.M{"$ne": bson.A{"$" + field, "$dueAt"}} }
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{
+			"status": bson.M{"$in": openStatuses},
+			"dueAt":  bson.M{"$type": "date", "$lte": now.Add(domain.DueSoonWindow)},
+			"$expr": bson.M{"$and": bson.A{
+				notSentFor(overdueAlertedField),
+				bson.M{"$or": bson.A{bson.M{"$lt": bson.A{"$dueAt", now}}, notSentFor(dueSoonAlertedField)}},
+			}},
+		}}},
+		{{Key: "$sort", Value: bson.D{{Key: "dueAt", Value: 1}, {Key: "_id", Value: 1}}}},
+		// Leave out todos of archived projects.
+		{{Key: "$lookup", Value: bson.M{
+			"from": ProjectsCollection, "localField": "projectId", "foreignField": "_id", "as": "archivedProject",
+			"pipeline": bson.A{
+				bson.M{"$match": bson.M{"archivedAt": bson.M{"$ne": nil}}},
+				bson.M{"$project": bson.M{"_id": 1}},
+			},
+		}}},
+		{{Key: "$match", Value: bson.M{"archivedProject": bson.M{"$size": 0}}}},
+		{{Key: "$limit", Value: limit}},
+		{{Key: "$unset", Value: "archivedProject"}},
+	}
+	cursor, err := s.coll.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, err
+	}
+	var docs []todoDoc
+	if err := cursor.All(ctx, &docs); err != nil {
+		return nil, err
+	}
+	for i := range docs {
+		todo := docs[i].toDomain()
+		sent := domain.DueAlertsSent{DueSoonFor: docs[i].DueSoonAlertedFor, OverdueFor: docs[i].OverdueAlertedFor}
+		if kind, ok := domain.NextDueAlert(todo, sent, now); ok {
+			out = append(out, application.DueAlert{Todo: todo, Kind: kind})
+		}
+	}
+	return out, nil
+}
+
+// MarkDueAlerted is system-level: not scoped (see
+// application.DueAlertRepository).
+func (s *Todos) MarkDueAlerted(ctx context.Context, id string, kind domain.DueAlertKind, dueAt time.Time) (bool, error) {
+	oid, err := ids.ObjectID(id)
+	if err != nil {
+		return false, err
+	}
+	var field string
+	switch kind {
+	case domain.AlertDueSoon:
+		field = dueSoonAlertedField
+	case domain.AlertOverdue:
+		field = overdueAlertedField
+	default:
+		return false, fmt.Errorf("mark due alerted: unknown kind %q", kind)
+	}
+	res, err := s.coll.UpdateOne(ctx,
+		bson.M{"_id": oid, "dueAt": dueAt, "status": bson.M{"$in": openStatuses}, field: bson.M{"$ne": dueAt}},
+		bson.M{"$set": bson.M{field: dueAt}})
+	if err != nil {
+		return false, err
+	}
+	return res.ModifiedCount > 0, nil
 }
 
 // ---- projects and collections ----

@@ -28,6 +28,7 @@ import (
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/transport/mcpapi"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/httpx"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/jobs"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/tx"
 )
 
@@ -39,9 +40,11 @@ type (
 	// AuditLog receives the changes to team records; AuditEntry is one change.
 	AuditLog   = application.AuditLog
 	AuditEntry = application.AuditEntry
-	// Notifier hears about new team todos; NewTeamTodo is one.
-	Notifier    = application.Notifier
-	NewTeamTodo = application.NewTeamTodo
+	// Notifier hears about new team todos (NewTeamTodo) and sends due-date
+	// alerts (TodoDueAlert).
+	Notifier     = application.Notifier
+	NewTeamTodo  = application.NewTeamTodo
+	TodoDueAlert = application.TodoDueAlert
 )
 
 // Deps are the adapters the module runs on.
@@ -89,6 +92,31 @@ func (m *Module) RegisterRoutes(mux *http.ServeMux, protect, limitCreate httpx.M
 // POST /todos (nil: no limit).
 func (m *Module) RegisterTools(s *mcp.Server, limitCreate func(userID string) error) {
 	mcpapi.Register(s, m.Commands, m.Queries, limitCreate)
+}
+
+// Due-date alerts: a periodic job, run by the worker.
+const (
+	jobDueAlerts = "todos.due_alerts"
+	// dueAlertsEvery is how often the job runs; an alert goes out at most
+	// this late.
+	dueAlertsEvery = 5 * time.Minute
+	// dueAlertsTimeout bounds one run (at most command.MaxDueAlertsPerRun
+	// alerts), below the period so runs don't pile up.
+	dueAlertsTimeout = 4 * time.Minute
+)
+
+// RegisterJobs adds the module's job handlers: todos.due_alerts sends the
+// due-date alerts that are due (see command.SendDueAlerts). A failed run is
+// retried; alerts already marked and enqueued are not sent again.
+func (m *Module) RegisterJobs(r *jobs.Registry) {
+	jobs.Handle(r, jobDueAlerts, dueAlertsTimeout, func(ctx context.Context, _ struct{}) error {
+		return m.Commands.SendDueAlerts.Handle(ctx, command.SendDueAlerts{})
+	})
+}
+
+// Schedules are the module's periodic jobs: due-date alerts every 5 minutes.
+func (m *Module) Schedules() []jobs.Schedule {
+	return []jobs.Schedule{{Kind: jobDueAlerts, Every: dueAlertsEvery}}
 }
 
 // Todo is the read model exposed to other modules.

@@ -21,11 +21,17 @@ type Querier interface {
 	CreateGrant(ctx context.Context, arg CreateGrantParams) (uuid.UUID, error)
 	// codes
 	DeleteExpiredCodes(ctx context.Context, expiresAt time.Time) error
+	DeleteExpiredCodesBatch(ctx context.Context, arg DeleteExpiredCodesBatchParams) (int64, error)
+	DeleteExpiredGrants(ctx context.Context, arg DeleteExpiredGrantsParams) (int64, error)
 	// grants
 	// Grants whose refresh token expired are of no use; creating a grant clears
 	// the user's.
 	DeleteExpiredUserGrants(ctx context.Context, arg DeleteExpiredUserGrantsParams) error
 	DeleteGrant(ctx context.Context, arg DeleteGrantParams) (int64, error)
+	// Registered clients nothing references any more (cleanup job), oldest
+	// first, at most max_rows. client_id is TEXT: it also holds metadata
+	// document URLs.
+	DeleteUnusedClients(ctx context.Context, arg DeleteUnusedClientsParams) (int64, error)
 	DeleteUserCodes(ctx context.Context, userID uuid.UUID) error
 	DeleteUserGrants(ctx context.Context, userID uuid.UUID) error
 	GetClient(ctx context.Context, id uuid.UUID) (OauthClient, error)

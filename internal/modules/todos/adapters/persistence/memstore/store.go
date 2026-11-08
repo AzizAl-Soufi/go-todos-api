@@ -1,12 +1,16 @@
 // Package memstore holds the in-memory todos, projects and collections
-// repositories (local development and tests). Visibility is domain.Scope.Includes. Every value crossing the lock
+// repositories (local development and tests). Visibility is
+// domain.Scope.Includes; the due-date alert scan needs the todos linked to
+// their projects (Todos.LinkProjects). Every value crossing the lock
 // boundary is a copy, and filtering and ordering reuse the domain's own
 // definitions (domain.Query, domain.ProjectFilter).
 package memstore
 
 import (
 	"context"
+	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -128,12 +132,22 @@ func copyTime(t *time.Time) *time.Time {
 
 // ---- todos ----
 
-type Todos struct{ t *table[domain.Todo] }
+type Todos struct {
+	t *table[domain.Todo]
+
+	// mu guards the due-date alert state, kept beside the todos (Update
+	// never touches it), and the linked projects. Lock order: t.mu, then mu.
+	mu       sync.Mutex
+	sent     map[string]domain.DueAlertsSent
+	projects *Projects
+}
 
 var _ application.TodoStore = (*Todos)(nil)
 
+// NewTodos makes an empty store. Link it to the projects store with
+// LinkProjects, so the due-date alert scan can leave out archived projects.
 func NewTodos() *Todos {
-	return &Todos{t: newTable(
+	return &Todos{sent: map[string]domain.DueAlertsSent{}, t: newTable(
 		func(v *domain.Todo) *string { return &v.ID },
 		func(v *domain.Todo) (string, string) { return v.UserID, v.TeamID },
 		func(v *domain.Todo) *domain.Todo {
@@ -195,6 +209,78 @@ func (s *Todos) DeleteByTeam(_ context.Context, teamID string) error {
 	return nil
 }
 
+// LinkProjects lets the todos see their projects' archive state, which the
+// due-date alert scan needs (the database stores join the two). Unlinked,
+// no project counts as archived.
+func (s *Todos) LinkProjects(p *Projects) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.projects = p
+}
+
+// ListPendingDueAlertsSystemWide is system-level: not scoped (see
+// application.DueAlertRepository).
+func (s *Todos) ListPendingDueAlertsSystemWide(_ context.Context, now time.Time, limit int) ([]application.DueAlert, error) {
+	out := make([]application.DueAlert, 0)
+	if limit <= 0 {
+		return out, nil
+	}
+	s.t.mu.RLock()
+	s.mu.Lock()
+	for id := range s.sent { // forget the state of deleted todos
+		if _, ok := s.t.data[id]; !ok {
+			delete(s.sent, id)
+		}
+	}
+	for id, t := range s.t.data {
+		if kind, ok := domain.NextDueAlert(t, s.sent[id], now); ok {
+			out = append(out, application.DueAlert{Todo: s.t.clone(t), Kind: kind})
+		}
+	}
+	projects := s.projects
+	s.mu.Unlock()
+	s.t.mu.RUnlock()
+
+	if projects != nil {
+		out = slices.DeleteFunc(out, func(a application.DueAlert) bool { return projects.archived(a.Todo.ProjectID) })
+	}
+	slices.SortFunc(out, func(a, b application.DueAlert) int {
+		if c := a.Todo.DueAt.Compare(*b.Todo.DueAt); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Todo.ID, b.Todo.ID)
+	})
+	return out[:min(limit, len(out))], nil
+}
+
+// MarkDueAlerted is system-level: not scoped (see
+// application.DueAlertRepository).
+func (s *Todos) MarkDueAlerted(_ context.Context, id string, kind domain.DueAlertKind, dueAt time.Time) (bool, error) {
+	if kind != domain.AlertDueSoon && kind != domain.AlertOverdue {
+		return false, fmt.Errorf("mark due alerted: unknown kind %q", kind)
+	}
+	s.t.mu.RLock()
+	defer s.t.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.t.data[id]
+	if !ok || !t.Status.Open() || t.DueAt == nil || !t.DueAt.Equal(dueAt) {
+		return false, nil
+	}
+	sent := s.sent[id]
+	if prev := sent.For(kind); prev != nil && prev.Equal(dueAt) {
+		return false, nil
+	}
+	due := *t.DueAt
+	if kind == domain.AlertOverdue {
+		sent.OverdueFor = &due
+	} else {
+		sent.DueSoonFor = &due
+	}
+	s.sent[id] = sent
+	return true, nil
+}
+
 // ---- projects ----
 
 func cloneMeta(m domain.Meta) domain.Meta {
@@ -242,6 +328,17 @@ func (s *Projects) DetachCollection(_ context.Context, sc domain.Scope, collecti
 		func(p *domain.Project) bool { return p.CollectionID == collectionID && s.t.visible(sc, p) },
 		func(p *domain.Project) { p.CollectionID = "" })
 	return nil
+}
+
+// archived reports whether the project with id exists and is archived.
+func (s *Projects) archived(id string) bool {
+	if id == "" {
+		return false
+	}
+	s.t.mu.RLock()
+	defer s.t.mu.RUnlock()
+	p, ok := s.t.data[id]
+	return ok && p.Archived()
 }
 
 func (s *Projects) DeleteByUser(_ context.Context, userID string) error {

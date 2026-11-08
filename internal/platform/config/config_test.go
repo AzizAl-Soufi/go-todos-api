@@ -39,6 +39,7 @@ func defaultConfig() Config {
 		DB:      DatabaseConfig{DBType: "memory", MongoMigrationsConfig: "./cmd/migrate/mongo.yaml"},
 		Auth:    AuthConfig{RateLimitPerMinute: 20, RateLimitBurst: 10},
 		Limits:  LimitsConfig{TodoCreatesPerMinute: 120, TodoCreateBurst: 30},
+		Jobs:    JobsConfig{Concurrency: 8, HealthPort: 8081, RetainDays: 7},
 		Passkey: PasskeyConfig{RPName: "Todos"},
 		SMTP:    SMTPConfig{Port: 587},
 	}

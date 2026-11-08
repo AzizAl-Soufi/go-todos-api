@@ -15,6 +15,7 @@ package teams
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/transport/mcpapi"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/httpx"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/jobs"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/tx"
 )
 
@@ -48,24 +50,60 @@ type Deps struct {
 	TeamData    application.TeamData
 	Audit       application.AuditLog
 	Mailer      application.Mailer
-	Tx          tx.Runner
-	Config      Config
-	Now         func() time.Time // nil means time.Now
+	// Jobs runs the slow part of team deletion in the worker.
+	Jobs   jobs.Enqueuer
+	Tx     tx.Runner
+	Config Config
+	Now    func() time.Time // nil means time.Now
 }
 
 type Module struct {
 	Commands command.Handlers
 	Queries  query.Handlers
+	now      func() time.Time
 }
 
 func New(d Deps) *Module {
+	if d.Now == nil {
+		d.Now = time.Now
+	}
 	return &Module{
 		Commands: command.New(command.Deps{
 			Teams: d.Teams, Members: d.Members, Invitations: d.Invitations, TeamData: d.TeamData,
-			Audit: d.Audit, Mailer: d.Mailer, Tx: d.Tx, Config: d.Config, Now: d.Now,
+			Audit: d.Audit, Mailer: d.Mailer, Jobs: d.Jobs, Tx: d.Tx, Config: d.Config, Now: d.Now,
 		}),
 		Queries: query.New(query.Deps{Teams: d.Teams, Members: d.Members, Invitations: d.Invitations}),
+		now:     d.Now,
 	}
+}
+
+const (
+	jobInvitationCleanup = "teams.invitation_cleanup"
+	// expiredInvitationRetention keeps expired invitations listed (and
+	// resendable) this long before the cleanup deletes them.
+	expiredInvitationRetention = 30 * 24 * time.Hour
+)
+
+// RegisterJobs adds the module's background jobs: deleting a deleted team's
+// content, and the periodic cleanup of long-expired invitations.
+func (m *Module) RegisterJobs(r *jobs.Registry) {
+	jobs.Handle(r, command.JobPurgeTeam, 30*time.Minute, func(ctx context.Context, p command.PurgeTeam) error {
+		return m.Commands.PurgeTeam.Handle(ctx, p)
+	})
+	r.Register(jobInvitationCleanup, 5*time.Minute, func(ctx context.Context, _ []byte) error {
+		n, err := m.Commands.DeleteExpiredInvitations.Handle(ctx, command.DeleteExpiredInvitations{
+			Before: m.now().Add(-expiredInvitationRetention),
+		})
+		if n > 0 {
+			slog.InfoContext(ctx, "teams: deleted expired invitations", "count", n)
+		}
+		return err
+	})
+}
+
+// Schedules are the module's periodic jobs.
+func (m *Module) Schedules() []jobs.Schedule {
+	return []jobs.Schedule{{Kind: jobInvitationCleanup, Every: 24 * time.Hour}}
 }
 
 // Resolver loads a caller's memberships for access.Middleware.

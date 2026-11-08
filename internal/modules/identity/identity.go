@@ -14,6 +14,7 @@
 package identity
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/transport/mcpapi"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/auth"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/httpx"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/jobs"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/tx"
 )
 
@@ -47,6 +49,7 @@ type Deps struct {
 	Audit        application.AuditLog        // nil records nothing
 	Devices      application.Devices         // nil: no devices to forget
 	Connections  application.Connections     // nil: no connected apps to revoke
+	Jobs         jobs.Enqueuer               // runs the account data purge
 	Tx           tx.Runner
 	Config       Config
 	Now          func() time.Time // nil means time.Now
@@ -62,11 +65,19 @@ func New(d Deps) *Module {
 		Commands: command.New(command.Deps{
 			Users: d.Users, Passkeys: d.Passkeys, Challenges: d.Challenges, RelyingParty: d.RelyingParty,
 			IDTokens: d.IDTokens, Firebase: d.Firebase, Todos: d.Todos, Teams: d.Teams,
-			Audit: d.Audit, Devices: d.Devices, Connections: d.Connections,
+			Audit: d.Audit, Devices: d.Devices, Connections: d.Connections, Jobs: d.Jobs,
 			Tx: d.Tx, Config: d.Config, Now: d.Now,
 		}),
 		Queries: query.New(query.Deps{Users: d.Users, Passkeys: d.Passkeys, IDTokens: d.IDTokens, Todos: d.Todos}),
 	}
+}
+
+// RegisterJobs adds the module's background jobs: erasing a deleted
+// account's data.
+func (m *Module) RegisterJobs(r *jobs.Registry) {
+	jobs.Handle(r, command.JobPurgeAccount, 30*time.Minute, func(ctx context.Context, p command.PurgeAccount) error {
+		return m.Commands.PurgeAccount.Handle(ctx, p)
+	})
 }
 
 // RegisterTools adds the identity MCP tools (the caller's profile) to s.

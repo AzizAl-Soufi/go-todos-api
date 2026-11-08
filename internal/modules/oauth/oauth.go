@@ -34,6 +34,7 @@ import (
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/oauth/transport/httpapi"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/auth"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/httpx"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/jobs"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/tx"
 )
 
@@ -130,4 +131,23 @@ func (m *Module) RevokeUserConnections(ctx context.Context, userID string) error
 // token (RFC 9728), for the WWW-Authenticate header of a 401 from /mcp.
 func (m *Module) ProtectedResourceMetadataURL() string {
 	return httpapi.ProtectedResourceMetadataURL(m.cfg.Issuer)
+}
+
+const (
+	// JobCleanup deletes expired codes and grants and unused clients.
+	JobCleanup     = "oauth.cleanup"
+	cleanupEvery   = time.Hour
+	cleanupTimeout = 5 * time.Minute
+)
+
+// RegisterJobs adds the module's job handlers.
+func (m *Module) RegisterJobs(r *jobs.Registry) {
+	jobs.Handle(r, JobCleanup, cleanupTimeout, func(ctx context.Context, _ struct{}) error {
+		return m.Commands.Cleanup.Handle(ctx, command.Cleanup{})
+	})
+}
+
+// Schedules are the module's periodic jobs: the cleanup, hourly.
+func (m *Module) Schedules() []jobs.Schedule {
+	return []jobs.Schedule{{Kind: JobCleanup, Every: cleanupEvery}}
 }

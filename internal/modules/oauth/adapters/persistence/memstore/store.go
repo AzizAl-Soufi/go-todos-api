@@ -5,8 +5,10 @@ package memstore
 import (
 	"cmp"
 	"context"
+	"errors"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/oauth/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/oauth/domain"
@@ -15,16 +17,78 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
+// Stores are the module's three stores, linked so that Clients can tell
+// which clients codes and grants still reference (DeleteUnused).
+type Stores struct {
+	Clients *Clients
+	Codes   *Codes
+	Grants  *Grants
+}
+
+// New returns linked stores.
+func New() Stores {
+	codes, grants := NewCodes(), NewGrants()
+	return Stores{Clients: NewClients().Link(codes, grants), Codes: codes, Grants: grants}
+}
+
 // ---- clients ----
 
 type Clients struct {
 	mu   sync.RWMutex
 	data map[string]domain.Client
+	// codes and grants are read by DeleteUnused (see Link).
+	codes  *Codes
+	grants *Grants
 }
 
 var _ application.ClientRepository = (*Clients)(nil)
 
+// NewClients returns a client store on its own; DeleteUnused needs Link
+// (or use New).
 func NewClients() *Clients { return &Clients{data: map[string]domain.Client{}} }
+
+// Link gives the store the code and grant stores that reference clients,
+// which DeleteUnused checks. It returns s.
+func (s *Clients) Link(codes *Codes, grants *Grants) *Clients {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.codes, s.grants = codes, grants
+	return s
+}
+
+var errNotLinked = errors.New("memstore: oauth clients are not linked to codes and grants (use memstore.New)")
+
+func (s *Clients) DeleteUnused(_ context.Context, createdBefore time.Time, limit int) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.codes == nil || s.grants == nil {
+		// Without them every client looks unused: refuse rather than
+		// delete clients that are in use.
+		return 0, errNotLinked
+	}
+	if limit <= 0 {
+		return 0, nil
+	}
+	used := s.grants.clientIDs()
+	for id := range s.codes.clientIDs() {
+		used[id] = struct{}{}
+	}
+	candidates := []domain.Client{}
+	for id, c := range s.data {
+		if _, ok := used[id]; !ok && c.CreatedAt.Before(createdBefore) {
+			candidates = append(candidates, c)
+		}
+	}
+	slices.SortFunc(candidates, func(a, b domain.Client) int {
+		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), cmp.Compare(a.ID, b.ID))
+	})
+	var n int64
+	for _, c := range candidates[:min(limit, len(candidates))] {
+		delete(s.data, c.ID)
+		n++
+	}
+	return n, nil
+}
 
 func (s *Clients) Create(_ context.Context, c *domain.Client) error {
 	s.mu.Lock()
@@ -93,6 +157,32 @@ func (s *Codes) DeleteForUser(_ context.Context, userID string) error {
 		}
 	}
 	return nil
+}
+
+func (s *Codes) DeleteExpired(_ context.Context, now time.Time, limit int) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int64
+	for hash, c := range s.data {
+		if n >= int64(limit) {
+			break
+		}
+		if c.Expired(now) {
+			delete(s.data, hash)
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (s *Codes) clientIDs() map[string]struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]struct{}{}
+	for _, c := range s.data {
+		out[c.ClientID] = struct{}{}
+	}
+	return out
 }
 
 // ---- grants ----
@@ -188,4 +278,30 @@ func (s *Grants) DeleteForUser(_ context.Context, userID string) error {
 		}
 	}
 	return nil
+}
+
+func (s *Grants) DeleteExpired(_ context.Context, now time.Time, limit int) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int64
+	for id, g := range s.data {
+		if n >= int64(limit) {
+			break
+		}
+		if !now.Before(g.RefreshExpiresAt) {
+			delete(s.data, id)
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (s *Grants) clientIDs() map[string]struct{} {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := map[string]struct{}{}
+	for _, g := range s.data {
+		out[g.ClientID] = struct{}{}
+	}
+	return out
 }

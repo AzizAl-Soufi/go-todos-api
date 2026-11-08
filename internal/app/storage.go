@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"context"
@@ -7,6 +7,11 @@ import (
 	"log/slog"
 	"os"
 	"time"
+
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/jobs"
+	jobsmem "github.com/AzizAl-Soufi/go-todos-api/internal/platform/jobs/memstore"
+	jobsmongo "github.com/AzizAl-Soufi/go-todos-api/internal/platform/jobs/mongostore"
+	jobspg "github.com/AzizAl-Soufi/go-todos-api/internal/platform/jobs/pgstore"
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit"
 	auditmem "github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit/adapters/persistence/memstore"
@@ -41,35 +46,36 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// oauthStores are the oauth module's stores.
-type oauthStores struct {
-	clients oauth.ClientStore
-	codes   oauth.CodeStore
-	grants  oauth.GrantStore
+// OAuthStores are the oauth module's stores.
+type OAuthStores struct {
+	Clients oauth.ClientStore
+	Codes   oauth.CodeStore
+	Grants  oauth.GrantStore
 }
 
 // storage bundles every persistence adapter for one backend.
-type storage struct {
-	todos       todos.TodoStore
-	projects    todos.ProjectStore
-	collections todos.CollectionStore
-	users       application.UserRepository
-	passkeys    application.PasskeyRepository
-	challenges  application.PasskeyChallengeRepository
-	teams       teams.TeamStore
-	members     teams.MemberStore
-	invitations teams.InvitationStore
-	events      audit.EventStore
-	devices     notifications.DeviceStore
-	oauth       oauthStores
-	tx          tx.Runner
-	close       func()
+type Storage struct {
+	Todos       todos.TodoStore
+	Projects    todos.ProjectStore
+	Collections todos.CollectionStore
+	Users       application.UserRepository
+	Passkeys    application.PasskeyRepository
+	Challenges  application.PasskeyChallengeRepository
+	Teams       teams.TeamStore
+	Members     teams.MemberStore
+	Invitations teams.InvitationStore
+	Events      audit.EventStore
+	Devices     notifications.DeviceStore
+	Jobs        jobs.Store
+	OAuth       OAuthStores
+	Tx          tx.Runner
+	Close       func()
 }
 
-func newStorage(ctx context.Context, cfg *config.Config) (*storage, error) {
+func NewStorage(ctx context.Context, cfg *config.Config) (*Storage, error) {
 	switch cfg.DB.DBType {
 	case "memory":
-		return newMemoryStorage(), nil
+		return NewMemoryStorage(), nil
 	case "mongo":
 		return newMongoStorage(ctx, cfg)
 	case "postgres":
@@ -79,30 +85,36 @@ func newStorage(ctx context.Context, cfg *config.Config) (*storage, error) {
 	}
 }
 
-func newMemoryStorage() *storage {
-	return &storage{
-		todos:       todosmem.NewTodos(),
-		projects:    todosmem.NewProjects(),
-		collections: todosmem.NewCollections(),
-		users:       identitymem.NewUsers(),
-		passkeys:    identitymem.NewPasskeys(),
-		challenges:  identitymem.NewPasskeyChallenges(),
-		teams:       teamsmem.NewTeams(),
-		members:     teamsmem.NewMembers(),
-		invitations: teamsmem.NewInvitations(),
-		events:      auditmem.NewEvents(),
-		devices:     notificationsmem.NewDevices(),
-		oauth: oauthStores{
-			clients: oauthmem.NewClients(),
-			codes:   oauthmem.NewCodes(),
-			grants:  oauthmem.NewGrants(),
+func NewMemoryStorage() *Storage {
+	oauthMem := oauthmem.New()
+	// Linked, so due-date alerts skip todos of archived projects.
+	todosMem, projectsMem := todosmem.NewTodos(), todosmem.NewProjects()
+	todosMem.LinkProjects(projectsMem)
+	return &Storage{
+		Todos:       todosMem,
+		Projects:    projectsMem,
+		Collections: todosmem.NewCollections(),
+		Users:       identitymem.NewUsers(),
+		Passkeys:    identitymem.NewPasskeys(),
+		Challenges:  identitymem.NewPasskeyChallenges(),
+		Teams:       teamsmem.NewTeams(),
+		Members:     teamsmem.NewMembers(),
+		Invitations: teamsmem.NewInvitations(),
+		Events:      auditmem.NewEvents(),
+		Devices:     notificationsmem.NewDevices(),
+		Jobs:        jobsmem.New(),
+		OAuth: OAuthStores{
+			// Linked, so the cleanup can tell which clients are in use.
+			Clients: oauthMem.Clients,
+			Codes:   oauthMem.Codes,
+			Grants:  oauthMem.Grants,
 		},
-		tx:    tx.None{},
-		close: func() {},
+		Tx:    tx.None{},
+		Close: func() {},
 	}
 }
 
-func newMongoStorage(ctx context.Context, cfg *config.Config) (*storage, error) {
+func newMongoStorage(ctx context.Context, cfg *config.Config) (*Storage, error) {
 	if cfg.DB.DatabaseURI == "" || cfg.DB.DatabaseName == "" {
 		return nil, fmt.Errorf("DATABASE_URI and DATABASE_NAME are required for DB_TYPE=mongo")
 	}
@@ -119,8 +131,8 @@ func newMongoStorage(ctx context.Context, cfg *config.Config) (*storage, error) 
 		}
 	}
 
-	store := mongoStorage(ctx, client)
-	store.close = func() {
+	store := MongoStorage(ctx, client)
+	store.Close = func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := client.Close(ctx); err != nil {
@@ -130,32 +142,33 @@ func newMongoStorage(ctx context.Context, cfg *config.Config) (*storage, error) 
 	return store, nil
 }
 
-// mongoStorage builds the adapters on a connected, migrated database.
-func mongoStorage(ctx context.Context, client mongodb.MongoDBClient) *storage {
+// MongoStorage builds the adapters on a connected, migrated database.
+func MongoStorage(ctx context.Context, client mongodb.MongoDBClient) *Storage {
 	db := client.Database()
-	return &storage{
-		todos:       todosmongo.NewTodos(db),
-		projects:    todosmongo.NewProjects(db),
-		collections: todosmongo.NewCollections(db),
-		users:       identitymongo.NewUsers(db),
-		passkeys:    identitymongo.NewPasskeys(db),
-		challenges:  identitymongo.NewPasskeyChallenges(db),
-		teams:       teamsmongo.NewTeams(db),
-		members:     teamsmongo.NewMembers(db),
-		invitations: teamsmongo.NewInvitations(db),
-		events:      auditmongo.NewEvents(db),
-		devices:     notificationsmongo.NewDevices(db),
-		oauth: oauthStores{
-			clients: oauthmongo.NewClients(db),
-			codes:   oauthmongo.NewCodes(db),
-			grants:  oauthmongo.NewGrants(db),
+	return &Storage{
+		Todos:       todosmongo.NewTodos(db),
+		Projects:    todosmongo.NewProjects(db),
+		Collections: todosmongo.NewCollections(db),
+		Users:       identitymongo.NewUsers(db),
+		Passkeys:    identitymongo.NewPasskeys(db),
+		Challenges:  identitymongo.NewPasskeyChallenges(db),
+		Teams:       teamsmongo.NewTeams(db),
+		Members:     teamsmongo.NewMembers(db),
+		Invitations: teamsmongo.NewInvitations(db),
+		Events:      auditmongo.NewEvents(db),
+		Devices:     notificationsmongo.NewDevices(db),
+		Jobs:        jobsmongo.New(db),
+		OAuth: OAuthStores{
+			Clients: oauthmongo.NewClients(db),
+			Codes:   oauthmongo.NewCodes(db),
+			Grants:  oauthmongo.NewGrants(db),
 		},
-		tx:    mongodb.NewTxRunner(ctx, client),
-		close: func() {},
+		Tx:    mongodb.NewTxRunner(ctx, client),
+		Close: func() {},
 	}
 }
 
-func newPostgresStorage(ctx context.Context, cfg *config.Config) (*storage, error) {
+func newPostgresStorage(ctx context.Context, cfg *config.Config) (*Storage, error) {
 	if cfg.DB.DatabaseURI == "" {
 		return nil, fmt.Errorf("DATABASE_URI is required for DB_TYPE=postgres")
 	}
@@ -171,8 +184,8 @@ func newPostgresStorage(ctx context.Context, cfg *config.Config) (*storage, erro
 		}
 	}
 
-	store := postgresStorage(pool)
-	store.close = func() {
+	store := PostgresStorage(pool)
+	store.Close = func() {
 		if err := client.Close(); err != nil {
 			slog.Error("closing PostgreSQL connection", "error", err)
 		}
@@ -180,27 +193,28 @@ func newPostgresStorage(ctx context.Context, cfg *config.Config) (*storage, erro
 	return store, nil
 }
 
-// postgresStorage builds the adapters on a connected, migrated pool.
-func postgresStorage(pool *pgxpool.Pool) *storage {
-	return &storage{
-		todos:       todospg.NewTodos(pool),
-		projects:    todospg.NewProjects(pool),
-		collections: todospg.NewCollections(pool),
-		users:       identitypg.NewUsers(pool),
-		passkeys:    identitypg.NewPasskeys(pool),
-		challenges:  identitypg.NewPasskeyChallenges(pool),
-		teams:       teamspg.NewTeams(pool),
-		members:     teamspg.NewMembers(pool),
-		invitations: teamspg.NewInvitations(pool),
-		events:      auditpg.NewEvents(pool),
-		devices:     notificationspg.NewDevices(pool),
-		oauth: oauthStores{
-			clients: oauthpg.NewClients(pool),
-			codes:   oauthpg.NewCodes(pool),
-			grants:  oauthpg.NewGrants(pool),
+// PostgresStorage builds the adapters on a connected, migrated pool.
+func PostgresStorage(pool *pgxpool.Pool) *Storage {
+	return &Storage{
+		Todos:       todospg.NewTodos(pool),
+		Projects:    todospg.NewProjects(pool),
+		Collections: todospg.NewCollections(pool),
+		Users:       identitypg.NewUsers(pool),
+		Passkeys:    identitypg.NewPasskeys(pool),
+		Challenges:  identitypg.NewPasskeyChallenges(pool),
+		Teams:       teamspg.NewTeams(pool),
+		Members:     teamspg.NewMembers(pool),
+		Invitations: teamspg.NewInvitations(pool),
+		Events:      auditpg.NewEvents(pool),
+		Devices:     notificationspg.NewDevices(pool),
+		Jobs:        jobspg.New(pool),
+		OAuth: OAuthStores{
+			Clients: oauthpg.NewClients(pool),
+			Codes:   oauthpg.NewCodes(pool),
+			Grants:  oauthpg.NewGrants(pool),
 		},
-		tx:    postgres.NewTxRunner(pool),
-		close: func() {},
+		Tx:    postgres.NewTxRunner(pool),
+		Close: func() {},
 	}
 }
 

@@ -9,14 +9,13 @@ import (
 	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/AzizAl-Soufi/go-todos-api/internal/app"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/oauth"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/auth"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/config"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/httpx"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/mcpx"
 )
-
-// mcpPath is the MCP endpoint, relative to APP_BASE_URL.
-const mcpPath = "/mcp"
 
 const mcpInstructions = "Todos, projects, collections and teams of the signed-in user, " +
 	"as in the Todos REST API. Records are personal or belong to a team; team roles " +
@@ -29,13 +28,14 @@ const mcpInstructions = "Todos, projects, collections and teams of the signed-in
 // from this server's authorization server; the token's account becomes the
 // caller exactly as for the REST API (resolve adds team roles), and the
 // tools call the same handlers as the REST endpoints.
-func newMCPHandler(cfg *config.Config, m modules, resolve httpx.Middleware, limitTodoCreates func(string) error) http.Handler {
+func newMCPHandler(cfg *config.Config, m app.Modules, resolve httpx.Middleware, limitTodoCreates func(string) error) http.Handler {
 	server := mcp.NewServer(&mcp.Implementation{Name: "todos-api", Title: "Todos", Version: buildVersion()},
 		&mcp.ServerOptions{Instructions: mcpInstructions})
-	m.identity.RegisterTools(server)
-	m.todos.RegisterTools(server, limitTodoCreates)
-	m.teams.RegisterTools(server)
-	m.audit.RegisterTools(server)
+	m.Identity.RegisterTools(server)
+	m.Todos.RegisterTools(server, limitTodoCreates)
+	m.Teams.RegisterTools(server)
+	m.Audit.RegisterTools(server)
+	mcpx.RegisterOperations(server, m.Jobs)
 
 	transport := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
 		Stateless:    true,
@@ -48,7 +48,7 @@ func newMCPHandler(cfg *config.Config, m modules, resolve httpx.Middleware, limi
 	})
 
 	verify := func(ctx context.Context, token string, _ *http.Request) (*sdkauth.TokenInfo, error) {
-		a, err := m.oauth.AuthenticateToken(ctx, token)
+		a, err := m.OAuth.AuthenticateToken(ctx, token)
 		if errors.Is(err, oauth.ErrInvalidToken) {
 			return nil, sdkauth.ErrInvalidToken
 		}
@@ -65,7 +65,7 @@ func newMCPHandler(cfg *config.Config, m modules, resolve httpx.Middleware, limi
 	// A request without a valid token gets 401 with WWW-Authenticate pointing
 	// at the protected resource metadata: that starts the client's sign-in.
 	bearer := sdkauth.RequireBearerToken(verify, &sdkauth.RequireBearerTokenOptions{
-		ResourceMetadataURL: m.oauth.ProtectedResourceMetadataURL(),
+		ResourceMetadataURL: m.OAuth.ProtectedResourceMetadataURL(),
 		Scopes:              []string{"todos"},
 	})
 

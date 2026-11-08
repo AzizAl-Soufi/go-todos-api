@@ -5,7 +5,9 @@ package pgstore
 import (
 	"context"
 	"errors"
+	"math"
 	"slices"
+	"time"
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/oauth/adapters/persistence/pgstore/sqlcgen"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/oauth/application"
@@ -60,6 +62,18 @@ func (s *Clients) Get(ctx context.Context, id string) (*domain.Client, error) {
 		CreatedAt:    row.CreatedAt.UTC(),
 	}, nil
 }
+
+func (s *Clients) DeleteUnused(ctx context.Context, createdBefore time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+	n, err := s.q(ctx).DeleteUnusedClients(ctx, sqlcgen.DeleteUnusedClientsParams{
+		CreatedBefore: createdBefore, MaxRows: maxRows(limit),
+	})
+	return n, postgres.MapErr("delete unused oauth clients", err)
+}
+
+func maxRows(limit int) int32 { return int32(min(limit, math.MaxInt32)) }
 
 // ---- codes ----
 
@@ -126,6 +140,14 @@ func (s *Codes) DeleteForUser(ctx context.Context, userID string) error {
 		return err
 	}
 	return postgres.MapErr("delete user oauth codes", s.q(ctx).DeleteUserCodes(ctx, u))
+}
+
+func (s *Codes) DeleteExpired(ctx context.Context, now time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+	n, err := s.q(ctx).DeleteExpiredCodesBatch(ctx, sqlcgen.DeleteExpiredCodesBatchParams{Now: now, MaxRows: maxRows(limit)})
+	return n, postgres.MapErr("delete expired oauth codes", err)
 }
 
 // ---- grants ----
@@ -262,4 +284,12 @@ func (s *Grants) DeleteForUser(ctx context.Context, userID string) error {
 		return err
 	}
 	return postgres.MapErr("delete user oauth grants", s.q(ctx).DeleteUserGrants(ctx, u))
+}
+
+func (s *Grants) DeleteExpired(ctx context.Context, now time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+	n, err := s.q(ctx).DeleteExpiredGrants(ctx, sqlcgen.DeleteExpiredGrantsParams{Now: now, MaxRows: maxRows(limit)})
+	return n, postgres.MapErr("delete expired oauth grants", err)
 }

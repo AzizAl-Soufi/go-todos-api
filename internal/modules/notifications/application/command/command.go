@@ -29,6 +29,7 @@ type Handlers struct {
 	UnregisterDevice  UnregisterDeviceHandler
 	DeleteUserDevices DeleteUserDevicesHandler
 	NotifyTodoCreated NotifyTodoCreatedHandler
+	NotifyUsers       NotifyUsersHandler
 }
 
 func New(d Deps) Handlers {
@@ -40,6 +41,7 @@ func New(d Deps) Handlers {
 		UnregisterDevice:  UnregisterDeviceHandler{d},
 		DeleteUserDevices: DeleteUserDevicesHandler{d},
 		NotifyTodoCreated: NotifyTodoCreatedHandler{d},
+		NotifyUsers:       NotifyUsersHandler{d},
 	}
 }
 
@@ -137,7 +139,15 @@ func (h NotifyTodoCreatedHandler) Handle(ctx context.Context, cmd NotifyTodoCrea
 	if len(recipients) == 0 {
 		return nil
 	}
-	devices, err := h.Devices.ListForUsers(ctx, recipients)
+	return h.send(ctx, recipients, e.Message(roster.Name))
+}
+
+// send pushes m to the users' devices and forgets the tokens FCM rejects.
+// An error before anything was sent (reading devices) is returned, so the
+// job is retried. Delivery failures are only logged: some devices may
+// already have the message, and a retry would send it to them twice.
+func (d Deps) send(ctx context.Context, userIDs []string, m domain.Message) error {
+	devices, err := d.Devices.ListForUsers(ctx, userIDs)
 	if err != nil {
 		return err
 	}
@@ -145,14 +155,33 @@ func (h NotifyTodoCreatedHandler) Handle(ctx context.Context, cmd NotifyTodoCrea
 		return nil
 	}
 	tokens := make([]string, len(devices))
-	for i, d := range devices {
-		tokens[i] = d.Token
+	for i, dev := range devices {
+		tokens[i] = dev.Token
 	}
-	invalid, pushErr := h.Pusher.Push(ctx, tokens, e.Message(roster.Name))
+	invalid, pushErr := d.Pusher.Push(ctx, tokens, m)
+	if pushErr != nil {
+		slog.Warn("push notification partly undelivered", "devices", len(tokens), "error", pushErr)
+	}
 	if len(invalid) > 0 {
-		if err := h.Devices.DeleteTokens(ctx, invalid); err != nil {
+		if err := d.Devices.DeleteTokens(ctx, invalid); err != nil {
 			slog.Error("failed to forget invalid device tokens", "count", len(invalid), "error", err)
 		}
 	}
-	return pushErr
+	return nil
+}
+
+// NotifyUsers pushes a message another module built (a due-date alert) to
+// the users' devices.
+type NotifyUsers struct {
+	UserIDs []string
+	Message domain.Message
+}
+
+type NotifyUsersHandler struct{ Deps }
+
+func (h NotifyUsersHandler) Handle(ctx context.Context, cmd NotifyUsers) error {
+	if h.Pusher == nil || len(cmd.UserIDs) == 0 {
+		return nil
+	}
+	return h.send(ctx, cmd.UserIDs, cmd.Message)
 }

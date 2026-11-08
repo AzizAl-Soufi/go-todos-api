@@ -20,6 +20,7 @@ import (
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application/query"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/domain"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/jobs"
 )
 
 // ---- fakes ----
@@ -130,6 +131,31 @@ func (g *deviceGateway) DeleteUserDevices(_ context.Context, userID string) erro
 	return nil
 }
 
+// jobQueue records enqueued jobs; err fails the next enqueue.
+type jobQueue struct {
+	kinds    []string
+	payloads []any
+	err      error
+}
+
+func (q *jobQueue) Enqueue(_ context.Context, kind string, payload any, _ ...jobs.Option) (string, error) {
+	if q.err != nil {
+		return "", q.err
+	}
+	q.kinds = append(q.kinds, kind)
+	q.payloads = append(q.payloads, payload)
+	return "job-1", nil
+}
+
+// purge runs the account purge the last deletion queued, as the worker would.
+func (f *fixture) purge(t *testing.T) error {
+	t.Helper()
+	if len(f.jobs.kinds) == 0 || f.jobs.kinds[len(f.jobs.kinds)-1] != command.JobPurgeAccount {
+		t.Fatalf("no account purge queued: %v", f.jobs.kinds)
+	}
+	return f.cmd.PurgeAccount.Handle(bg, f.jobs.payloads[len(f.jobs.payloads)-1].(command.PurgeAccount))
+}
+
 // recordingTx counts units of work and runs them in place. The counter is
 // atomic because some tests run use cases concurrently.
 type recordingTx struct{ calls atomic.Int32 }
@@ -146,6 +172,7 @@ type fixture struct {
 	firebase *fakeFirebase
 	todos    *todoGateway
 	devices  *deviceGateway
+	jobs     *jobQueue
 	tx       *recordingTx
 	users    *memstore.Users
 	passkeys *memstore.Passkeys
@@ -161,6 +188,7 @@ func newFixture(t *testing.T, withAdmin ...bool) *fixture {
 		firebase: newFakeFirebase(),
 		todos:    &todoGateway{},
 		devices:  &deviceGateway{},
+		jobs:     &jobQueue{},
 		tx:       &recordingTx{},
 		users:    memstore.NewUsers(),
 		passkeys: memstore.NewPasskeys(),
@@ -188,6 +216,7 @@ func newFixture(t *testing.T, withAdmin ...bool) *fixture {
 		Audit:        f.audit,
 		Todos:        f.todos,
 		Devices:      f.devices,
+		Jobs:         f.jobs,
 		Tx:           f.tx,
 		Config:       command.DefaultConfig(),
 		Now:          f.clock.Now,
@@ -406,11 +435,21 @@ func TestDeleteAccount_RunsInOneTransactionAcrossModules(t *testing.T) {
 	if n := f.tx.calls.Load(); n != 1 {
 		t.Fatalf("delete used %d transactions, want 1", n)
 	}
-	if len(f.todos.deleted) != 1 || f.todos.deleted[0] != id {
-		t.Fatalf("todos module not asked to delete the user's todos: %v", f.todos.deleted)
-	}
 	if _, err := f.users.FindByID(bg, id); !errors.Is(err, apperrors.ErrNotFound) {
 		t.Fatalf("user still present: %v", err)
+	}
+	if len(f.jobs.kinds) != 1 {
+		t.Fatalf("jobs = %v, want one account purge", f.jobs.kinds)
+	}
+	if len(f.todos.deleted) != 0 || len(f.firebase.deleted) != 0 {
+		t.Fatal("the bulk data and the Firebase user go in the background job, not in the request")
+	}
+
+	if err := f.purge(t); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.todos.deleted) != 1 || f.todos.deleted[0] != id {
+		t.Fatalf("todos module not asked to delete the user's todos: %v", f.todos.deleted)
 	}
 	if len(f.firebase.deleted) != 1 || f.firebase.deleted[0] != "uid-ann" {
 		t.Fatalf("Firebase user not deleted: %v", f.firebase.deleted)
@@ -423,23 +462,40 @@ func TestDeleteAccount_WithoutServiceAccountKeepsFirebaseUser(t *testing.T) {
 	if err := f.cmd.DeleteAccount.Handle(bg, command.DeleteAccount{UserID: id}); err != nil {
 		t.Fatal(err)
 	}
+	if err := f.purge(t); err != nil {
+		t.Fatal(err)
+	}
 	if len(f.firebase.deleted) != 0 {
 		t.Fatalf("deleted Firebase users without a service account: %v", f.firebase.deleted)
 	}
 }
 
-func TestDeleteAccount_StopsWhenTodosCannotBeDeleted(t *testing.T) {
+// The job is queued inside the deletion's unit of work, so a failure to
+// queue it fails (and, on a real database, rolls back) the deletion.
+func TestDeleteAccount_FailsWhenTheJobCantBeQueued(t *testing.T) {
 	f := newFixture(t)
 	id := f.register(t)
-	f.todos.deleteErr = errors.New("todos store down")
-
+	f.jobs.err = errors.New("job store down")
 	if err := f.cmd.DeleteAccount.Handle(bg, command.DeleteAccount{UserID: id}); err == nil {
 		t.Fatal("expected an error")
 	}
-	if _, err := f.users.FindByID(bg, id); err != nil {
-		t.Fatalf("user must survive a failed deletion: %v", err)
+}
+
+func TestPurgeAccount_FailsSoTheJobRetries(t *testing.T) {
+	f := newFixture(t)
+	id := f.register(t)
+	if err := f.cmd.DeleteAccount.Handle(bg, command.DeleteAccount{UserID: id}); err != nil {
+		t.Fatal(err)
+	}
+	f.todos.deleteErr = errors.New("todos store down")
+	if err := f.purge(t); err == nil {
+		t.Fatal("a failed step must fail the job, so it is retried")
 	}
 	if len(f.firebase.deleted) != 0 {
-		t.Fatal("Firebase user deleted although the account deletion failed")
+		t.Fatal("Firebase user deleted before the account's data")
+	}
+	f.todos.deleteErr = nil
+	if err := f.purge(t); err != nil || len(f.firebase.deleted) != 1 {
+		t.Fatalf("retry: %v, Firebase deletions %v", err, f.firebase.deleted)
 	}
 }

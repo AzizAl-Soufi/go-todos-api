@@ -36,3 +36,14 @@ services:
       interval: 2s
       timeout: 10s
       retries: 30
+
+  # For the Redis (asynq) job executor.
+  redis:
+    image: redis:7.4.11-alpine3.21
+    ports:
+      - "127.0.0.1:56379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 30

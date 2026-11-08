@@ -317,25 +317,41 @@ Because memberships are read on every request, removing a member or changing a r
 
 ## Composition root
 
-`cmd/api` is the only place that chooses implementations:
+`internal/app` is the only place that chooses implementations. Two binaries use it: `cmd/api` (the HTTP server) and `cmd/worker` (background jobs).
 
 ```
-main.go   run(ctx)
-  └── config.LoadConfig()
-  └── newApp(ctx, cfg)                                     app.go
-        ├── newStorage(cfg)          by DB_TYPE            storage.go
-        │     memory   → memstores + tx.None
-        │     postgres → connect, optional migrate, pgstores + postgres.TxRunner
-        │     mongo    → connect, optional migrate, mongostores + mongodb.TxRunner
-        ├── newSignIn(cfg)           Firebase client (FIREBASE_PROJECT_ID, optional service account) + WebAuthn relying party
-        ├── newMailers(cfg)          one mail.Sender (SMTP if SMTP_HOST is set, else log) for every module
-        ├── newPusher(cfg)           FCM when FIREBASE_CREDENTIALS_FILE is set, else nil (no pushes)
-        ├── wireModules(...)         in dependency order: audit → notifications → todos → teams → oauth → identity,
-        │                            gateways in between; notifications gets teams.NewDirectory, built from the team stores,
-        │                            and oauth gets identity.NewAuthenticator, built from the account store
-        ├── newMCPHandler(...)       mcp.go: the MCP server with every module's tools, behind OAuth bearer auth
-        └── newRouter(cfg, modules)
+internal/app
+  ├── NewStorage(cfg)          by DB_TYPE                                    storage.go
+  │     memory   → memstores + tx.None (job store included)
+  │     postgres → connect, optional migrate, pgstores + postgres.TxRunner
+  │     mongo    → connect, optional migrate, mongostores + mongodb.TxRunner
+  ├── NewSignIn(cfg)           Firebase client + WebAuthn relying party + client metadata fetcher   wire.go
+  ├── NewMailers(cfg)          one mail.Sender (SMTP if SMTP_HOST is set, else log)
+  ├── NewPusher(cfg)           FCM when FIREBASE_CREDENTIALS_FILE is set, else nil (no pushes)
+  ├── Wire(...)                modules in dependency order: audit → notifications → todos → teams → oauth → identity,
+  │                            gateways in between, one jobs.Queue (the outbox) for all; notifications gets
+  │                            teams.NewDirectory, oauth gets identity.NewAuthenticator (both built from stores)
+  └── NewWorker(store, modules, cfg)                                         worker.go
+        ├── Jobs(...)          every module's RegisterJobs + Schedules, plus jobs.purge
+        ├── jobs.Runner        or asynqx.Executor with REDIS_URL
+        └── jobs.Scheduler     periodic jobs, one leader by lease
+
+cmd/api     main.go → newApp: Wire, then newRouter (+ newMCPHandler in mcp.go); runs the Worker in-process
+            with JOBS_RUN_IN_API or DB_TYPE=memory
+cmd/worker  main.go → Wire, NewWorker, Run until SIGTERM; /health on WORKER_HEALTH_PORT
 ```
+
+## Background jobs
+
+`platform/jobs` is the shared kernel for work outside requests. A module that needs one:
+
+1. enqueues it through the `jobs.Enqueuer` it gets in its `Deps`, inside its unit of work (the job commits or rolls back with the change: a transactional outbox);
+2. registers the handler in `RegisterJobs(r *jobs.Registry)` (usually `jobs.Handle[T]`, which decodes the payload) and any periodic job in `Schedules()`;
+3. makes the handler idempotent (a job can run twice if a worker dies between running it and recording the outcome) and returns `jobs.Permanent(err)` for errors a retry can't fix.
+
+The job store (`jobs.Store`: memstore, pgstore, mongostore, held to `jobs/storetest`) is the source of truth for every job's status, whichever executor runs it. `jobs.Runner` claims due jobs with a lease (`FOR UPDATE SKIP LOCKED` / `findOneAndUpdate`), runs them with the kind's timeout and panic recovery, and retries with `jobs.Backoff` up to `MaxAttempts`. `jobs/asynqx` relays due jobs to asynq (task ID = job ID, so a duplicate hand-over is refused) and writes outcomes back. `jobs.Scheduler` enqueues one job per period with a unique key, as the holder of a lease in the store. Jobs that users started are operations (`jobs.Owner`): `GET /operations/{id}` and the `get_operation` MCP tool show them to their owner only.
+
+Current jobs: notifications (`todo_created`, `push`), due-date alerts (`todos.due_alerts`, which marks a todo alerted for its deadline and enqueues the push in one unit of work), the slow halves of team and account deletion (`teams.purge`, `identity.purge_account`: the request removes what makes the team or account reachable, the job deletes the rest), and cleanup (`oauth.cleanup`, `teams.invitation_cleanup`, `jobs.purge`).
 
 ## Request lifecycle
 

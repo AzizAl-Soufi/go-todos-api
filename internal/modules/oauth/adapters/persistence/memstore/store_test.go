@@ -10,10 +10,11 @@ import (
 
 func TestContract(t *testing.T) {
 	storetest.Run(t, func(t *testing.T) storetest.Stores {
+		s := memstore.New()
 		return storetest.Stores{
-			Clients: memstore.NewClients(),
-			Codes:   memstore.NewCodes(),
-			Grants:  memstore.NewGrants(),
+			Clients: s.Clients,
+			Codes:   s.Codes,
+			Grants:  s.Grants,
 			NewID:   func() string { return bson.NewObjectID().Hex() },
 		}
 	})

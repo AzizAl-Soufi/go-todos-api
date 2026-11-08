@@ -3,7 +3,8 @@ package command
 import (
 	"context"
 	"errors"
-	"log/slog"
+
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/jobs"
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/domain"
@@ -144,13 +145,13 @@ func (h LogoutAllHandler) Handle(ctx context.Context, cmd LogoutAll) error {
 	})
 }
 
-// DeleteAccount removes the user and everything they own in one transaction
-// (where the database supports it), across modules: the user leaves their
-// teams (teams they own alone are deleted; owning a team with other members
-// blocks the deletion), and their personal todos, passkeys, devices and
-// security log go too. Team records they created stay with the team. With a service
-// account the Firebase user is deleted afterwards; that can't be part of the
-// transaction, so a failure there is only logged.
+// DeleteAccount deletes the account. In one unit of work, across modules:
+// the user leaves their teams (teams they own alone are deleted; owning a
+// team with other members blocks the deletion), their passkeys, devices and
+// connected apps go, the account is deleted (its tokens stop working at
+// once), and a PurgeAccount job is queued. That job erases the rest in the
+// background: personal todos, the security log and the Firebase user. Team
+// records they created stay with the team.
 type DeleteAccount struct {
 	UserID string
 }
@@ -163,30 +164,48 @@ func (h DeleteAccountHandler) Handle(ctx context.Context, cmd DeleteAccount) err
 	if err != nil {
 		return err
 	}
-	err = h.Tx.WithinTx(ctx, func(ctx context.Context) error {
+	return h.Tx.WithinTx(ctx, func(ctx context.Context) error {
 		for _, step := range []func() error{
 			func() error { return h.Teams.RemoveUser(ctx, id) },
-			func() error { return h.Todos.DeleteAllForUser(ctx, id) },
 			func() error { return h.Passkeys.DeleteAllForUser(ctx, id) },
 			func() error { return h.Challenges.DeleteForUser(ctx, id) },
 			func() error { return h.Devices.DeleteUserDevices(ctx, id) },
 			func() error { return h.Connections.RevokeUserConnections(ctx, id) },
-			func() error { return h.Audit.DeleteUserLog(ctx, id) },
 			func() error { return h.Users.Delete(ctx, id) },
 		} {
 			if err := step(); err != nil {
 				return err
 			}
 		}
-		return nil
+		_, err := h.Jobs.Enqueue(ctx, JobPurgeAccount, PurgeAccount{UserID: id, FirebaseUID: user.FirebaseUID},
+			jobs.UniqueKey("identity.purge_account:"+id))
+		return err
 	})
-	if err != nil {
+}
+
+// JobPurgeAccount erases a deleted account's data in the worker.
+const JobPurgeAccount = "identity.purge_account"
+
+// PurgeAccount erases what a deleted account leaves behind: its personal
+// todos, projects and collections (the todos module), its security log, and
+// its Firebase user (with a service account). Each step is idempotent, so
+// the job retries until all of them went through.
+type PurgeAccount struct {
+	UserID      string `json:"userId"`
+	FirebaseUID string `json:"firebaseUid"`
+}
+
+type PurgeAccountHandler struct{ *base }
+
+func (h PurgeAccountHandler) Handle(ctx context.Context, cmd PurgeAccount) error {
+	if err := h.Todos.DeleteAllForUser(ctx, cmd.UserID); err != nil {
 		return err
 	}
-	if h.Firebase != nil && user.FirebaseUID != "" {
-		if err := h.Firebase.DeleteUser(ctx, user.FirebaseUID); err != nil {
-			slog.Error("account deleted but its Firebase user was not", "user_id", id, "error", err)
-		}
+	if err := h.Audit.DeleteUserLog(ctx, cmd.UserID); err != nil {
+		return err
+	}
+	if h.Firebase != nil && cmd.FirebaseUID != "" {
+		return h.Firebase.DeleteUser(ctx, cmd.FirebaseUID)
 	}
 	return nil
 }

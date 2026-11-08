@@ -13,9 +13,11 @@ import (
 
 func TestContract(t *testing.T) {
 	storetest.Run(t, func(t *testing.T) storetest.Backend {
+		todos, projects := memstore.NewTodos(), memstore.NewProjects()
+		todos.LinkProjects(projects)
 		return storetest.Backend{
-			Todos:       memstore.NewTodos(),
-			Projects:    memstore.NewProjects(),
+			Todos:       todos,
+			Projects:    projects,
 			Collections: memstore.NewCollections(),
 			Tx:          tx.None{},
 			NewUser:     func(*testing.T) string { return bson.NewObjectID().Hex() },

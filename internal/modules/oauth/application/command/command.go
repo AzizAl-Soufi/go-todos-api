@@ -35,6 +35,7 @@ type Handlers struct {
 	RevokeToken           RevokeTokenHandler
 	RevokeConnection      RevokeConnectionHandler
 	RevokeUserConnections RevokeUserConnectionsHandler
+	Cleanup               CleanupHandler
 }
 
 func New(d Deps) Handlers {
@@ -53,6 +54,7 @@ func New(d Deps) Handlers {
 		RevokeToken:           RevokeTokenHandler{b},
 		RevokeConnection:      RevokeConnectionHandler{b},
 		RevokeUserConnections: RevokeUserConnectionsHandler{b},
+		Cleanup:               CleanupHandler{b},
 	}
 }
 

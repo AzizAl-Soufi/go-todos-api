@@ -157,6 +157,44 @@ func (q *Queries) DeleteExpiredCodes(ctx context.Context, expiresAt time.Time) e
 	return err
 }
 
+const deleteExpiredCodesBatch = `-- name: DeleteExpiredCodesBatch :execrows
+DELETE FROM oauth_codes WHERE code_hash IN (
+    SELECT e.code_hash FROM oauth_codes e WHERE e.expires_at <= $1 ORDER BY e.expires_at LIMIT $2::int
+)
+`
+
+type DeleteExpiredCodesBatchParams struct {
+	Now     time.Time
+	MaxRows int32
+}
+
+func (q *Queries) DeleteExpiredCodesBatch(ctx context.Context, arg DeleteExpiredCodesBatchParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredCodesBatch, arg.Now, arg.MaxRows)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteExpiredGrants = `-- name: DeleteExpiredGrants :execrows
+DELETE FROM oauth_grants WHERE id IN (
+    SELECT e.id FROM oauth_grants e WHERE e.refresh_expires_at <= $1 ORDER BY e.refresh_expires_at LIMIT $2::int
+)
+`
+
+type DeleteExpiredGrantsParams struct {
+	Now     time.Time
+	MaxRows int32
+}
+
+func (q *Queries) DeleteExpiredGrants(ctx context.Context, arg DeleteExpiredGrantsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredGrants, arg.Now, arg.MaxRows)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteExpiredUserGrants = `-- name: DeleteExpiredUserGrants :exec
 
 DELETE FROM oauth_grants WHERE user_id = $1 AND refresh_expires_at < $2
@@ -186,6 +224,33 @@ type DeleteGrantParams struct {
 
 func (q *Queries) DeleteGrant(ctx context.Context, arg DeleteGrantParams) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteGrant, arg.ID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteUnusedClients = `-- name: DeleteUnusedClients :execrows
+DELETE FROM oauth_clients WHERE id IN (
+    SELECT c.id FROM oauth_clients c
+    WHERE c.created_at < $1
+      AND NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id = c.id::text)
+      AND NOT EXISTS (SELECT 1 FROM oauth_codes o WHERE o.client_id = c.id::text)
+    ORDER BY c.created_at
+    LIMIT $2::int
+)
+`
+
+type DeleteUnusedClientsParams struct {
+	CreatedBefore time.Time
+	MaxRows       int32
+}
+
+// Registered clients nothing references any more (cleanup job), oldest
+// first, at most max_rows. client_id is TEXT: it also holds metadata
+// document URLs.
+func (q *Queries) DeleteUnusedClients(ctx context.Context, arg DeleteUnusedClientsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteUnusedClients, arg.CreatedBefore, arg.MaxRows)
 	if err != nil {
 		return 0, err
 	}

@@ -71,3 +71,9 @@ SELECT * FROM team_invitations WHERE team_id = @team_id ORDER BY created_at, id;
 
 -- name: DeleteInvitationsByTeam :exec
 DELETE FROM team_invitations WHERE team_id = @team_id;
+
+-- Bounded, so the periodic cleanup never holds locks for long.
+-- name: DeleteExpiredInvitations :execrows
+DELETE FROM team_invitations WHERE id IN (
+    SELECT i.id FROM team_invitations i WHERE i.expires_at < @before ORDER BY i.expires_at LIMIT @lim
+);

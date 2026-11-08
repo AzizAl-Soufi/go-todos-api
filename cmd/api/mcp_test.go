@@ -298,6 +298,17 @@ func TestMCPToolsOverOAuth(t *testing.T) {
 	call(t, cs, "get_team_audit_log", map[string]any{"teamId": team["id"]})
 	call(t, cs, "get_security_log", nil)
 
+	// Deleting a team returns an operation; the worker finishes it.
+	deleted := call(t, cs, "delete_team", map[string]any{"teamId": team["id"]})
+	op := deleted["operation"].(map[string]any)
+	if op["status"] != "pending" {
+		t.Fatalf("delete_team: %v", deleted)
+	}
+	s.runJobs()
+	if got := call(t, cs, "get_operation", map[string]any{"id": op["id"]}); got["status"] != "succeeded" {
+		t.Fatalf("get_operation after the worker ran: %v", got)
+	}
+
 	// Errors come back as tool errors with the API's codes.
 	call(t, cs, "create_todo", map[string]any{"title": "x", "priority": "extreme"}, "INVALID_PRIORITY")
 	call(t, cs, "delete_todo", map[string]any{"id": todo["id"]})
