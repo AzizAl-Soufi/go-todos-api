@@ -19,7 +19,6 @@ package notifications
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"time"
 
@@ -30,51 +29,56 @@ import (
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications/transport/httpapi"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/httpx"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/jobs"
 )
 
 type (
 	DeviceStore = application.DeviceRepository
 	Pusher      = application.Pusher
 	TodoCreated = domain.TodoCreated
+	// DueAlert is a todo's deadline reminder (due soon or overdue).
+	DueAlert     = domain.DueAlert
+	DueAlertKind = domain.DueAlertKind
 )
 
-// sendTimeout bounds one notification, from the roster lookup to FCM.
-const sendTimeout = 30 * time.Second
+const (
+	DueSoon = domain.DueSoon
+	Overdue = domain.Overdue
+)
+
+// Job kinds the module runs in the worker.
+const (
+	jobTodoCreated = "notifications.todo_created"
+	jobPush        = "notifications.push"
+	// sendTimeout bounds one notification, from the roster lookup to FCM.
+	sendTimeout = 30 * time.Second
+)
 
 type Deps struct {
 	Devices   DeviceStore
 	Directory access.Directory
 	Pusher    Pusher // nil: devices are kept, nothing is sent
-	// Dispatch runs a notification after the request that caused it; nil
-	// means in the background, at most maxInFlight at a time, drained by
-	// Close. Tests pass one that runs it in place.
-	Dispatch func(func())
-	Now      func() time.Time // nil means time.Now
+	// Jobs records notifications to send; the worker sends them.
+	Jobs jobs.Enqueuer
+	Now  func() time.Time // nil means time.Now
 }
 
 type Module struct {
-	Commands   command.Handlers
-	Queries    query.Handlers
-	dispatch   func(func())
-	background *background // nil when Deps.Dispatch was given
+	Commands command.Handlers
+	Queries  query.Handlers
+	jobs     jobs.Enqueuer
 }
 
 func New(d Deps) *Module {
-	var bg *background
-	if d.Dispatch == nil {
-		bg = newBackground(maxInFlight)
-		d.Dispatch = bg.run
-	}
 	return &Module{
-		background: bg,
 		Commands: command.New(command.Deps{
 			Devices:   d.Devices,
 			Directory: d.Directory,
 			Pusher:    d.Pusher,
 			Now:       d.Now,
 		}),
-		Queries:  query.New(query.Deps{Devices: d.Devices}),
-		dispatch: d.Dispatch,
+		Queries: query.New(query.Deps{Devices: d.Devices}),
+		jobs:    d.Jobs,
 	}
 }
 
@@ -84,37 +88,56 @@ func (m *Module) RegisterRoutes(mux *http.ServeMux, protect httpx.Middleware) {
 	httpapi.Register(mux, m.Commands, m.Queries, protect)
 }
 
-// TodoCreated notifies the team about a new task, if the event calls for
-// it. It returns at once: the notification is sent in the background, after
-// the caller's transaction, and failures are only logged, so a push outage
-// never fails or slows adding a task.
-func (m *Module) TodoCreated(ctx context.Context, e TodoCreated) {
+// TodoCreated records that the team should hear about a new task, if the
+// event calls for it. Called inside the caller's unit of work, the job
+// commits with the task; the worker sends it, so a push outage never fails
+// or slows adding a task, and a crash can't lose it.
+func (m *Module) TodoCreated(ctx context.Context, e TodoCreated) error {
 	if !e.Notifies() {
-		return
-	}
-	ctx = context.WithoutCancel(ctx)
-	m.dispatch(func() {
-		ctx, cancel := context.WithTimeout(ctx, sendTimeout)
-		defer cancel()
-		err := m.Commands.NotifyTodoCreated.Handle(ctx, command.NotifyTodoCreated{Event: e})
-		if err != nil {
-			slog.Error("failed to send task notification",
-				"team_id", e.TeamID,
-				"todo_id", e.TodoID,
-				"error", err,
-			)
-		}
-	})
-}
-
-// Close stops sending new notifications and waits for those in flight,
-// until ctx ends (then it returns ctx's error). Call it after the HTTP server
-// has shut down and before the database is closed.
-func (m *Module) Close(ctx context.Context) error {
-	if m.background == nil {
 		return nil
 	}
-	return m.background.close(ctx)
+	_, err := m.jobs.Enqueue(ctx, jobTodoCreated, e)
+	return err
+}
+
+// Push is a notification for some users, built by another module (e.g. a
+// due-date alert).
+type Push struct {
+	UserIDs []string       `json:"userIds"`
+	Message domain.Message `json:"message"`
+}
+
+// PushToUsers records a notification for users; the worker sends it to
+// their devices. key, when not "", sends it at most once (see
+// jobs.UniqueKey).
+func (m *Module) PushToUsers(ctx context.Context, p Push, key string) error {
+	opts := []jobs.Option{}
+	if key != "" {
+		opts = append(opts, jobs.UniqueKey(key))
+	}
+	_, err := m.jobs.Enqueue(ctx, jobPush, p, opts...)
+	return err
+}
+
+// TodoDue records a due-date alert for the todo's user, worded as of now;
+// the worker sends it. Called inside the caller's unit of work, it commits
+// with the caller's change (marking the todo alerted). Each alert is
+// enqueued at most once per todo, kind and deadline (DueAlert.Key), so a
+// rerun of the caller's job sends nothing twice.
+func (m *Module) TodoDue(ctx context.Context, e DueAlert, now time.Time) error {
+	return m.PushToUsers(ctx, Push{UserIDs: []string{e.UserID}, Message: e.Message(now)}, e.Key())
+}
+
+// RegisterJobs adds the module's job handlers. A failed delivery to FCM is
+// not retried (the devices that got it would get it twice); a failure
+// before sending (the database) is.
+func (m *Module) RegisterJobs(r *jobs.Registry) {
+	jobs.Handle(r, jobTodoCreated, sendTimeout, func(ctx context.Context, e TodoCreated) error {
+		return m.Commands.NotifyTodoCreated.Handle(ctx, command.NotifyTodoCreated{Event: e})
+	})
+	jobs.Handle(r, jobPush, sendTimeout, func(ctx context.Context, p Push) error {
+		return m.Commands.NotifyUsers.Handle(ctx, command.NotifyUsers{UserIDs: p.UserIDs, Message: p.Message})
+	})
 }
 
 // DeleteUserDevices forgets a deleted account's devices.

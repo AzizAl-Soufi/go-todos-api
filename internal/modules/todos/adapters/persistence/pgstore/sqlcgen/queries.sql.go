@@ -116,7 +116,7 @@ const createTodo = `-- name: CreateTodo :one
 
 INSERT INTO todos (user_id, team_id, project_id, title, notes, status, priority, tags, due_at, completed_at, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-RETURNING id, user_id, title, created_at, project_id, notes, status, priority, tags, due_at, completed_at, updated_at, team_id
+RETURNING id, user_id, title, created_at, project_id, notes, status, priority, tags, due_at, completed_at, updated_at, team_id, due_soon_alerted_for, overdue_alerted_for
 `
 
 type CreateTodoParams struct {
@@ -172,6 +172,8 @@ func (q *Queries) CreateTodo(ctx context.Context, arg CreateTodoParams) (Todo, e
 		&i.CompletedAt,
 		&i.UpdatedAt,
 		&i.TeamID,
+		&i.DueSoonAlertedFor,
+		&i.OverdueAlertedFor,
 	)
 	return i, err
 }
@@ -379,7 +381,7 @@ func (q *Queries) GetProject(ctx context.Context, arg GetProjectParams) (Project
 }
 
 const getTodo = `-- name: GetTodo :one
-SELECT id, user_id, title, created_at, project_id, notes, status, priority, tags, due_at, completed_at, updated_at, team_id FROM todos
+SELECT id, user_id, title, created_at, project_id, notes, status, priority, tags, due_at, completed_at, updated_at, team_id, due_soon_alerted_for, overdue_alerted_for FROM todos
 WHERE id = $1 AND ((team_id IS NULL AND user_id = $2) OR team_id = ANY($3::uuid[]))
 `
 
@@ -406,6 +408,8 @@ func (q *Queries) GetTodo(ctx context.Context, arg GetTodoParams) (Todo, error) 
 		&i.CompletedAt,
 		&i.UpdatedAt,
 		&i.TeamID,
+		&i.DueSoonAlertedFor,
+		&i.OverdueAlertedFor,
 	)
 	return i, err
 }
@@ -453,6 +457,83 @@ func (q *Queries) ListCollections(ctx context.Context, arg ListCollectionsParams
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.TeamID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPendingDueAlerts = `-- name: ListPendingDueAlerts :many
+SELECT t.id, t.user_id, t.team_id, t.project_id, t.title, t.notes, t.status, t.priority, t.tags,
+       t.due_at, t.completed_at, t.created_at, t.updated_at,
+       (t.due_at < $1::timestamptz)::boolean AS overdue
+FROM todos t
+LEFT JOIN projects p ON p.id = t.project_id
+WHERE t.status NOT IN ('done', 'cancelled')
+  AND t.due_at IS NOT NULL
+  AND t.overdue_alerted_for IS DISTINCT FROM t.due_at
+  AND t.due_at <= $2::timestamptz
+  AND (t.due_at < $1::timestamptz OR t.due_soon_alerted_for IS DISTINCT FROM t.due_at)
+  AND p.archived_at IS NULL
+ORDER BY t.due_at, t.id
+LIMIT $3
+`
+
+type ListPendingDueAlertsParams struct {
+	Now          time.Time
+	DueSoonUntil time.Time
+	MaxRows      int32
+}
+
+type ListPendingDueAlertsRow struct {
+	ID          uuid.UUID
+	UserID      uuid.UUID
+	TeamID      *uuid.UUID
+	ProjectID   *uuid.UUID
+	Title       string
+	Notes       string
+	Status      string
+	Priority    int16
+	Tags        []string
+	DueAt       *time.Time
+	CompletedAt *time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	Overdue     bool
+}
+
+// Due-date alerts (system-level: not scoped, for the alert job only). The
+// semantics mirror domain.NextDueAlert; the first three conditions are the
+// predicate of idx_todos_due_alerts, so the scan uses it.
+func (q *Queries) ListPendingDueAlerts(ctx context.Context, arg ListPendingDueAlertsParams) ([]ListPendingDueAlertsRow, error) {
+	rows, err := q.db.Query(ctx, listPendingDueAlerts, arg.Now, arg.DueSoonUntil, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPendingDueAlertsRow
+	for rows.Next() {
+		var i ListPendingDueAlertsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.TeamID,
+			&i.ProjectID,
+			&i.Title,
+			&i.Notes,
+			&i.Status,
+			&i.Priority,
+			&i.Tags,
+			&i.DueAt,
+			&i.CompletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Overdue,
 		); err != nil {
 			return nil, err
 		}
@@ -524,7 +605,7 @@ func (q *Queries) ListProjects(ctx context.Context, arg ListProjectsParams) ([]P
 }
 
 const listTodos = `-- name: ListTodos :many
-SELECT id, user_id, title, created_at, project_id, notes, status, priority, tags, due_at, completed_at, updated_at, team_id FROM todos
+SELECT id, user_id, title, created_at, project_id, notes, status, priority, tags, due_at, completed_at, updated_at, team_id, due_soon_alerted_for, overdue_alerted_for FROM todos
 WHERE ((team_id IS NULL AND user_id = $1) OR team_id = ANY($2::uuid[]))
   AND (NOT $3::boolean OR team_id IS NULL)
   AND ($4::uuid IS NULL OR team_id = $4::uuid)
@@ -606,6 +687,8 @@ func (q *Queries) ListTodos(ctx context.Context, arg ListTodosParams) ([]Todo, e
 			&i.CompletedAt,
 			&i.UpdatedAt,
 			&i.TeamID,
+			&i.DueSoonAlertedFor,
+			&i.OverdueAlertedFor,
 		); err != nil {
 			return nil, err
 		}
@@ -615,6 +698,44 @@ func (q *Queries) ListTodos(ctx context.Context, arg ListTodosParams) ([]Todo, e
 		return nil, err
 	}
 	return items, nil
+}
+
+const markDueSoonAlerted = `-- name: MarkDueSoonAlerted :execrows
+UPDATE todos SET due_soon_alerted_for = due_at
+WHERE id = $1 AND due_at = $2::timestamptz AND status NOT IN ('done', 'cancelled')
+  AND due_soon_alerted_for IS DISTINCT FROM due_at
+`
+
+type MarkDueSoonAlertedParams struct {
+	ID    uuid.UUID
+	DueAt time.Time
+}
+
+func (q *Queries) MarkDueSoonAlerted(ctx context.Context, arg MarkDueSoonAlertedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markDueSoonAlerted, arg.ID, arg.DueAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markOverdueAlerted = `-- name: MarkOverdueAlerted :execrows
+UPDATE todos SET overdue_alerted_for = due_at
+WHERE id = $1 AND due_at = $2::timestamptz AND status NOT IN ('done', 'cancelled')
+  AND overdue_alerted_for IS DISTINCT FROM due_at
+`
+
+type MarkOverdueAlertedParams struct {
+	ID    uuid.UUID
+	DueAt time.Time
+}
+
+func (q *Queries) MarkOverdueAlerted(ctx context.Context, arg MarkOverdueAlertedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markOverdueAlerted, arg.ID, arg.DueAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const todoProgress = `-- name: TodoProgress :many

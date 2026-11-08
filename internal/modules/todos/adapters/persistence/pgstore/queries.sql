@@ -68,6 +68,34 @@ DELETE FROM todos WHERE user_id = @user_id AND team_id IS NULL;
 -- name: DeleteTodosByTeam :exec
 DELETE FROM todos WHERE team_id = @team_id;
 
+-- Due-date alerts (system-level: not scoped, for the alert job only). The
+-- semantics mirror domain.NextDueAlert; the first three conditions are the
+-- predicate of idx_todos_due_alerts, so the scan uses it.
+-- name: ListPendingDueAlerts :many
+SELECT t.id, t.user_id, t.team_id, t.project_id, t.title, t.notes, t.status, t.priority, t.tags,
+       t.due_at, t.completed_at, t.created_at, t.updated_at,
+       (t.due_at < @now::timestamptz)::boolean AS overdue
+FROM todos t
+LEFT JOIN projects p ON p.id = t.project_id
+WHERE t.status NOT IN ('done', 'cancelled')
+  AND t.due_at IS NOT NULL
+  AND t.overdue_alerted_for IS DISTINCT FROM t.due_at
+  AND t.due_at <= @due_soon_until::timestamptz
+  AND (t.due_at < @now::timestamptz OR t.due_soon_alerted_for IS DISTINCT FROM t.due_at)
+  AND p.archived_at IS NULL
+ORDER BY t.due_at, t.id
+LIMIT @max_rows;
+
+-- name: MarkDueSoonAlerted :execrows
+UPDATE todos SET due_soon_alerted_for = due_at
+WHERE id = @id AND due_at = @due_at::timestamptz AND status NOT IN ('done', 'cancelled')
+  AND due_soon_alerted_for IS DISTINCT FROM due_at;
+
+-- name: MarkOverdueAlerted :execrows
+UPDATE todos SET overdue_alerted_for = due_at
+WHERE id = @id AND due_at = @due_at::timestamptz AND status NOT IN ('done', 'cancelled')
+  AND overdue_alerted_for IS DISTINCT FROM due_at;
+
 -- projects
 
 -- name: CreateProject :one

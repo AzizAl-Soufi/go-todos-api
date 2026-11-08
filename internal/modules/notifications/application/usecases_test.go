@@ -16,6 +16,8 @@ import (
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications/application/query"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications/domain"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/jobs"
+	jobsmem "github.com/AzizAl-Soufi/go-todos-api/internal/platform/jobs/memstore"
 )
 
 var bg = context.Background()
@@ -63,27 +65,51 @@ type fixture struct {
 	devices *memstore.Devices
 	push    *pusher
 	clock   time.Time
+	jobs    *jobsmem.Store
+	runner  *jobs.Runner
 }
 
 var team = access.Roster{TeamID: "team-1", Name: "Platform", Members: map[string]access.Role{
 	"ann": access.Owner, "bo": access.Admin, "cy": access.Member, "di": access.Viewer,
 }}
 
-// newFixture runs notifications in place (no goroutine), so tests see them.
+// newFixture wires the module to an in-memory job queue; notify runs the
+// jobs as the worker would.
 func newFixture(t *testing.T, withPusher ...bool) *fixture {
 	t.Helper()
-	f := &fixture{devices: memstore.NewDevices(), push: &pusher{}, clock: time.Now()}
+	f := &fixture{devices: memstore.NewDevices(), push: &pusher{}, clock: time.Now(), jobs: jobsmem.New()}
 	var p notifications.Pusher = f.push
 	if len(withPusher) > 0 && !withPusher[0] {
 		p = nil
 	}
 	f.module = notifications.New(notifications.Deps{
 		Devices: f.devices, Directory: directory{"team-1": team}, Pusher: p,
-		Dispatch: func(fn func()) { fn() },
-		Now:      func() time.Time { f.clock = f.clock.Add(time.Second); return f.clock },
+		Jobs: jobs.NewQueue(f.jobs, nil),
+		Now:  func() time.Time { f.clock = f.clock.Add(time.Second); return f.clock },
 	})
+	registry := jobs.NewRegistry()
+	f.module.RegisterJobs(registry)
+	f.runner = jobs.NewRunner(f.jobs, registry, jobs.RunnerConfig{}, nil)
 	f.cmd, f.qry = f.module.Commands, f.module.Queries
 	return f
+}
+
+// notify records the event, then runs the jobs it queued.
+func (f *fixture) notify(t *testing.T, e notifications.TodoCreated) {
+	t.Helper()
+	if err := f.module.TodoCreated(bg, e); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t)
+}
+
+func (f *fixture) run(t *testing.T) int {
+	t.Helper()
+	n, err := f.runner.RunDue(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 func (f *fixture) register(t *testing.T, userID, token string) {
@@ -133,7 +159,7 @@ func TestTodoCreated_AdminNotifiesTheRestOfTheTeam(t *testing.T) {
 	}
 	f.register(t, "cy", "cy-tablet")
 
-	f.module.TodoCreated(bg, newTask("bo", access.Admin))
+	f.notify(t, newTask("bo", access.Admin))
 	if len(f.push.pushes) != 1 {
 		t.Fatalf("pushes = %d, want 1", len(f.push.pushes))
 	}
@@ -151,14 +177,14 @@ func TestTodoCreated_WhoTriggersIt(t *testing.T) {
 	f.register(t, "cy", "cy-phone")
 	f.register(t, "bo", "bo-phone")
 
-	f.module.TodoCreated(bg, newTask("cy", access.Member))
+	f.notify(t, newTask("cy", access.Member))
 	personal := newTask("ann", access.Owner)
 	personal.TeamID = ""
-	f.module.TodoCreated(bg, personal)
+	f.notify(t, personal)
 	if len(f.push.pushes) != 0 {
 		t.Fatalf("members' and personal tasks must not notify: %+v", f.push.pushes)
 	}
-	f.module.TodoCreated(bg, newTask("ann", access.Owner))
+	f.notify(t, newTask("ann", access.Owner))
 	if len(f.push.pushes) != 1 {
 		t.Fatal("the owner's task must notify")
 	}
@@ -172,7 +198,7 @@ func TestTodoCreated_ForgetsInvalidTokensAndSurvivesFailures(t *testing.T) {
 	f.push.err = errors.New("one send failed")
 
 	// Failures are logged, never returned to the caller.
-	f.module.TodoCreated(bg, newTask("bo", access.Admin))
+	f.notify(t, newTask("bo", access.Admin))
 	if got := f.tokens(t, "cy"); !slices.Equal(got, []string{"cy-new"}) {
 		t.Fatalf("devices after push = %v, want the invalid token forgotten", got)
 	}
@@ -200,23 +226,49 @@ func TestTodoCreated_NothingToDo(t *testing.T) {
 	}
 }
 
-func TestTodoCreated_RunsAfterTheRequest(t *testing.T) {
+func TestTodoCreated_OnlyEnqueues(t *testing.T) {
 	f := newFixture(t)
 	f.register(t, "cy", "cy-phone")
-	var queued func()
-	m := notifications.New(notifications.Deps{
-		Devices: f.devices, Directory: directory{"team-1": team}, Pusher: f.push,
-		Dispatch: func(fn func()) { queued = fn },
-	})
-	ctx, cancel := context.WithCancel(bg)
-	m.TodoCreated(ctx, newTask("bo", access.Admin))
-	cancel() // the request is over
-	if queued == nil || len(f.push.pushes) != 0 {
-		t.Fatal("the notification must be dispatched, not sent in the request")
+	if err := f.module.TodoCreated(bg, newTask("bo", access.Admin)); err != nil {
+		t.Fatal(err)
 	}
-	queued()
-	if len(f.push.pushes) != 1 {
-		t.Fatal("a finished request must not cancel its notification")
+	if len(f.push.pushes) != 0 {
+		t.Fatal("the request must only record the notification; the worker sends it")
+	}
+	if n := f.run(t); n != 1 || len(f.push.pushes) != 1 {
+		t.Fatalf("ran %d jobs, %d pushes; want the notification sent by its job", n, len(f.push.pushes))
+	}
+	if err := f.module.TodoCreated(bg, newTask("cy", access.Member)); err != nil || f.run(t) != 0 {
+		t.Fatal("a member's task must not even queue a job")
+	}
+}
+
+func TestPushToUsers(t *testing.T) {
+	f := newFixture(t)
+	f.register(t, "ann", "ann-phone")
+	f.register(t, "bo", "bo-phone")
+	p := notifications.Push{UserIDs: []string{"ann"}, Message: domain.Message{Title: "Due soon", Data: map[string]string{"todoId": "t1"}}}
+	for range 2 {
+		if err := f.module.PushToUsers(bg, p, "due-soon:t1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := f.run(t); n != 1 {
+		t.Fatalf("ran %d jobs, want one: the key sends it once", n)
+	}
+	if len(f.push.pushes) != 1 || !slices.Equal(f.push.pushes[0].tokens, []string{"ann-phone"}) || f.push.pushes[0].msg.Title != "Due soon" {
+		t.Fatalf("pushes = %+v", f.push.pushes)
+	}
+}
+
+func TestDeliveryFailuresAreNotRetried(t *testing.T) {
+	f := newFixture(t)
+	f.register(t, "cy", "cy-phone")
+	f.push.err = errors.New("FCM unavailable for some devices")
+	f.notify(t, newTask("bo", access.Admin))
+	c, _ := f.jobs.Counts(bg, time.Time{})
+	if c.ByStatus[jobs.Succeeded] != 1 || c.ByStatus[jobs.Queued] != 0 {
+		t.Fatalf("jobs = %+v: a partly failed push must not be retried (devices that got it would get it twice)", c.ByStatus)
 	}
 }
 

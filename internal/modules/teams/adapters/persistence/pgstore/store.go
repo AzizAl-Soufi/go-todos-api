@@ -5,6 +5,7 @@ package pgstore
 
 import (
 	"context"
+	"time"
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/adapters/persistence/pgstore/sqlcgen"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/application"
@@ -258,6 +259,11 @@ func (s *Invitations) ListByTeam(ctx context.Context, teamID string) ([]*domain.
 		out = append(out, invitationToDomain(r))
 	}
 	return out, nil
+}
+
+func (s *Invitations) DeleteExpired(ctx context.Context, before time.Time, limit int) (int64, error) {
+	n, err := s.q(ctx).DeleteExpiredInvitations(ctx, sqlcgen.DeleteExpiredInvitationsParams{Before: before, Lim: int32(limit)})
+	return n, postgres.MapErr("delete expired invitations", err)
 }
 
 func (s *Invitations) DeleteByTeam(ctx context.Context, teamID string) error {

@@ -35,6 +35,12 @@ type DatabaseConfig struct {
 type FirebaseConfig struct {
 	ProjectID       string `mapstructure:"FIREBASE_PROJECT_ID"`
 	CredentialsFile string `mapstructure:"FIREBASE_CREDENTIALS_FILE"`
+	// WebAPIKey is the Firebase web app's (public) API key, for the OAuth
+	// sign-in page MCP clients send users to. Without it the MCP endpoint and
+	// its OAuth server are off.
+	WebAPIKey string `mapstructure:"FIREBASE_WEB_API_KEY"`
+	// AuthDomain defaults to <project>.firebaseapp.com.
+	AuthDomain string `mapstructure:"FIREBASE_AUTH_DOMAIN"`
 }
 
 type AuthConfig struct {
@@ -51,6 +57,24 @@ type LimitsConfig struct {
 	// a notification to the whole team, so this also bounds notifications.
 	TodoCreatesPerMinute int `mapstructure:"TODO_CREATE_RATE_LIMIT_PER_MINUTE" default:"120"`
 	TodoCreateBurst      int `mapstructure:"TODO_CREATE_RATE_LIMIT_BURST" default:"30"`
+}
+
+// JobsConfig tunes background jobs (cmd/worker).
+type JobsConfig struct {
+	// Concurrency is how many jobs one worker process runs at once.
+	Concurrency int `mapstructure:"JOBS_CONCURRENCY" default:"8"`
+	// RunInAPI also runs the workers inside the API process. Always on with
+	// DB_TYPE=memory, where another process can't see the jobs.
+	RunInAPI bool `mapstructure:"JOBS_RUN_IN_API"`
+	// RedisURL runs jobs through Redis (asynq) instead of straight from the
+	// database: redis://[:password@]host:port[/db]. The database still
+	// holds every job (the outbox) and its outcome.
+	RedisURL string `mapstructure:"REDIS_URL"`
+	// HealthPort serves the worker's /health (queue counts) for probes and
+	// alerting; 0 turns it off.
+	HealthPort int `mapstructure:"WORKER_HEALTH_PORT" default:"8081"`
+	// RetainDays keeps finished jobs (and operation statuses) this long.
+	RetainDays int `mapstructure:"JOBS_RETAIN_DAYS" default:"7"`
 }
 
 // PasskeyConfig names the WebAuthn relying party. Passkeys are bound to RPID
@@ -78,6 +102,7 @@ type Config struct {
 	Firebase FirebaseConfig `mapstructure:",squash"`
 	Auth     AuthConfig     `mapstructure:",squash"`
 	Limits   LimitsConfig   `mapstructure:",squash"`
+	Jobs     JobsConfig     `mapstructure:",squash"`
 	Passkey  PasskeyConfig  `mapstructure:",squash"`
 	SMTP     SMTPConfig     `mapstructure:",squash"`
 }

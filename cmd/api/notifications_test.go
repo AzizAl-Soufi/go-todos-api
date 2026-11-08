@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	notificationsdomain "github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications/domain"
 )
@@ -88,12 +89,21 @@ func TestAdminTasksNotifyTheTeam(t *testing.T) {
 	// A member's task and a personal task notify nobody.
 	s.do("POST", "/todos", cy.access, map[string]any{"title": "Draft notes", "projectId": project}).expect(t, 201)
 	s.do("POST", "/todos", bo.access, map[string]any{"title": "Personal errand"}).expect(t, 201)
+	if n := s.runJobs(); n != 0 {
+		t.Fatalf("%d jobs queued for member or personal tasks", n)
+	}
 	if got := s.pushes.sent(); len(got) != 0 {
 		t.Fatalf("pushes for member or personal tasks: %+v", got)
 	}
 
 	// An admin's task notifies the other members, not the admin or outsiders.
 	todo := s.do("POST", "/todos", bo.access, map[string]any{"title": "Ship it", "projectId": project}).expect(t, 201).str("id")
+	if got := s.pushes.sent(); len(got) != 0 {
+		t.Fatalf("the API sent a push itself: %+v (the worker sends them)", got)
+	}
+	if n := s.runJobs(); n != 1 {
+		t.Fatalf("ran %d jobs, want the task's notification", n)
+	}
 	got := s.pushes.sent()
 	if len(got) != 1 || !slices.Equal(got[0].tokens, []string{"ann-phone", "cy-phone"}) {
 		t.Fatalf("pushes = %+v, want one to ann-phone and cy-phone", got)
@@ -106,6 +116,7 @@ func TestAdminTasksNotifyTheTeam(t *testing.T) {
 	// The owner's tasks notify too; a removed member no longer hears about them.
 	s.do("DELETE", "/teams/"+teamID+"/members/"+cy.userID, ann.access, nil).expect(t, 204)
 	s.do("POST", "/todos", ann.access, map[string]any{"title": "Review", "projectId": project}).expect(t, 201)
+	s.runJobs()
 	if got := s.pushes.sent(); len(got) != 2 || !slices.Equal(got[1].tokens, []string{"bo-phone"}) {
 		t.Fatalf("owner's push = %+v, want only bo-phone", got)
 	}
@@ -131,7 +142,7 @@ func TestLogoutAllForgetsDevices(t *testing.T) {
 	s.device(ann, "ann-lost-phone")
 	s.do("POST", "/auth/logout-all", ann.access, nil).expect(t, 204)
 	// A lost or stolen device must stop getting the team's tasks.
-	if list, err := s.store.devices.ListForUser(context.Background(), ann.userID); err != nil || len(list) != 0 {
+	if list, err := s.store.Devices.ListForUser(context.Background(), ann.userID); err != nil || len(list) != 0 {
 		t.Fatalf("devices survived logout-all: %v, %v", list, err)
 	}
 }
@@ -140,11 +151,40 @@ func TestAccountDeletionForgetsDevices(t *testing.T) {
 	s := newTestServer(t)
 	ann := s.register("Ann", "ann@example.com")
 	s.device(ann, "ann-phone")
-	if list, _ := s.store.devices.ListForUser(context.Background(), ann.userID); len(list) != 1 {
+	if list, _ := s.store.Devices.ListForUser(context.Background(), ann.userID); len(list) != 1 {
 		t.Fatalf("device not stored: %v", list)
 	}
 	s.do("DELETE", "/me", ann.access, nil).expect(t, 204)
-	if list, err := s.store.devices.ListForUser(context.Background(), ann.userID); err != nil || len(list) != 0 {
+	if list, err := s.store.Devices.ListForUser(context.Background(), ann.userID); err != nil || len(list) != 0 {
 		t.Fatalf("devices survived account deletion: %v, %v", list, err)
+	}
+}
+
+func TestDueDateAlerts(t *testing.T) {
+	s := newTestServer(t)
+	ann := s.register("Ann", "ann@example.com")
+	s.device(ann, "ann-phone")
+	due := time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
+	todo := s.do("POST", "/todos", ann.access, map[string]any{"title": "Pay rent", "dueAt": due}).expect(t, 201).str("id")
+	s.do("POST", "/todos", ann.access, map[string]any{"title": "Someday"}).expect(t, 201) // no deadline: no alert
+
+	// The scheduler queues the periodic scan; the scan queues the push.
+	runSchedulesAndJobs := func() {
+		t.Helper()
+		if err := s.worker.RunSchedules(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		s.runJobs()
+	}
+	runSchedulesAndJobs()
+	got := s.pushes.sent()
+	if len(got) != 1 || !slices.Equal(got[0].tokens, []string{"ann-phone"}) || got[0].msg.Title != "Due soon: Pay rent" ||
+		got[0].msg.Data["type"] != "todo.due_soon" || got[0].msg.Data["todoId"] != todo {
+		t.Fatalf("pushes = %+v, want one due-soon alert", got)
+	}
+	// Once per deadline: the next scans send nothing more.
+	runSchedulesAndJobs()
+	if got := s.pushes.sent(); len(got) != 1 {
+		t.Fatalf("pushes after another scan = %d, want still 1", len(got))
 	}
 }

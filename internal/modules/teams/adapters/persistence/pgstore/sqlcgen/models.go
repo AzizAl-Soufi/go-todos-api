@@ -52,6 +52,70 @@ type EmailVerification struct {
 	CreatedAt time.Time
 }
 
+type Job struct {
+	ID          uuid.UUID
+	Kind        string
+	Payload     []byte
+	UniqueKey   *string
+	OwnerID     string
+	Status      string
+	Attempts    int32
+	MaxAttempts int32
+	RunAt       time.Time
+	LockedUntil *time.Time
+	LastError   string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	FinishedAt  *time.Time
+}
+
+type JobLease struct {
+	Name      string
+	Holder    string
+	ExpiresAt time.Time
+}
+
+type OauthClient struct {
+	ID           uuid.UUID
+	Name         string
+	RedirectUris []string
+	CreatedAt    time.Time
+}
+
+type OauthCode struct {
+	CodeHash      string
+	ClientID      string
+	ClientName    string
+	RedirectUri   string
+	Challenge     string
+	Resource      string
+	Scope         string
+	UserID        uuid.UUID
+	UserName      string
+	UserEmail     string
+	EmailVerified bool
+	ExpiresAt     time.Time
+	CreatedAt     time.Time
+}
+
+type OauthGrant struct {
+	ID               uuid.UUID
+	ClientID         string
+	ClientName       string
+	Scope            string
+	Resource         string
+	UserID           uuid.UUID
+	UserName         string
+	UserEmail        string
+	EmailVerified    bool
+	AccessHash       string
+	AccessExpiresAt  time.Time
+	RefreshHash      string
+	RefreshExpiresAt time.Time
+	CreatedAt        time.Time
+	LastUsedAt       time.Time
+}
+
 type Passkey struct {
 	ID           uuid.UUID
 	UserID       uuid.UUID
@@ -130,19 +194,21 @@ type TeamMember struct {
 }
 
 type Todo struct {
-	ID          uuid.UUID
-	UserID      uuid.UUID
-	Title       string
-	CreatedAt   time.Time
-	ProjectID   *uuid.UUID
-	Notes       string
-	Status      string
-	Priority    int16
-	Tags        []string
-	DueAt       *time.Time
-	CompletedAt *time.Time
-	UpdatedAt   time.Time
-	TeamID      *uuid.UUID
+	ID                uuid.UUID
+	UserID            uuid.UUID
+	Title             string
+	CreatedAt         time.Time
+	ProjectID         *uuid.UUID
+	Notes             string
+	Status            string
+	Priority          int16
+	Tags              []string
+	DueAt             *time.Time
+	CompletedAt       *time.Time
+	UpdatedAt         time.Time
+	TeamID            *uuid.UUID
+	DueSoonAlertedFor *time.Time
+	OverdueAlertedFor *time.Time
 }
 
 type User struct {

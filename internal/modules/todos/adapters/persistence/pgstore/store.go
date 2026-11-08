@@ -5,6 +5,8 @@ package pgstore
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -261,6 +263,56 @@ func (s *Todos) DeleteByTeam(ctx context.Context, teamID string) error {
 		return err
 	}
 	return postgres.MapErr("delete todos by team", s.q(ctx).DeleteTodosByTeam(ctx, &teamUUID))
+}
+
+// ListPendingDueAlertsSystemWide is system-level: not scoped (see
+// application.DueAlertRepository).
+func (s *Todos) ListPendingDueAlertsSystemWide(ctx context.Context, now time.Time, limit int) ([]application.DueAlert, error) {
+	if limit <= 0 {
+		return []application.DueAlert{}, nil
+	}
+	rows, err := s.q(ctx).ListPendingDueAlerts(ctx, sqlcgen.ListPendingDueAlertsParams{
+		Now: now, DueSoonUntil: now.Add(domain.DueSoonWindow), MaxRows: int32(min(limit, math.MaxInt32)),
+	})
+	if err != nil {
+		return nil, postgres.MapErr("list pending due alerts", err)
+	}
+	out := make([]application.DueAlert, 0, len(rows))
+	for _, r := range rows {
+		kind := domain.AlertDueSoon
+		if r.Overdue {
+			kind = domain.AlertOverdue
+		}
+		todo := todoToDomain(sqlcgen.Todo{
+			ID: r.ID, UserID: r.UserID, TeamID: r.TeamID, ProjectID: r.ProjectID, Title: r.Title, Notes: r.Notes,
+			Status: r.Status, Priority: r.Priority, Tags: r.Tags, DueAt: r.DueAt, CompletedAt: r.CompletedAt,
+			CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
+		})
+		out = append(out, application.DueAlert{Todo: todo, Kind: kind})
+	}
+	return out, nil
+}
+
+// MarkDueAlerted is system-level: not scoped (see
+// application.DueAlertRepository).
+func (s *Todos) MarkDueAlerted(ctx context.Context, id string, kind domain.DueAlertKind, dueAt time.Time) (bool, error) {
+	todoID, err := ids.UUID(id)
+	if err != nil {
+		return false, err
+	}
+	var rows int64
+	switch kind {
+	case domain.AlertDueSoon:
+		rows, err = s.q(ctx).MarkDueSoonAlerted(ctx, sqlcgen.MarkDueSoonAlertedParams{ID: todoID, DueAt: dueAt})
+	case domain.AlertOverdue:
+		rows, err = s.q(ctx).MarkOverdueAlerted(ctx, sqlcgen.MarkOverdueAlertedParams{ID: todoID, DueAt: dueAt})
+	default:
+		return false, fmt.Errorf("mark due alerted: unknown kind %q", kind)
+	}
+	if err != nil {
+		return false, postgres.MapErr("mark due alerted", err)
+	}
+	return rows > 0, nil
 }
 
 // ---- projects ----

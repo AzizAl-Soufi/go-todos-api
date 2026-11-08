@@ -52,6 +52,9 @@ type InvitationRepository interface {
 	Resend(ctx context.Context, r InvitationResend) error
 	Delete(ctx context.Context, teamID, id string) error
 	DeleteByTeam(ctx context.Context, teamID string) error
+	// DeleteExpired deletes up to limit invitations of any team that expired
+	// before `before`, and returns how many it deleted.
+	DeleteExpired(ctx context.Context, before time.Time, limit int) (int64, error)
 }
 
 // InvitationResend is a new link for an invitation (InvitationRepository.Resend).

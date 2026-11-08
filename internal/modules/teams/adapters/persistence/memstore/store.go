@@ -8,6 +8,7 @@ import (
 	"context"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/domain"
@@ -237,6 +238,22 @@ func (s *Invitations) ListByTeam(_ context.Context, teamID string) ([]*domain.In
 		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), cmp.Compare(a.ID, b.ID))
 	})
 	return out, nil
+}
+
+func (s *Invitations) DeleteExpired(_ context.Context, before time.Time, limit int) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int64
+	for id, inv := range s.data {
+		if n == int64(limit) {
+			break
+		}
+		if inv.ExpiresAt.Before(before) {
+			delete(s.data, id)
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (s *Invitations) DeleteByTeam(_ context.Context, teamID string) error {

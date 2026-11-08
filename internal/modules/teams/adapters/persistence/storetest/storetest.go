@@ -213,6 +213,8 @@ func testInvitations(t *testing.T, b Backend) {
 		"Delete missing":           b.Invitations.Delete(ctx, team.ID, b.MissingID),
 	})
 
+	testDeleteExpired(t, b, other.ID)
+
 	if err := b.Invitations.Delete(ctx, team.ID, again.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -224,6 +226,29 @@ func testInvitations(t *testing.T, b Backend) {
 	}
 	if _, err := b.Invitations.FindByTokenHash(ctx, "hash-3"); err != nil {
 		t.Fatal("DeleteByTeam removed another team's invitation")
+	}
+}
+
+// testDeleteExpired checks the periodic cleanup: invitations that expired
+// before the cutoff go, in batches; newer ones stay.
+func testDeleteExpired(t *testing.T, b Backend, teamID string) {
+	t.Helper()
+	for i, email := range []string{"old1@example.com", "old2@example.com", "old3@example.com"} {
+		inv := newInvitation(t, b, teamID, email, "expired-"+email, time.Duration(i)*time.Second)
+		inv.ExpiresAt = base.Add(-48 * time.Hour)
+		if err := b.Invitations.Save(ctx, inv); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := b.Invitations.DeleteExpired(ctx, base.Add(-time.Hour), 2)
+	if err != nil || n != 2 {
+		t.Fatalf("first batch: %d (%v), want 2", n, err)
+	}
+	if n, err = b.Invitations.DeleteExpired(ctx, base.Add(-time.Hour), 2); err != nil || n != 1 {
+		t.Fatalf("second batch: %d (%v), want the last expired one", n, err)
+	}
+	if _, err := b.Invitations.FindByTokenHash(ctx, "hash-3"); err != nil {
+		t.Fatalf("an unexpired invitation was deleted: %v", err)
 	}
 }
 

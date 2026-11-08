@@ -67,6 +67,26 @@ func (q *Queries) CreateTeam(ctx context.Context, arg CreateTeamParams) (Team, e
 	return i, err
 }
 
+const deleteExpiredInvitations = `-- name: DeleteExpiredInvitations :execrows
+DELETE FROM team_invitations WHERE id IN (
+    SELECT i.id FROM team_invitations i WHERE i.expires_at < $1 ORDER BY i.expires_at LIMIT $2
+)
+`
+
+type DeleteExpiredInvitationsParams struct {
+	Before time.Time
+	Lim    int32
+}
+
+// Bounded, so the periodic cleanup never holds locks for long.
+func (q *Queries) DeleteExpiredInvitations(ctx context.Context, arg DeleteExpiredInvitationsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredInvitations, arg.Before, arg.Lim)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteInvitation = `-- name: DeleteInvitation :execrows
 DELETE FROM team_invitations WHERE team_id = $1 AND id = $2
 `

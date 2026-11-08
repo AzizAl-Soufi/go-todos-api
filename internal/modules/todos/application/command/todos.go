@@ -9,8 +9,8 @@ import (
 )
 
 // CreateTodo adds a todo, in a project or in the (personal) inbox. A todo in
-// a team project belongs to that team, and once it is committed the
-// notifications module hears about it (it tells the team when an owner or
+// a team project belongs to that team, and the notifications module hears
+// about it in the same unit of work (it tells the team when an owner or
 // admin added it).
 type CreateTodo struct {
 	Actor   access.Actor
@@ -29,18 +29,16 @@ func (h CreateTodoHandler) Handle(ctx context.Context, cmd CreateTodo) (id strin
 		return "", err
 	}
 	todo.TeamID = teamID
-	err = h.commit(ctx,
-		func(ctx context.Context) error { return h.Todos.Create(ctx, todo) },
-		func() application.AuditEntry {
-			return event(cmd.Actor, teamID, "todo.created", "todo", todo.ID, map[string]string{"title": todo.Title})
-		})
-	if err != nil {
-		return "", err
-	}
-	if teamID != "" {
+	create := func(ctx context.Context) error {
+		if err := h.Todos.Create(ctx, todo); err != nil {
+			return err
+		}
+		if teamID == "" {
+			return nil
+		}
 		role, _ := cmd.Actor.Role(teamID)
 		projectID, _ := cmd.Changes.ProjectID.Get()
-		h.Notifier.TodoCreated(ctx, application.NewTeamTodo{
+		return h.Notifier.TodoCreated(ctx, application.NewTeamTodo{
 			TeamID:    teamID,
 			ProjectID: projectID,
 			TodoID:    todo.ID,
@@ -49,6 +47,12 @@ func (h CreateTodoHandler) Handle(ctx context.Context, cmd CreateTodo) (id strin
 			ActorName: cmd.Actor.Name,
 			ActorRole: role,
 		})
+	}
+	err = h.commit(ctx, create, func() application.AuditEntry {
+		return event(cmd.Actor, teamID, "todo.created", "todo", todo.ID, map[string]string{"title": todo.Title})
+	})
+	if err != nil {
+		return "", err
 	}
 	return todo.ID, nil
 }

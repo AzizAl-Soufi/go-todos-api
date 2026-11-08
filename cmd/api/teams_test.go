@@ -37,7 +37,7 @@ func (s *testServer) join(teamID string, inviter, invitee session, email, role s
 func (s *testServer) backdateInvitation(teamID, invitationID string) {
 	s.t.Helper()
 	now := time.Now()
-	err := s.store.invitations.Resend(context.Background(), teamsapp.InvitationResend{
+	err := s.store.Invitations.Resend(context.Background(), teamsapp.InvitationResend{
 		TeamID: teamID, ID: invitationID, TokenHash: "backdated-" + invitationID,
 		SentAt: now.Add(-150 * time.Second), ExpiresAt: now.Add(time.Hour), SentBefore: now,
 	})
@@ -173,7 +173,7 @@ func TestTeamRoles(t *testing.T) {
 		t.Fatalf("after transfer: %v", roles)
 	}
 	s.do("DELETE", "/teams/"+teamID, ann.access, nil).expectCode(t, 403, "INSUFFICIENT_ROLE")
-	s.do("DELETE", "/teams/"+teamID, bo.access, nil).expect(t, 204)
+	s.do("DELETE", "/teams/"+teamID, bo.access, nil).expect(t, 202)
 	s.do("GET", "/teams/"+teamID, bo.access, nil).expectCode(t, 404, "TEAM_NOT_FOUND")
 }
 
@@ -275,10 +275,27 @@ func TestTeamContent(t *testing.T) {
 
 	// Deleting the team deletes its content; personal records stay.
 	again := s.do("POST", "/projects", bo.access, map[string]any{"name": "Again", "teamId": teamID}).expect(t, 201)
-	s.do("DELETE", "/teams/"+teamID, ann.access, nil).expect(t, 204)
+	// The team is gone at once; its content is deleted in the background, an
+	// operation its owner can follow.
+	accepted := s.do("DELETE", "/teams/"+teamID, ann.access, nil).expect(t, 202)
+	opURL := accepted.str("operation", "url")
+	if accepted.str("operation", "status") != "pending" || opURL != "/operations/"+accepted.str("operation", "id") {
+		t.Fatalf("accepted: %s", accepted.raw)
+	}
 	s.do("GET", "/projects/"+again.str("id"), ann.access, nil).expectCode(t, 404, "PROJECT_NOT_FOUND")
 	if got := titles(s.do("GET", "/todos", bo.access, nil).expect(t, 200).items(t)); !slices.Equal(got, []string{"My errand"}) {
 		t.Fatalf("Bo's todos after team deletion: %q", got)
+	}
+	if op := s.do("GET", opURL, ann.access, nil).expect(t, 200); op.str("status") != "pending" || op.str("kind") != "teams.purge" {
+		t.Fatalf("operation before the worker ran: %s", op.raw)
+	}
+	s.do("GET", opURL, bo.access, nil).expectCode(t, 404, "OPERATION_NOT_FOUND")
+	s.do("GET", "/operations/not-an-id", ann.access, nil).expectCode(t, 404, "OPERATION_NOT_FOUND")
+	if n := s.runJobs(); n != 1 {
+		t.Fatalf("ran %d jobs, want the team purge", n)
+	}
+	if op := s.do("GET", opURL, ann.access, nil).expect(t, 200); op.str("status") != "succeeded" || op.str("finishedAt") == "" {
+		t.Fatalf("operation after the worker ran: %s", op.raw)
 	}
 }
 

@@ -48,9 +48,13 @@ func invalidIDCases(todos application.TodoStore, projects application.ProjectSto
 			_, err := todos.List(ctx, scope(valid), domain.Query{ExcludeProjectIDs: []string{"bad"}})
 			return err
 		},
-		"Progress bad user":       func() error { _, err := todos.Progress(ctx, scope("bad"), time.Now()); return err },
-		"DeleteByProject bad id":  func() error { return todos.DeleteByProject(ctx, scope(valid), "bad") },
-		"DeleteByTeam todos":      func() error { return todos.DeleteByTeam(ctx, "bad") },
+		"Progress bad user":      func() error { _, err := todos.Progress(ctx, scope("bad"), time.Now()); return err },
+		"DeleteByProject bad id": func() error { return todos.DeleteByProject(ctx, scope(valid), "bad") },
+		"DeleteByTeam todos":     func() error { return todos.DeleteByTeam(ctx, "bad") },
+		"MarkDueAlerted bad id": func() error {
+			_, err := todos.MarkDueAlerted(ctx, "bad", domain.AlertOverdue, time.Now())
+			return err
+		},
 		"DeleteByUser todos":      func() error { return todos.DeleteByUser(ctx, "bad") },
 		"Create project bad user": func() error { return projects.Create(ctx, project("", "bad", "")) },
 		"Create project bad coll": func() error { return projects.Create(ctx, project("", valid, "bad")) },

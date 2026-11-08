@@ -13,6 +13,7 @@ import (
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/httpx"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/jobs"
 )
 
 type handler struct {
@@ -53,7 +54,8 @@ func Register(mux *http.ServeMux, cmd command.Handlers, qry query.Handlers, prot
 
 // ---- response shapes ----
 
-type teamResponse struct {
+// TeamResponse is a team with the caller's role in it.
+type TeamResponse struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	Role      string    `json:"role"`
@@ -61,11 +63,13 @@ type teamResponse struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-func toTeam(v query.TeamView) teamResponse {
-	return teamResponse{ID: v.ID, Name: v.Name, Role: string(v.Role), CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt}
+// ToTeam converts a team view into its response shape.
+func ToTeam(v query.TeamView) TeamResponse {
+	return TeamResponse{ID: v.ID, Name: v.Name, Role: string(v.Role), CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt}
 }
 
-type memberResponse struct {
+// MemberResponse is one member of a team.
+type MemberResponse struct {
 	UserID   string    `json:"userId"`
 	Name     string    `json:"name"`
 	Email    string    `json:"email"`
@@ -73,20 +77,23 @@ type memberResponse struct {
 	JoinedAt time.Time `json:"joinedAt"`
 }
 
-type teamDetailResponse struct {
-	teamResponse
-	Members []memberResponse `json:"members"`
+// TeamDetailResponse is a team with its members.
+type TeamDetailResponse struct {
+	TeamResponse
+	Members []MemberResponse `json:"members"`
 }
 
-func toTeamDetail(d query.TeamDetail) teamDetailResponse {
-	out := teamDetailResponse{teamResponse: toTeam(d.TeamView), Members: make([]memberResponse, 0, len(d.Members))}
+// ToTeamDetail converts a team with its members into its response shape.
+func ToTeamDetail(d query.TeamDetail) TeamDetailResponse {
+	out := TeamDetailResponse{TeamResponse: ToTeam(d.TeamView), Members: make([]MemberResponse, 0, len(d.Members))}
 	for _, m := range d.Members {
-		out.Members = append(out.Members, memberResponse{UserID: m.UserID, Name: m.Name, Email: m.Email, Role: string(m.Role), JoinedAt: m.JoinedAt})
+		out.Members = append(out.Members, MemberResponse{UserID: m.UserID, Name: m.Name, Email: m.Email, Role: string(m.Role), JoinedAt: m.JoinedAt})
 	}
 	return out
 }
 
-type invitationResponse struct {
+// InvitationResponse is a pending (or expired) invitation.
+type InvitationResponse struct {
 	ID        string    `json:"id"`
 	TeamID    string    `json:"teamId"`
 	Email     string    `json:"email"`
@@ -101,12 +108,18 @@ type invitationResponse struct {
 	ResendAvailableAt time.Time `json:"resendAvailableAt"`
 }
 
-func (h handler) toInvitation(i *domain.Invitation) invitationResponse {
-	return invitationResponse{
+// ToInvitation converts an invitation into its response shape; now decides
+// whether it has expired.
+func ToInvitation(i *domain.Invitation, now time.Time) InvitationResponse {
+	return InvitationResponse{
 		ID: i.ID, TeamID: i.TeamID, Email: i.Email, Role: string(i.Role), InvitedBy: i.InvitedBy,
-		Expired: i.Expired(h.now()), ExpiresAt: i.ExpiresAt, CreatedAt: i.CreatedAt,
+		Expired: i.Expired(now), ExpiresAt: i.ExpiresAt, CreatedAt: i.CreatedAt,
 		SentAt: i.SentAt.UTC(), ResendAvailableAt: i.ResendAvailableAt().UTC(),
 	}
+}
+
+func (h handler) toInvitation(i *domain.Invitation) InvitationResponse {
+	return ToInvitation(i, h.now())
 }
 
 func respond[T, R any](status int, v T, err error, toResponse func(T) R) (int, any, error) {
@@ -160,7 +173,7 @@ func decode[T any](r *http.Request) (T, error) {
 
 func (h handler) readTeam(r *http.Request, status int, a access.Actor, id string) (int, any, error) {
 	d, err := h.qry.GetTeam.Handle(r.Context(), query.GetTeam{Actor: a, TeamID: id})
-	return respond(status, d, err, toTeamDetail)
+	return respond(status, d, err, ToTeamDetail)
 }
 
 func (h handler) createTeam(r *http.Request, a access.Actor) (int, any, error) {
@@ -177,7 +190,7 @@ func (h handler) createTeam(r *http.Request, a access.Actor) (int, any, error) {
 
 func (h handler) listTeams(r *http.Request, a access.Actor) (int, any, error) {
 	views, err := h.qry.ListTeams.Handle(r.Context(), query.ListTeams{Actor: a})
-	return respondList(views, err, toTeam)
+	return respondList(views, err, ToTeam)
 }
 
 func (h handler) getTeam(r *http.Request, a access.Actor) (int, any, error) {
@@ -196,8 +209,14 @@ func (h handler) renameTeam(r *http.Request, a access.Actor) (int, any, error) {
 	return h.readTeam(r, http.StatusOK, a, id)
 }
 
+// deleteTeam answers 202: the team is gone, and its content is being
+// deleted in the background (GET /operations/{id}).
 func (h handler) deleteTeam(r *http.Request, a access.Actor) (int, any, error) {
-	return http.StatusNoContent, nil, h.cmd.DeleteTeam.Handle(r.Context(), command.DeleteTeam{Actor: a, TeamID: r.PathValue("id")})
+	opID, err := h.cmd.DeleteTeam.Handle(r.Context(), command.DeleteTeam{Actor: a, TeamID: r.PathValue("id")})
+	if err != nil {
+		return 0, nil, err
+	}
+	return http.StatusAccepted, jobs.NewAccepted(opID), nil
 }
 
 // ---- members ----

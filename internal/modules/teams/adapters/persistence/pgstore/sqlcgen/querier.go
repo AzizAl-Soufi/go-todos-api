@@ -16,6 +16,8 @@ type Querier interface {
 	// Queries owned by the teams module. Regenerate with `make sqlc`.
 	// teams
 	CreateTeam(ctx context.Context, arg CreateTeamParams) (Team, error)
+	// Bounded, so the periodic cleanup never holds locks for long.
+	DeleteExpiredInvitations(ctx context.Context, arg DeleteExpiredInvitationsParams) (int64, error)
 	DeleteInvitation(ctx context.Context, arg DeleteInvitationParams) (int64, error)
 	DeleteInvitationsByTeam(ctx context.Context, teamID uuid.UUID) error
 	DeleteMembersByTeam(ctx context.Context, teamID uuid.UUID) error

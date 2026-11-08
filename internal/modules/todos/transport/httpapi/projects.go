@@ -13,7 +13,7 @@ import (
 
 // ---- response shapes ----
 
-type progressResponse struct {
+type ProgressResponse struct {
 	Total       int `json:"total"`
 	Pending     int `json:"pending"`
 	InProgress  int `json:"inProgress"`
@@ -24,8 +24,8 @@ type progressResponse struct {
 	PercentDone int `json:"percentDone"`
 }
 
-func toProgress(p domain.Progress) progressResponse {
-	return progressResponse{
+func ToProgress(p domain.Progress) ProgressResponse {
+	return ProgressResponse{
 		Total: p.Total, Overdue: p.Overdue, PercentDone: p.PercentDone(),
 		Pending: p.ByStatus[domain.StatusPending], InProgress: p.ByStatus[domain.StatusInProgress],
 		Blocked: p.ByStatus[domain.StatusBlocked], Done: p.ByStatus[domain.StatusDone],
@@ -33,8 +33,8 @@ func toProgress(p domain.Progress) progressResponse {
 	}
 }
 
-// metaResponse is what projects and collections share.
-type metaResponse struct {
+// MetaResponse is what projects and collections share.
+type MetaResponse struct {
 	Name        string     `json:"name"`
 	Description string     `json:"description"`
 	Icon        string     `json:"icon"`
@@ -45,46 +45,46 @@ type metaResponse struct {
 	UpdatedAt   time.Time  `json:"updatedAt"`
 }
 
-func toMeta(m domain.Meta) metaResponse {
-	return metaResponse{
+func ToMeta(m domain.Meta) MetaResponse {
+	return MetaResponse{
 		Name: m.Name, Description: m.Description, Icon: m.Icon, Color: m.Color,
 		Archived: m.Archived(), ArchivedAt: m.ArchivedAt, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
 	}
 }
 
-type projectResponse struct {
+type ProjectResponse struct {
 	ID           string  `json:"id"`
 	UserID       string  `json:"userId"`
 	TeamID       *string `json:"teamId"`
 	CollectionID *string `json:"collectionId"`
-	metaResponse
-	Progress progressResponse `json:"progress"`
+	MetaResponse
+	Progress ProgressResponse `json:"progress"`
 }
 
-func toProject(v query.ProjectView) projectResponse {
-	return projectResponse{
+func ToProject(v query.ProjectView) ProjectResponse {
+	return ProjectResponse{
 		ID: v.ID, UserID: v.UserID, TeamID: optionalID(v.TeamID), CollectionID: optionalID(v.CollectionID),
-		metaResponse: toMeta(v.Meta), Progress: toProgress(v.Progress),
+		MetaResponse: ToMeta(v.Meta), Progress: ToProgress(v.Progress),
 	}
 }
 
-type collectionResponse struct {
+type CollectionResponse struct {
 	ID     string  `json:"id"`
 	UserID string  `json:"userId"`
 	TeamID *string `json:"teamId"`
-	metaResponse
-	Progress progressResponse  `json:"progress"`
-	Projects []projectResponse `json:"projects"`
+	MetaResponse
+	Progress ProgressResponse  `json:"progress"`
+	Projects []ProjectResponse `json:"projects"`
 }
 
-func toCollection(v query.CollectionView) collectionResponse {
-	projects := make([]projectResponse, 0, len(v.Projects))
+func ToCollection(v query.CollectionView) CollectionResponse {
+	projects := make([]ProjectResponse, 0, len(v.Projects))
 	for _, p := range v.Projects {
-		projects = append(projects, toProject(p))
+		projects = append(projects, ToProject(p))
 	}
-	return collectionResponse{
+	return CollectionResponse{
 		ID: v.ID, UserID: v.UserID, TeamID: optionalID(v.TeamID),
-		metaResponse: toMeta(v.Meta), Progress: toProgress(v.Progress), Projects: projects,
+		MetaResponse: ToMeta(v.Meta), Progress: ToProgress(v.Progress), Projects: projects,
 	}
 }
 
@@ -138,7 +138,7 @@ func parseArchiveFilter(v url.Values) (domain.ArchiveFilter, error) {
 
 func (h handler) readProject(r *http.Request, status int, a access.Actor, id string) (int, any, error) {
 	v, err := h.qry.GetProject.Handle(r.Context(), query.GetProject{Actor: a, ID: id})
-	return respond(status, v, err, toProject)
+	return respond(status, v, err, ToProject)
 }
 
 func (h handler) createProject(r *http.Request, a access.Actor) (int, any, error) {
@@ -168,7 +168,7 @@ func (h handler) listProjects(r *http.Request, a access.Actor) (int, any, error)
 	views, err := h.qry.ListProjects.Handle(r.Context(), query.ListProjects{
 		Actor: a, ProjectFilter: domain.ProjectFilter{OwnerFilter: parseOwner(v), CollectionID: v.Get("collection"), Archive: archive},
 	})
-	return respondList(views, err, toProject)
+	return respondList(views, err, ToProject)
 }
 
 func (h handler) updateProject(r *http.Request, a access.Actor) (int, any, error) {
@@ -191,7 +191,7 @@ func (h handler) deleteProject(r *http.Request, a access.Actor) (int, any, error
 
 func (h handler) readCollection(r *http.Request, status int, a access.Actor, id string) (int, any, error) {
 	v, err := h.qry.GetCollection.Handle(r.Context(), query.GetCollection{Actor: a, ID: id})
-	return respond(status, v, err, toCollection)
+	return respond(status, v, err, ToCollection)
 }
 
 func (h handler) createCollection(r *http.Request, a access.Actor) (int, any, error) {
@@ -219,7 +219,7 @@ func (h handler) listCollections(r *http.Request, a access.Actor) (int, any, err
 	views, err := h.qry.ListCollections.Handle(r.Context(), query.ListCollections{
 		Actor: a, CollectionFilter: domain.CollectionFilter{OwnerFilter: parseOwner(r.URL.Query()), Archive: archive},
 	})
-	return respondList(views, err, toCollection)
+	return respondList(views, err, ToCollection)
 }
 
 func (h handler) updateCollection(r *http.Request, a access.Actor) (int, any, error) {

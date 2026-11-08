@@ -50,7 +50,7 @@ func Register(mux *http.ServeMux, cmd command.Handlers, qry query.Handlers, prot
 
 // ---- response shapes ----
 
-type userResponse struct {
+type UserResponse struct {
 	ID            string    `json:"id"`
 	Name          string    `json:"name"`
 	Email         string    `json:"email"`
@@ -58,17 +58,17 @@ type userResponse struct {
 	CreatedAt     time.Time `json:"createdAt"`
 }
 
-func toUser(u *domain.User) userResponse {
-	return userResponse{ID: u.ID, Name: u.Name, Email: u.Email, EmailVerified: u.EmailVerified(), CreatedAt: u.CreatedAt}
+func ToUser(u *domain.User) UserResponse {
+	return UserResponse{ID: u.ID, Name: u.Name, Email: u.Email, EmailVerified: u.EmailVerified(), CreatedAt: u.CreatedAt}
 }
 
 type signInResponse struct {
-	User    userResponse `json:"user"`
+	User    UserResponse `json:"user"`
 	Created bool         `json:"created"`
 }
 
 type passkeySignInResponse struct {
-	User userResponse `json:"user"`
+	User UserResponse `json:"user"`
 	// FirebaseCustomToken is exchanged with Firebase signInWithCustomToken
 	// for an ID token.
 	FirebaseCustomToken string `json:"firebase_custom_token"`
@@ -84,7 +84,7 @@ type todoResponse struct {
 }
 
 type overviewResponse struct {
-	userResponse
+	UserResponse
 	Todos []todoResponse `json:"todos"`
 }
 
@@ -115,12 +115,12 @@ type (
 
 // ---- auth ----
 
-func (h handler) user(r *http.Request, id string) (userResponse, error) {
+func (h handler) user(r *http.Request, id string) (UserResponse, error) {
 	user, err := h.qry.GetUser.Handle(r.Context(), query.GetUser{UserID: id})
 	if err != nil {
-		return userResponse{}, err
+		return UserResponse{}, err
 	}
-	return toUser(user), nil
+	return ToUser(user), nil
 }
 
 // signIn is called after every Firebase sign-in, with the Firebase ID token
@@ -162,7 +162,7 @@ func (h handler) me(r *http.Request, userID string) (int, any, error) {
 	for _, t := range ov.Todos {
 		todos = append(todos, todoResponse{ID: t.ID, UserID: t.UserID, Title: t.Title, Status: t.Status, Completed: t.Completed, CreatedAt: t.CreatedAt})
 	}
-	return http.StatusOK, overviewResponse{userResponse: toUser(ov.User), Todos: todos}, nil
+	return http.StatusOK, overviewResponse{UserResponse: ToUser(ov.User), Todos: todos}, nil
 }
 
 func (h handler) deleteAccount(r *http.Request, userID string) (int, any, error) {

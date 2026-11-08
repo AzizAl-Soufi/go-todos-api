@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AzizAl-Soufi/go-todos-api/internal/app"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/domain"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications"
@@ -60,10 +61,11 @@ func linkToken(t *testing.T, link string) string {
 type testServer struct {
 	t        *testing.T
 	srv      *httptest.Server
-	store    *storage
+	store    *app.Storage
 	mailer   *captureMailer
 	firebase *fakeFirebase
 	pushes   *fakePusher
+	worker   *app.Worker
 }
 
 // newTestServer runs the API on a fake Firebase. Options mutate the config;
@@ -76,7 +78,7 @@ func newTestServer(t *testing.T, mutate ...func(*config.Config)) *testServer {
 		App:      config.AppConfig{BaseURL: "http://example.test"},
 		Auth:     config.AuthConfig{RateLimitPerMinute: 1000, RateLimitBurst: 1000},
 		Limits:   config.LimitsConfig{TodoCreatesPerMinute: 1000, TodoCreateBurst: 1000},
-		Firebase: config.FirebaseConfig{ProjectID: "todos-test", CredentialsFile: "service-account.json"},
+		Firebase: config.FirebaseConfig{ProjectID: "todos-test", CredentialsFile: "service-account.json", WebAPIKey: "test-web-key"},
 	}
 	for _, m := range mutate {
 		m(cfg)
@@ -84,13 +86,13 @@ func newTestServer(t *testing.T, mutate ...func(*config.Config)) *testServer {
 
 	mailer := &captureMailer{invites: map[string]string{}}
 	fb := newFakeFirebase()
-	rp, err := newRelyingParty(cfg)
+	rp, err := app.NewRelyingParty(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	in := signIn{idTokens: fb, passkeys: rp}
+	in := app.SignIn{IDTokens: fb, Passkeys: rp, ClientMetadata: metadataDocs}
 	if cfg.Firebase.CredentialsFile != "" {
-		in.firebase = fb
+		in.Firebase = fb
 	}
 	store := testStorage(t)
 	pushes := &fakePusher{}
@@ -98,12 +100,25 @@ func newTestServer(t *testing.T, mutate ...func(*config.Config)) *testServer {
 	if cfg.Firebase.CredentialsFile != "" {
 		pusher = pushes
 	}
-	// Notifications run in place, so a test sees them when its request returns.
-	mods := wireModules(store, in, push{pusher: pusher, dispatch: func(f func()) { f() }}, mailers{teams: mailer}, cfg)
+	mods := app.Wire(store, in, app.Push{Pusher: pusher}, app.Mailers{Teams: mailer}, cfg)
+	worker, err := app.NewWorker(store, mods, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	srv := httptest.NewServer(newRouter(cfg, mods))
 	t.Cleanup(srv.Close)
-	return &testServer{t: t, srv: srv, store: store, mailer: mailer, firebase: fb, pushes: pushes}
+	return &testServer{t: t, srv: srv, store: store, mailer: mailer, firebase: fb, pushes: pushes, worker: worker}
+}
+
+// runJobs runs the background jobs that are due, as the worker would.
+func (s *testServer) runJobs() int {
+	s.t.Helper()
+	n, err := s.worker.RunDue(context.Background())
+	if err != nil {
+		s.t.Fatalf("running jobs: %v", err)
+	}
+	return n
 }
 
 func noServiceAccount(c *config.Config) { c.Firebase.CredentialsFile = "" }
@@ -114,15 +129,15 @@ func noServiceAccount(c *config.Config) { c.Firebase.CredentialsFile = "" }
 // runs the suite on all three.
 const e2eBackendEnv = "TEST_E2E_BACKEND"
 
-func testStorage(t *testing.T) *storage {
+func testStorage(t *testing.T) *app.Storage {
 	t.Helper()
 	switch backend := os.Getenv(e2eBackendEnv); backend {
 	case "", "memory":
-		return newMemoryStorage()
+		return app.NewMemoryStorage()
 	case "postgres":
-		return postgresStorage(dbtest.Postgres(t))
+		return app.PostgresStorage(dbtest.Postgres(t))
 	case "mongo":
-		return mongoStorage(context.Background(), dbtest.Mongo(t))
+		return app.MongoStorage(context.Background(), dbtest.Mongo(t))
 	default:
 		t.Fatalf("%s=%q: want memory, postgres or mongo", e2eBackendEnv, backend)
 		return nil
@@ -263,7 +278,7 @@ func TestExistingAccountIsLinkedByVerifiedEmail(t *testing.T) {
 	s := newTestServer(t)
 	// An account from before Firebase: it has no Firebase user yet.
 	legacy := &domain.User{Name: "Old", Email: "old@example.com", CreatedAt: time.Now().UTC().Truncate(time.Millisecond)}
-	if err := s.store.users.Create(context.Background(), legacy); err != nil {
+	if err := s.store.Users.Create(context.Background(), legacy); err != nil {
 		t.Fatal(err)
 	}
 
@@ -372,8 +387,15 @@ func TestOverviewAndAccountDeletion(t *testing.T) {
 
 	s.do("DELETE", "/me", u.access, nil).expect(t, 204)
 
-	// The ID token stops working immediately, and the Firebase user is deleted.
+	// The ID token stops working immediately; the worker then erases the
+	// account's data and deletes the Firebase user.
 	s.do("GET", "/me", u.access, nil).expectCode(t, 401, "ACCOUNT_NOT_REGISTERED")
+	if len(s.firebase.deleted) != 0 {
+		t.Fatal("the Firebase user is deleted by the background purge, not in the request")
+	}
+	if n := s.runJobs(); n != 1 {
+		t.Fatalf("ran %d jobs, want the account purge", n)
+	}
 	if len(s.firebase.deleted) != 1 || s.firebase.deleted[0] != uidOf("ivy@example.com") {
 		t.Fatalf("Firebase users deleted: %v", s.firebase.deleted)
 	}

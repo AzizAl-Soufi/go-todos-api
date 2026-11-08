@@ -29,6 +29,8 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md) · Changes: [CHANGELOG.md](CHANGELOG.
     - [Invitation flow](#invitation-flow)
     - [Audit logs](#audit-logs)
   - [Push notifications](#push-notifications)
+  - [MCP server](#mcp-server)
+  - [Background jobs](#background-jobs)
   - [Database Schema](#database-schema)
     - [Enums](#enums)
     - [PostgreSQL tables](#postgresql-tables)
@@ -92,6 +94,8 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md) · Changes: [CHANGELOG.md](CHANGELOG.
       - [GET `/teams/{id}/audit-log`](#get-teamsidaudit-log)
       - [GET `/me/audit-log`](#get-meaudit-log)
     - [Devices](#devices)
+    - [Connected apps](#connected-apps)
+    - [Operations](#operations)
       - [POST `/me/devices`](#post-medevices)
       - [GET `/me/devices`](#get-medevices)
       - [DELETE `/me/devices/{id}`](#delete-medevicesid)
@@ -142,11 +146,18 @@ All settings are environment variables (a `.env` file in the working directory i
 | `MONGO_MIGRATIONS_CONFIG`        | `./cmd/migrate/mongo.yaml` | MongoDB migrator config                                                                                           |
 | `FIREBASE_PROJECT_ID`            | –                          | Firebase project whose ID tokens the API accepts (required)                                                       |
 | `FIREBASE_CREDENTIALS_FILE`      | –                          | Service account JSON key. Enables passkey sign-in (custom tokens), push notifications (FCM) and deleting the Firebase user with the account |
+| `FIREBASE_WEB_API_KEY`           | –                          | The Firebase web app's (public) API key, for the sign-in page of the [MCP server](#mcp-server)'s OAuth flow. Without it `/mcp` and the OAuth endpoints are off |
+| `FIREBASE_AUTH_DOMAIN`           | `<project>.firebaseapp.com` | Firebase auth domain for that sign-in page                                                                       |
 | `AUTH_REQUIRE_VERIFIED_EMAIL`    | `false`                    | Block the todos API until the email is verified                                                                   |
 | `AUTH_RATE_LIMIT_PER_MINUTE`     | `20`                       | Per-IP budget for the rate-limited auth endpoints                                                                 |
 | `AUTH_RATE_LIMIT_BURST`          | `10`                       | Burst on top of that budget                                                                                       |
 | `TODO_CREATE_RATE_LIMIT_PER_MINUTE` | `120`                   | Per-user budget for `POST /todos` (a team task can notify the whole team)                                         |
 | `TODO_CREATE_RATE_LIMIT_BURST`   | `30`                       | Burst on top of that budget                                                                                       |
+| `JOBS_RUN_IN_API`                | `false`                    | Also run the [background jobs](#background-jobs) inside the API process (always on with `DB_TYPE=memory`)          |
+| `JOBS_CONCURRENCY`               | `8`                        | Jobs one worker process runs at once                                                                            |
+| `REDIS_URL`                      | –                          | Run jobs through Redis (asynq) instead of straight from the database, e.g. `redis://localhost:6379/0`             |
+| `WORKER_HEALTH_PORT`             | `8081`                     | The worker's `/health` (queue counts) for probes and alerts; `0` turns it off                                    |
+| `JOBS_RETAIN_DAYS`               | `7`                        | How long finished jobs (and operation statuses) are kept                                                        |
 | `PASSKEY_RP_ID`                  | host of `APP_BASE_URL`     | Domain passkeys are bound to: the site's host or a parent domain of it (see [Passkeys](#passkeys))                |
 | `PASSKEY_RP_NAME`                | `Todos`                    | Name the browser shows when creating a passkey                                                                    |
 | `PASSKEY_ORIGINS`                | origin of `APP_BASE_URL`   | Comma-separated origins (`https://app.example.com`) of the pages allowed to use passkeys                          |
@@ -349,7 +360,7 @@ When a team's **owner or an admin** adds a task to a team project, everyone else
 
 - **Devices**: after sign-in (and whenever FCM hands the app a new token), the client registers its FCM registration token with `POST /me/devices`, and removes it on sign-out with `DELETE /me/devices/{id}`, using the `id` the registration returned. Tokens never go into URLs, where access logs and proxies would record them. A user keeps up to 10 devices; registering more drops the least recently registered. A token registered by another user (someone else signed in on the device) moves to them. **Log out everywhere** and deleting the account forget all of the user's devices, so a lost or stolen device stops receiving notifications; apps register again after their next sign-in.
 - **Payload**: `notification` has the title (at most 100 characters) and body (at most 200; long task titles and names are shortened with "…"); `data` has `type` (`todo.created`), `teamId`, `projectId` and `todoId`, so the app can open the task.
-- **Delivery** happens after the task is saved, in the background: a slow or failing FCM never fails or slows adding a task, and failures are logged. Recipients are read from the team at send time, so removed members don't get notified. Tokens FCM reports as unregistered or invalid are forgotten, except when it rejects the message for every recipient of a batch: then the message is at fault, and the tokens are kept. Creating todos is rate-limited per user (`TODO_CREATE_RATE_LIMIT_PER_MINUTE`), which also bounds how many notifications one person can cause. At most 32 notifications are sent at once; beyond that they are dropped and logged rather than queued. On shutdown (SIGTERM) the server finishes requests in flight, then waits for notifications being sent, within a 5-second grace period, before closing the database. A crash between saving the task and sending loses that notification (there is no outbox yet).
+- **Delivery** goes through a [background job](#background-jobs): the notification is recorded in the same transaction as the task (an outbox), so it can't be lost, and the worker sends it. A slow or failing FCM never fails or slows adding a task. Recipients are read from the team when the job runs, so removed members don't get notified. Tokens FCM reports as unregistered or invalid are forgotten. A send that FCM partly fails is logged, not retried: the devices that got it would get it twice. When FCM rejects the message for every recipient of a batch, the message is at fault and the tokens are kept. Creating todos is rate-limited per user (`TODO_CREATE_RATE_LIMIT_PER_MINUTE`), which also bounds how many notifications one person can cause.
 - **Setup**: sending needs `FIREBASE_CREDENTIALS_FILE` (a service account allowed to use the Firebase Cloud Messaging API). Without it, devices are still registered but nothing is sent. Deleting an account forgets its devices.
 
 ```js
@@ -360,6 +371,64 @@ const { id } = await api.post("/me/devices", { token, platform: "web" });
 // on sign-out:
 await api.delete(`/me/devices/${id}`);
 ```
+
+## MCP server
+
+`/mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server: Claude (claude.ai, Desktop, mobile, Claude Code) and other AI agents can work with a user's todos, projects, collections and teams. It speaks **Streamable HTTP**, stateless with JSON responses, so any instance behind a load balancer can serve any request.
+
+**Connecting.** In Claude, add a custom connector with the URL `https://<your-api>/mcp` (Settings → Connectors). In Claude Code: `claude mcp add --transport http todos https://<your-api>/mcp`. The client then sends the user to this server's sign-in page; after Google or email/password sign-in (Firebase) and an *Allow*, it's connected.
+
+**Tools.** One tool per API action, 36 in all, each running the same command or query as its REST endpoint and returning the same JSON:
+
+| Area | Tools |
+| - | - |
+| Account | `get_profile` |
+| Todos | `list_todos` (filters, sort, `limit`), `get_todo`, `create_todo`, `update_todo`, `delete_todo` |
+| Projects | `list_projects`, `get_project`, `create_project`, `update_project`, `delete_project` |
+| Collections | `list_collections`, `get_collection`, `create_collection`, `update_collection`, `delete_collection` |
+| Teams | `list_teams`, `get_team`, `create_team`, `rename_team`, `delete_team`, `change_member_role`, `remove_member`, `leave_team`, `transfer_team_ownership` |
+| Invitations | `list_invitations`, `invite_member`, `resend_invitation`, `revoke_invitation`, `accept_invitation`, `decline_invitation` |
+| Audit | `get_team_audit_log`, `get_security_log` |
+| Background work | `get_operation` (status of what `delete_team` started) |
+
+Every tool carries annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`, `title`), so clients run reads without asking and confirm deletions; reads and writes are separate tools. Errors come back as tool errors with the API's codes (`NOT_FOUND: todo not found`, `RATE_LIMITED: … (retry at …)`). Account-level actions are deliberately not tools: deleting the account, logging out everywhere, passkeys and devices stay REST-only. `create_todo` shares the per-user budget of `POST /todos`.
+
+**Authorization.** The API is the OAuth 2.1 authorization server for `/mcp`, as the [MCP authorization spec](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization) describes:
+
+- **Discovery**: a request without a token gets `401` with `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource", scope="todos"`. That document (RFC 9728) names this server as the authorization server, whose metadata is at `/.well-known/oauth-authorization-server` (RFC 8414).
+- **Clients**: Dynamic Client Registration at `POST /oauth/register` (RFC 7591), or a [Client ID Metadata Document](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-id-metadata-documents): an HTTPS URL as `client_id`, fetched (public addresses only, no redirects, 64 KB, 5 s, cached 5 minutes). All clients are public: no secrets, PKCE instead.
+- **Redirects** must match a registered one exactly, except loopback `http://localhost`, `127.0.0.1` and `[::1]` URIs, which match on any port (Claude Code listens on a port it picks per sign-in).
+- **Sign-in page** (`GET /oauth/authorize`): Firebase sign-in, then a consent screen naming the app and where it sends the user back. It can't be framed, runs only nonce'd scripts, and its form may only post here and to that redirect. Approving posts a fresh Firebase ID token, so there are no cookies or sessions to forge.
+- **Tokens**: the code (single use, 5 minutes, S256 PKCE required) is exchanged at `POST /oauth/token` for an access token (1 hour) and a refresh token (30 days). Both are bound to the `/mcp` URL (RFC 8707 `resource`) and stored only as hashes. Refreshing rotates both; presenting a refresh token that was already rotated revokes the connection, since it must have been copied. `POST /oauth/revoke` (RFC 7009) revokes one.
+- **Connected apps**: each approval is a connection, at most 25 per account (the least recently used goes). Users list and disconnect them with [`/me/connections`](#connected-apps). Logging out everywhere and deleting the account disconnect all of them at once.
+
+**Setup.** Set `FIREBASE_WEB_API_KEY` (and `FIREBASE_AUTH_DOMAIN` if not the default), and add the API's domain to *Authorized domains* in the Firebase console (Authentication → Settings) so the sign-in page can use Google sign-in. `APP_BASE_URL` must be the public URL clients use: it is the issuer and the `/mcp` URL tokens are bound to. Requests to `/mcp` and the OAuth endpoints are allowed from any origin (CORS); credentials are bearer tokens, never cookies.
+
+## Background jobs
+
+Work that shouldn't happen inside an HTTP request runs as **background jobs** in a worker process (`cmd/worker`, the same image: `docker run --entrypoint /app/worker <image>`). Run one or more next to the API; they share the work.
+
+| Job | When | What |
+| - | - | - |
+| `notifications.todo_created` | after an owner or admin adds a team task | push to the team's other members |
+| `notifications.push` | queued by other jobs | push a message to some users (due-date alerts) |
+| `todos.due_alerts` | every 5 minutes | push "Due soon" (deadline within 24 hours) and "Overdue" alerts to a todo's owner, once per deadline; todos of archived projects are skipped |
+| `teams.purge` | after a team is deleted | delete the team's projects, collections, todos and audit log |
+| `identity.purge_account` | after an account is deleted | erase its personal todos, security log and Firebase user |
+| `oauth.cleanup` | hourly | delete expired OAuth codes and grants, and registered MCP clients unused for 30 days |
+| `teams.invitation_cleanup` | daily | delete invitations that expired more than 30 days ago |
+| `jobs.purge` | hourly | delete finished jobs older than `JOBS_RETAIN_DAYS` |
+
+**How it works**
+
+- **Outbox.** A job is a row in the database (`jobs` table / collection), written in the same transaction as the change that needs it. A job exists exactly when its change was committed: a crash can't lose a notification or leave a deleted team's data behind.
+- **Running.** Workers claim due jobs atomically (PostgreSQL `FOR UPDATE SKIP LOCKED`, MongoDB `findOneAndUpdate`) with a lease, run them with a per-kind timeout, and record the outcome. A failed job is retried with exponential backoff (30 seconds doubling, at most an hour, with jitter) up to 10 attempts, then marked failed; errors that retrying can't fix fail it at once. A job whose worker died is picked up again when its lease expires, so handlers are idempotent.
+- **Scheduling.** Every worker runs a scheduler, but only the one holding a lease in the database enqueues periodic jobs, one per period (a unique key per period, so a slot is never enqueued twice, even across a change of leader).
+- **Redis (optional).** With `REDIS_URL`, the worker hands due jobs to [asynq](https://github.com/hibiken/asynq) on Redis, which runs and retries them (and shows them in asynqmon); outcomes are still written back to the database. The database stays the outbox, so jobs are still enqueued transactionally. Without Redis, jobs run straight from the database.
+- **Memory backend.** With `DB_TYPE=memory` the jobs live in the API process, so the API runs them itself (`JOBS_RUN_IN_API` is implied); `cmd/worker` refuses to start.
+- **Shutdown.** On SIGTERM a worker stops claiming and finishes the jobs it is running.
+
+**Monitoring and alerts.** The worker serves `GET /health` on `WORKER_HEALTH_PORT` (8081): `503` when the database doesn't answer; otherwise `200` with job counts per status, `failedLastHour`, and `oldestDueWaitSecond` (how long the oldest due job has waited: a growing value means the workers can't keep up). Alert on failed jobs and on that backlog. Every job that fails for good is logged at error level (`jobs: job failed permanently`, with `job_id` and `kind`), so a log-based alert catches it too.
 
 ## Database Schema
 
@@ -530,6 +599,33 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │   │
     │   └── [Indexes]
     │       └── [Index] idx_devices_user_updated (user_id, updated_at)
+    │
+    ├── oauth_clients (MCP clients registered with DCR)
+    │   ├── id: uuid [PK] (the client_id)
+    │   ├── name: text
+    │   ├── redirect_uris: text[]
+    │   └── created_at: timestamptz
+    │
+    ├── oauth_codes (single-use authorization codes)
+    │   ├── code_hash: text [PK] (SHA-256)
+    │   ├── client_id, client_name, redirect_uri, challenge (PKCE S256), resource, scope: text
+    │   ├── user_id: uuid (no FK), user_name, user_email: text, email_verified: boolean
+    │   ├── expires_at, created_at: timestamptz
+    │   │
+    │   └── [Indexes]
+    │       ├── [Index] idx_oauth_codes_expires_at (expires_at)
+    │       └── [Index] idx_oauth_codes_user_id (user_id)
+    │
+    ├── oauth_grants (connected apps)
+    │   ├── id: uuid [PK] (in the tokens)
+    │   ├── client_id, client_name, scope, resource: text
+    │   ├── user_id: uuid (no FK), user_name, user_email: text, email_verified: boolean
+    │   ├── access_hash: text, access_expires_at: timestamptz (current access token)
+    │   ├── refresh_hash: text, refresh_expires_at: timestamptz (current refresh token)
+    │   ├── created_at, last_used_at: timestamptz
+    │   │
+    │   └── [Indexes]
+    │       └── [Index] idx_oauth_grants_user_used (user_id, last_used_at DESC)
     │
     ├── sessions (unused since Firebase; dropped in a later migration)
     │   ├── id: uuid [PK]
@@ -705,6 +801,34 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │   │
     │   └── [Indexes]
     │       └── [Index] { userId: 1, updatedAt: 1 }
+    │
+    ├── oauth_clients (MCP clients registered with DCR)
+    │   ├── _id: objectId [PK] (the client_id)
+    │   ├── name: string
+    │   ├── redirectUris: [string]
+    │   └── createdAt: ISODate
+    │
+    ├── oauth_codes (single-use authorization codes)
+    │   ├── _id: string [PK] (SHA-256 of the code)
+    │   ├── clientId, clientName, redirectUri, challenge, resource, scope: string
+    │   ├── userId: objectId, userName, userEmail: string, emailVerified: bool
+    │   ├── expiresAt, createdAt: ISODate
+    │   │
+    │   └── [Indexes]
+    │       ├── [TTL Index] { expiresAt: 1 }
+    │       └── [Index] { userId: 1 }
+    │
+    ├── oauth_grants (connected apps)
+    │   ├── _id: objectId [PK] (in the tokens)
+    │   ├── clientId, clientName, scope, resource: string
+    │   ├── userId: objectId, userName, userEmail: string, emailVerified: bool
+    │   ├── accessHash: string, accessExpiresAt: ISODate
+    │   ├── refreshHash: string, refreshExpiresAt: ISODate
+    │   ├── createdAt, lastUsedAt: ISODate
+    │   │
+    │   └── [Indexes]
+    │       ├── [Index] { userId: 1, lastUsedAt: -1 }
+    │       └── [TTL Index] { refreshExpiresAt: 1 }
     │
     ├── sessions (unused since Firebase; removed in a later migration)
     │   ├── _id: objectId [PK]
@@ -1046,7 +1170,7 @@ Response `200 OK`
 
 #### DELETE `/me`
 
-Deletes the account with its personal todos, projects and collections, its passkeys and security log (and its Firebase user, when `FIREBASE_CREDENTIALS_FILE` is set), and takes it out of every team. Team records the user created stay with their team, and teams the user owns alone are deleted. Bearer. Everything is removed in one transaction (on MongoDB this needs a replica set; on a standalone server the deletes run without one), and all of the user's tokens stop working.
+Deletes the account. Bearer. In one transaction (on MongoDB this needs a replica set; on a standalone server the deletes run without one): the user leaves every team (teams they own alone are deleted), their passkeys, devices and connected apps are removed, and the account itself, so all of the user's tokens stop working at once. A [background job](#background-jobs) then erases the rest within moments: personal todos, projects and collections, the security log, and the Firebase user (when `FIREBASE_CREDENTIALS_FILE` is set), retrying until each step went through. Team records the user created stay with their team.
 
 Request: no body.
 
@@ -1464,11 +1588,15 @@ Errors: `INVALID_TEAM_NAME`, `TEAM_NAME_TOO_LONG` (400); `INSUFFICIENT_ROLE` (40
 
 #### DELETE `/teams/{id}`
 
-Deletes the team with its members, invitations, audit log, and all its projects, collections and todos, in one transaction. Owner only.
+Deletes the team. Owner only. The team, its members and its invitations are deleted at once (one transaction), so nobody can reach it or anything it owns from then on. Its projects, collections, todos and audit log, which can be large, are deleted by a [background job](#background-jobs) right after: an [operation](#operations) the owner can follow.
 
 Request: no body.
 
-Response `204 No Content`
+Response `202 Accepted`
+
+```json
+{ "operation": { "id": "6af09a92ce8707260fbf9d24", "status": "pending", "url": "/operations/6af09a92ce8707260fbf9d24" } }
+```
 
 Errors: `INSUFFICIENT_ROLE` (403); `TEAM_NOT_FOUND` (404).
 
@@ -1686,6 +1814,59 @@ Response `204 No Content`
 
 Errors: `DEVICE_NOT_FOUND` (404), also for another user's device.
 
+### Connected apps
+
+Apps (MCP clients) the user connected through the [MCP server](#mcp-server)'s OAuth flow. Bearer.
+
+#### GET `/me/connections`
+
+Response `200 OK`: most recently used first.
+
+```json
+[
+  {
+    "id": "672c71029e1b4d0012a7c50a",
+    "clientId": "https://claude.ai/oauth/claude-code-client-metadata",
+    "clientName": "Claude Code",
+    "scope": "todos offline_access",
+    "createdAt": "2026-11-08T09:12:44Z",
+    "lastUsedAt": "2026-11-08T10:12:51Z"
+  }
+]
+```
+
+#### DELETE `/me/connections/{id}`
+
+Disconnects the app: its access and refresh tokens stop working at once.
+
+Response `204 No Content`
+
+Errors: `CONNECTION_NOT_FOUND` (404), also for another user's connection.
+
+### Operations
+
+Background work a request started, such as deleting a team's content. Bearer; only the user who started it sees it.
+
+#### GET `/operations/{id}`
+
+Response `200 OK`
+
+```json
+{
+  "id": "6af09a92ce8707260fbf9d24",
+  "kind": "teams.purge",
+  "status": "succeeded",
+  "url": "/operations/6af09a92ce8707260fbf9d24",
+  "createdAt": "2026-11-08T15:52:18Z",
+  "updatedAt": "2026-11-08T15:52:19Z",
+  "finishedAt": "2026-11-08T15:52:19Z"
+}
+```
+
+`status` is `pending`, `running`, `succeeded` or `failed`. Operations are kept for `JOBS_RETAIN_DAYS` after they finish.
+
+Errors: `OPERATION_NOT_FOUND` (404), also for someone else's operation.
+
 ## Testing
 
 ### Unit tests
@@ -1714,5 +1895,5 @@ Every test gets its own freshly migrated database (`internal/platform/database/d
 
 - Caching and distributed tracing were deliberately left out: there is no measured need yet. Request IDs and structured access logs cover correlation for now.
 - A shared rate-limit store (e.g. Redis) once the API runs as several replicas; the current limiter counts per process.
-- An outbox for push notifications, so a crash right after a task is saved can't lose its notification; per-user notification preferences.
+- Per-user notification preferences (which alerts, quiet hours).
 - FCM's Admin SDK marks registration tokens as deprecated in favour of Firebase installation IDs (FIDs). Devices are registered by token today, which is what the client SDKs' `getToken()` returns; move to FIDs once the client SDKs hand them out for messaging.

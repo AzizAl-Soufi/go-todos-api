@@ -206,8 +206,13 @@ Authorization: Bearer {{access}}
 GET {{base}}/me/audit-log
 Authorization: Bearer {{access}}
 
-### Delete the team with all its content
+### Delete the team: gone at once; its content is deleted in the background (202 with an operation)
+# @name teamDeletion
 DELETE {{base}}/teams/{{team.response.body.id}}
+Authorization: Bearer {{access}}
+
+### Follow the background deletion (pending, running, succeeded or failed)
+GET {{base}}{{teamDeletion.response.body.operation.url}}
 Authorization: Bearer {{access}}
 
 ### Register this device for push notifications (paste its FCM token)
@@ -224,6 +229,29 @@ Authorization: Bearer {{access}}
 
 ### Unregister a device by its id (never by its token)
 DELETE {{base}}/me/devices/{{devices.response.body.$[0].id}}
+Authorization: Bearer {{access}}
+
+### ---- MCP server (OAuth for MCP clients) ----
+
+### Protected resource metadata (what an MCP client reads after a 401 from /mcp)
+GET {{base}}/.well-known/oauth-protected-resource
+
+### Authorization server metadata
+GET {{base}}/.well-known/oauth-authorization-server
+
+### Without a token /mcp answers 401 with WWW-Authenticate (connect a real MCP client to sign in)
+POST {{base}}/mcp
+Content-Type: application/json
+
+{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+
+### Apps connected through MCP sign-in
+# @name connections
+GET {{base}}/me/connections
+Authorization: Bearer {{access}}
+
+### Disconnect one
+DELETE {{base}}/me/connections/{{connections.response.body.$[0].id}}
 Authorization: Bearer {{access}}
 
 ### Delete the account (and its Firebase user, with a service account configured)

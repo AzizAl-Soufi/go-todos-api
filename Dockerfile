@@ -19,7 +19,7 @@ ARG TARGETARCH
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    for bin in api:./cmd/api migrate:./cmd/migrate; do \
+    for bin in api:./cmd/api worker:./cmd/worker migrate:./cmd/migrate; do \
       GOOS=$TARGETOS GOARCH=$TARGETARCH \
         go build -trimpath -ldflags="-s -w" -o "/out/${bin%%:*}" "${bin#*:}" || exit 1; \
     done
@@ -30,6 +30,7 @@ FROM gcr.io/distroless/static-debian12:nonroot
 WORKDIR /app
 
 COPY --from=build /out/api /app/api
+COPY --from=build /out/worker /app/worker
 COPY --from=build /out/migrate /app/migrate
 
 # PostgreSQL migrations are embedded in both binaries. The MongoDB migrator
@@ -46,6 +47,9 @@ COPY internal/platform/database/mongodb/migrations/schema /app/internal/platform
 # FIREBASE_CREDENTIALS_FILE.
 ENV PORT=8000
 EXPOSE 8000
+
+# The same image runs the background worker:   docker run --entrypoint /app/worker <image>
+# (its health check listens on WORKER_HEALTH_PORT, 8081 by default).
 
 USER nonroot:nonroot
 ENTRYPOINT ["/app/api"]
