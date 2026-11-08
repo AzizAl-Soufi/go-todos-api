@@ -2,8 +2,9 @@ package migrations
 
 import (
 	"fmt"
-	"go.mongodb.org/mongo-driver/v2/mongo"
 	"sort"
+
+	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 type MigrationFunc func(db *mongo.Database) error

@@ -3,10 +3,11 @@ package memstore_test
 import (
 	"testing"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit/adapters/persistence/memstore"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit/adapters/persistence/storetest"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/tx"
-	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 func TestContract(t *testing.T) {

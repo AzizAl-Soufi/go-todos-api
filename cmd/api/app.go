@@ -67,7 +67,7 @@ func newApp(ctx context.Context, cfg *config.Config) (*api, error) {
 func newRouter(cfg *config.Config, m app.Modules) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	})
 
 	authenticate := auth.Middleware(m.Identity.Authenticator())
@@ -133,7 +133,7 @@ func (a *api) run(ctx context.Context) error {
 	go func() {
 		defer close(stopped)
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGrace)
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			slog.Error("server shutdown failed", "error", err)

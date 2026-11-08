@@ -4,9 +4,10 @@ import (
 	"errors"
 	"fmt"
 
-	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 )
 
 // MapErr translates pgx.ErrNoRows into apperrors.ErrNotFound and wraps any

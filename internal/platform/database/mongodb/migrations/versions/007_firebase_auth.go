@@ -3,10 +3,11 @@ package versions
 import (
 	"context"
 
-	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/mongodb/migrations"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/mongodb/migrations"
 )
 
 // Sign-in moves to Firebase Authentication (identity module): an account is

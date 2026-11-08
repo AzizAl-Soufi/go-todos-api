@@ -10,11 +10,12 @@ import (
 	"sync"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/oauth/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/oauth/domain"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/ids"
-	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 // Stores are the module's three stores, linked so that Clients can tell

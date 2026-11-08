@@ -14,12 +14,13 @@ make test               # go test -race ./...  — DB integration tests skip the
 make test-integration   # Docker Postgres + Mongo replica set, full suite, then e2e on each backend
 make test-db-down
 make fmt                # gofmt -s -w .
+make lint               # golangci-lint v2 with .golangci.yml (also in CI)
 make migrate            # go run ./cmd/migrate, for DB_TYPE=postgres|mongo
 make sqlc               # regenerate pgstore/sqlcgen from each module's queries.sql
 make goose status       # raw goose against DATABASE_URI
 ```
 
-CI (`.github/workflows/ci.yml`) also runs `go vet ./...` and `govulncheck`.
+CI (`.github/workflows/ci.yml`) also runs `go vet ./...`, `make lint` and `govulncheck`. Silence a finding only with `//nolint:<linter> // reason`.
 
 Single test / package:
 ```bash

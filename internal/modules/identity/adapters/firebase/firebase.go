@@ -38,7 +38,7 @@ func New(ctx context.Context, projectID, credentialsFile string) (*Client, error
 	}
 	opt := option.WithoutAuthentication()
 	if credentialsFile != "" {
-		opt = option.WithCredentialsFile(credentialsFile)
+		opt = option.WithAuthCredentialsFile(option.ServiceAccount, credentialsFile)
 	}
 	app, err := fb.NewApp(ctx, &fb.Config{ProjectID: projectID}, opt)
 	if err != nil {

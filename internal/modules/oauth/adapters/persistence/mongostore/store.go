@@ -8,14 +8,15 @@ import (
 	"slices"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/oauth/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/oauth/domain"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/mongodb"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/ids"
-	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 const (

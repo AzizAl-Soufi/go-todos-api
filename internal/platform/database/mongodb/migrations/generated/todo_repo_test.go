@@ -5,9 +5,10 @@ import (
 	"errors"
 	"testing"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/domain"
 	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
-	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 func TestToDomainTodo(t *testing.T) {

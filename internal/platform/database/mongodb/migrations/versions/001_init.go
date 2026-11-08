@@ -3,8 +3,9 @@ package versions
 import (
 	"context"
 
-	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/mongodb/migrations"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/mongodb/migrations"
 )
 
 func init() {

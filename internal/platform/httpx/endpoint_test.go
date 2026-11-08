@@ -22,7 +22,7 @@ func TestEndpoint(t *testing.T) {
 		"hidden":     {func(*http.Request) (int, any, error) { return 0, nil, errors.New("secret") }, 500, `{"error":{"code":"INTERNAL","message":"internal server error"}}` + "\n"},
 	} {
 		rec := httptest.NewRecorder()
-		tc.e.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+		tc.e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 		if rec.Code != tc.status || rec.Body.String() != tc.body {
 			t.Errorf("%s: got %d %q, want %d %q", name, rec.Code, rec.Body.String(), tc.status, tc.body)
 		}

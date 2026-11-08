@@ -6,13 +6,14 @@ import (
 	"context"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications/domain"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/ids"
-	"go.mongodb.org/mongo-driver/v2/bson"
-	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 const DevicesCollection = "devices"

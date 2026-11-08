@@ -3,8 +3,9 @@ package mongodb
 import (
 	"errors"
 
-	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+
+	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 )
 
 // MapNotFound translates mongo.ErrNoDocuments into apperrors.ErrNotFound and

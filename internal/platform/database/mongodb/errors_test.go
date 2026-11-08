@@ -4,8 +4,9 @@ import (
 	"errors"
 	"testing"
 
-	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+
+	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 )
 
 func TestMapNotFound(t *testing.T) {

@@ -33,7 +33,7 @@ type Config struct {
 
 const (
 	authorizePath    = "/oauth/authorize"
-	tokenPath        = "/oauth/token"
+	tokenPath        = "/oauth/token" //nolint:gosec // G101: a URL path, not a credential
 	registrationPath = "/oauth/register"
 	revocationPath   = "/oauth/revoke"
 	resourceMetaPath = "/.well-known/oauth-protected-resource"

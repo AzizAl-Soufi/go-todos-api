@@ -4,11 +4,12 @@ import (
 	"context"
 	"testing"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/adapters/persistence/memstore"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/adapters/persistence/storetest"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/domain"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/tx"
-	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 func TestContract(t *testing.T) {

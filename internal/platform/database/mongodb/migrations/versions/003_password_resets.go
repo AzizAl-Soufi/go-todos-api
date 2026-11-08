@@ -3,10 +3,11 @@ package versions
 import (
 	"context"
 
-	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/mongodb/migrations"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/mongodb/migrations"
 )
 
 // Pending password resets (identity module): one document per user, only the

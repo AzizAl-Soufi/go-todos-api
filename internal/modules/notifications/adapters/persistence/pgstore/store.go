@@ -5,13 +5,14 @@ package pgstore
 import (
 	"context"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications/adapters/persistence/pgstore/sqlcgen"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications/domain"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/postgres"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/ids"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Devices struct{ pool *pgxpool.Pool }

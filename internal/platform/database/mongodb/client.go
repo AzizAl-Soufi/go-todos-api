@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/config"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/config"
 )
 
 type MongoDBClient interface {

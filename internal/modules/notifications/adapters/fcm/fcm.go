@@ -39,7 +39,7 @@ func New(ctx context.Context, projectID, credentialsFile string) (*Pusher, error
 	if projectID == "" || credentialsFile == "" {
 		return nil, errors.New("fcm: project ID and service account are required")
 	}
-	app, err := fb.NewApp(ctx, &fb.Config{ProjectID: projectID}, option.WithCredentialsFile(credentialsFile))
+	app, err := fb.NewApp(ctx, &fb.Config{ProjectID: projectID}, option.WithAuthCredentialsFile(option.ServiceAccount, credentialsFile))
 	if err != nil {
 		return nil, fmt.Errorf("fcm: %w", err)
 	}
@@ -89,7 +89,7 @@ func (p *Pusher) Push(ctx context.Context, tokens []string, m domain.Message) ([
 			case r.Success:
 				continue
 			case p.unregistered(r.Error) || p.invalidArgument(r.Error):
-				invalid = append(invalid, batch[i])
+				invalid = append(invalid, batch[i]) //nolint:gosec // G602: len(res.Responses) == len(batch), checked above
 			default:
 				errs = append(errs, r.Error)
 			}

@@ -9,11 +9,12 @@ import (
 	"slices"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/domain"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 	inmem "github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/memory"
-	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 func newID() string { return bson.NewObjectID().Hex() }

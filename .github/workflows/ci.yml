@@ -40,6 +40,24 @@ jobs:
             go tool cover -func=coverage.out | tail -n 1 | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # Builds golangci-lint with the go.mod toolchain (version pinned in the
+      # Makefile) and runs it with .golangci.yml.
+      - name: Run golangci-lint
+        run: make lint
+
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest

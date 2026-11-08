@@ -13,9 +13,9 @@ import (
 
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
-	if err := run(ctx); err != nil {
+	err := run(ctx)
+	cancel() // before os.Exit, which skips deferred calls
+	if err != nil {
 		slog.Error("api failed", "error", err)
 		os.Exit(1)
 	}

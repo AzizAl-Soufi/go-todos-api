@@ -5,9 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/dbtest"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/mongodb/migrations"
-	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 // TestUpgrade_TodosGainStatus checks migration 4 on todos written before it:

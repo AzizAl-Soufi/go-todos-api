@@ -17,10 +17,11 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
-	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/domain"
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
+
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/domain"
 )
 
 // Config names the relying party. RPID is the domain passkeys are bound to

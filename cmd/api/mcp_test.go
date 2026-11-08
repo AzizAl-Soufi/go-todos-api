@@ -204,7 +204,7 @@ func TestMCPDiscovery(t *testing.T) {
 	}
 	res.Body.Close()
 	auth := res.Header.Get("WWW-Authenticate")
-	if res.StatusCode != 401 || !strings.Contains(auth, `resource_metadata="`+baseURL+`/.well-known/oauth-protected-resource"`) ||
+	if res.StatusCode != http.StatusUnauthorized || !strings.Contains(auth, `resource_metadata="`+baseURL+`/.well-known/oauth-protected-resource"`) ||
 		!strings.Contains(auth, `scope="todos"`) {
 		t.Fatalf("unauthenticated /mcp: %d, WWW-Authenticate %q", res.StatusCode, auth)
 	}
@@ -355,7 +355,7 @@ func TestOAuthRefreshRotationAndRevocation(t *testing.T) {
 	ann = s.login("ann@example.com")
 	clientID, fifth := s.connect(ann)
 	res, err := http.PostForm(s.srv.URL+"/oauth/revoke", url.Values{"token": {fifth.RefreshToken}, "client_id": {clientID}})
-	if err != nil || res.StatusCode != 200 {
+	if err != nil || res.StatusCode != http.StatusOK {
 		t.Fatalf("revoke: %v %v", res, err)
 	}
 	s.do("POST", "/mcp", fifth.AccessToken, map[string]any{}).expect(t, 401)
@@ -398,7 +398,7 @@ func TestOAuthCodeChecks(t *testing.T) {
 	form.Set("id_token", "forged")
 	res, _ := noRedirects.PostForm(s.srv.URL+"/oauth/authorize", form)
 	res.Body.Close()
-	if res.StatusCode != 401 {
+	if res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("forged ID token: status %d", res.StatusCode)
 	}
 }
@@ -418,7 +418,7 @@ func TestOAuthAuthorizePage(t *testing.T) {
 	body, _ := io.ReadAll(res.Body)
 	res.Body.Close()
 	csp := res.Header.Get("Content-Security-Policy")
-	if res.StatusCode != 200 || !strings.Contains(string(body), "Connect Claude") || !strings.Contains(string(body), "claude.ai") ||
+	if res.StatusCode != http.StatusOK || !strings.Contains(string(body), "Connect Claude") || !strings.Contains(string(body), "claude.ai") ||
 		!strings.Contains(csp, "frame-ancestors 'none'") || !strings.Contains(csp, "form-action 'self' https://claude.ai") {
 		t.Fatalf("page: %d, CSP %q", res.StatusCode, csp)
 	}
@@ -428,7 +428,7 @@ func TestOAuthAuthorizePage(t *testing.T) {
 		"unknown client":   authorizeParams("000000000000000000000000", claudeHook),
 		"foreign redirect": authorizeParams(clientID, "https://evil.example/cb"),
 	} {
-		if res := get(p); res.StatusCode != 400 || res.Header.Get("Location") != "" {
+		if res := get(p); res.StatusCode != http.StatusBadRequest || res.Header.Get("Location") != "" {
 			t.Errorf("%s: status %d, Location %q", name, res.StatusCode, res.Header.Get("Location"))
 		}
 	}
@@ -447,7 +447,7 @@ func TestOAuthAuthorizePage(t *testing.T) {
 	// Claude Code identifies itself with a metadata document and a loopback
 	// redirect on whatever port it picked.
 	cc := authorizeParams(codeClaude, "http://localhost:51234/callback")
-	if res := get(cc); res.StatusCode != 200 {
+	if res := get(cc); res.StatusCode != http.StatusOK {
 		t.Fatalf("Claude Code: status %d", res.StatusCode)
 	}
 }

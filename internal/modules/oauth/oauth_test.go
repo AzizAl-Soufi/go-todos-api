@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/oauth"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/oauth/adapters/persistence/memstore"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/oauth/application/command"
@@ -17,7 +19,6 @@ import (
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/auth"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/jobs"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/opaque"
-	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 type accounts struct{ userID string }

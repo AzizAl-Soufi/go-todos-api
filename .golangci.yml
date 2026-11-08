@@ -1,0 +1,140 @@
+# golangci-lint v2 configuration. Run with `make lint` (CI runs the same).
+# https://golangci-lint.run/docs/configuration/file/
+version: "2"
+
+run:
+  timeout: 5m
+  # The go.mod toolchain is the single source of truth for the Go version.
+  modules-download-mode: readonly
+  tests: true
+
+linters:
+  # The standard set: errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  enable:
+    # Correctness
+    - bodyclose # HTTP response bodies are closed
+    - contextcheck # functions pass on the context they were given
+    - durationcheck # no time.Duration * time.Duration
+    - errorlint # errors.Is/As instead of == and type switches on wrapped errors
+    - nilerr # no `return nil` right after checking err != nil
+    - nilnesserr # no returning a different, nil error after a check
+    - noctx # outgoing HTTP requests and queries carry a context
+    - rowserrcheck # rows.Err() is checked
+    - sqlclosecheck # sql.Rows / Stmt are closed
+    - makezero # no append to a slice made with a non-zero length
+    - reassign # no reassigning package variables of other packages (io.EOF, …)
+    # Security
+    - gosec
+    # Style and clarity
+    - gocritic
+    - misspell
+    - nolintlint # //nolint directives are specific and explained
+    - predeclared # no shadowing of len, new, error, …
+    - unconvert # no redundant conversions
+    - usestdlibvars # http.MethodGet, http.StatusOK, …
+    - wastedassign
+    - intrange # for i := range n
+    - copyloopvar
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      exclude-functions:
+        # Best-effort writes of an already-started response.
+        - (net/http.ResponseWriter).Write
+        - (*encoding/json.Encoder).Encode
+    govet:
+      enable-all: true
+      disable:
+        # Field order follows readability, not padding.
+        - fieldalignment
+        # Shadowing `err` in nested scopes is idiomatic.
+        - shadow
+    staticcheck:
+      checks:
+        - all
+        # Package comments aren't required on every package.
+        - -ST1000
+        # Initialisms (ID, URL) are enforced by review, not by the linter:
+        # generated sqlc names and JSON-mirroring structs would need exceptions.
+        - -ST1003
+        # Doc comments here often lead with context ('A Storage ...', 'Purge ...')
+        # rather than the identifier.
+        - -ST1020
+        - -ST1021
+        - -ST1022
+        # Quick-fix suggestions (De Morgan, embedded-field selectors) are
+        # stylistic; explicit forms are often clearer.
+        - -QF1001
+        - -QF1008
+    gosec:
+      excludes:
+        # G115: integer conversions are bounded where they occur (limits are
+        # clamped before converting, e.g. maxRows).
+        - G115
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+      disabled-checks:
+        - hugeParam # passing config/value structs by value is deliberate
+        - rangeValCopy # same: records are small value structs
+        - httpNoBody # nil bodies in tests and GETs are clear enough
+        - importShadow # e.g. a `domain` variable next to the domain package
+        - typeDefFirst
+        - paramTypeCombine
+        - unnamedResult
+        - whyNoLint # nolintlint covers it
+        - commentedOutCode
+    # No locale: "cancelled" is a todo status in the API, so British and
+    # American spellings are both accepted.
+    misspell: {}
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+
+  exclusions:
+    generated: lax # skips sqlc output (`Code generated ... DO NOT EDIT.`)
+    presets:
+      - std-error-handling # e.g. unchecked Close on deferred calls
+    rules:
+      # Tests may ignore errors from setup they don't assert on, use weak
+      # randomness and fixed fixtures.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - noctx
+          - contextcheck
+          - bodyclose
+      - path: _test\.go
+        linters: [govet]
+        text: "lostcancel"
+      # Developer tooling for Mongo migrations: reads and writes files the
+      # developer names on the command line.
+      - path: internal/platform/database/mongodb/migrations/(codegen|config|generator|seeder)\.go
+        linters: [gosec]
+        text: "G301|G304|G306"
+    paths:
+      - bin
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    gofmt:
+      simplify: true
+    goimports:
+      local-prefixes:
+        - github.com/AzizAl-Soufi/go-todos-api
+  exclusions:
+    generated: lax
+
+issues:
+  # Report every finding, not only the first few per linter.
+  max-issues-per-linter: 0
+  max-same-issues: 0

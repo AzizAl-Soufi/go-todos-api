@@ -5,10 +5,11 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/dbtest"
-	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/postgres"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
+
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/dbtest"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/postgres"
 )
 
 // TestUpgrade_TodosGainStatus checks migration 6 on existing data: the

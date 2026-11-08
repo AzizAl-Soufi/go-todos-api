@@ -9,14 +9,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/persistence/mongostore"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/persistence/pgstore"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/domain"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/testutil"
-	"github.com/google/uuid"
-	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 func invalidIDCases(users application.UserRepository, passkeys application.PasskeyRepository, challenges application.PasskeyChallengeRepository) map[string]func() error {

@@ -3,9 +3,10 @@
 package ids
 
 import (
-	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/v2/bson"
+
+	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 )
 
 // ObjectID parses a MongoDB ObjectID hex string.

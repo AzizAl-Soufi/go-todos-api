@@ -13,6 +13,8 @@ import (
 	jobsmongo "github.com/AzizAl-Soufi/go-todos-api/internal/platform/jobs/mongostore"
 	jobspg "github.com/AzizAl-Soufi/go-todos-api/internal/platform/jobs/pgstore"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit"
 	auditmem "github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit/adapters/persistence/memstore"
 	auditmongo "github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit/adapters/persistence/mongostore"
@@ -43,7 +45,6 @@ import (
 	_ "github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/mongodb/migrations/versions"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/postgres"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/tx"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // OAuthStores are the oauth module's stores.
@@ -126,14 +127,14 @@ func newMongoStorage(ctx context.Context, cfg *config.Config) (*Storage, error) 
 		return nil, fmt.Errorf("ping MongoDB: %w", err)
 	}
 	if cfg.App.MigrateOnStart {
-		if err := migrateMongo(client, cfg.DB.MongoMigrationsConfig); err != nil {
+		if err := migrateMongo(client, cfg.DB.MongoMigrationsConfig); err != nil { //nolint:contextcheck // the Mongo migration runner takes no context
 			return nil, err
 		}
 	}
 
 	store := MongoStorage(ctx, client)
 	store.Close = func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		if err := client.Close(ctx); err != nil {
 			slog.Error("closing MongoDB connection", "error", err)
@@ -179,7 +180,7 @@ func newPostgresStorage(ctx context.Context, cfg *config.Config) (*Storage, erro
 	pool := client.Pool()
 	if cfg.App.MigrateOnStart {
 		if err := postgres.Migrate(ctx, pool); err != nil {
-			client.Close()
+			_ = client.Close() // the migration error is the one to report
 			return nil, err
 		}
 	}

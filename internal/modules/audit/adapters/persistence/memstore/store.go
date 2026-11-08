@@ -8,9 +8,10 @@ import (
 	"slices"
 	"sync"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit/domain"
-	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 type Events struct {

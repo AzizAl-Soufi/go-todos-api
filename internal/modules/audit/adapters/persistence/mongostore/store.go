@@ -5,12 +5,13 @@ package mongostore
 import (
 	"context"
 
-	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit/application"
-	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit/domain"
-	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/ids"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit/application"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit/domain"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/ids"
 )
 
 const EventsCollection = "audit_events"

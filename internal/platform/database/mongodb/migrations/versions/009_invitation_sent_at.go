@@ -3,9 +3,10 @@ package versions
 import (
 	"context"
 
-	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/mongodb/migrations"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/mongodb/migrations"
 )
 
 // When each team invitation email was last sent (teams module): resending

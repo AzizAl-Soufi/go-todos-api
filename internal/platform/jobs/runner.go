@@ -167,7 +167,7 @@ func Backoff(attempt int) time.Duration {
 		d *= 2
 	}
 	d = min(d, time.Hour)
-	return d + time.Duration(rand.Int64N(int64(d/5)+1))
+	return d + time.Duration(rand.Int64N(int64(d/5)+1)) //nolint:gosec // G404: retry jitter, not a secret
 }
 
 // ErrNoHandler is a job whose kind nothing registered.

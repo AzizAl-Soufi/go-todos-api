@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/tx"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+
+	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/tx"
 )
 
 // TxRunner implements tx.Runner with MongoDB multi-document transactions.

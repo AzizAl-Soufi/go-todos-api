@@ -7,14 +7,15 @@ import (
 	"errors"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/persistence/pgstore/sqlcgen"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/domain"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/postgres"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/ids"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const pgUniqueViolation = "23505"

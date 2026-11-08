@@ -19,13 +19,18 @@ ifeq (goose,$(firstword $(MAKECMDGOALS)))
   $(foreach arg,$(GOOSE_ARGS),$(eval $(arg):;@:))
 else
 
-.PHONY: help run worker build test test-integration test-db-down fmt migrate sqlc
+.PHONY: help run worker build test test-integration test-db-down fmt lint migrate sqlc
 
 # Databases from docker-compose.test.yml. directConnection skips replica-set
 # discovery, whose member address is only reachable inside the container.
 TEST_POSTGRES_URI ?= postgres://postgres:postgres@localhost:55432/postgres?sslmode=disable
 TEST_MONGO_URI ?= mongodb://localhost:57017/?directConnection=true
 TEST_REDIS_URL ?= redis://localhost:56379/0
+
+# Built with the go.mod toolchain (a prebuilt binary may lag the Go version);
+# set GOLANGCI_LINT=golangci-lint to use an installed one.
+GOLANGCI_LINT_VERSION ?= v2.15.0
+GOLANGCI_LINT ?= go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
 help: ## Show this help message
 	@echo "Usage:  make [OPTIONS] COMMAND"
@@ -66,6 +71,9 @@ test-db-down: ## Stop the integration-test databases
 
 fmt:    ## Format Go files
 	gofmt -s -w .
+
+lint:   ## Run golangci-lint (.golangci.yml)
+	$(GOLANGCI_LINT) run ./...
 
 ##@ Database Commands:
 migrate: ## Apply migrations for DB_TYPE (postgres: embedded SQL, mongo: cmd/migrate/mongo.yaml)

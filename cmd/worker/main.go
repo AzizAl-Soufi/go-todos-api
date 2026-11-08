@@ -22,9 +22,9 @@ import (
 
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
-	if err := run(ctx); err != nil {
+	err := run(ctx)
+	cancel() // before os.Exit, which skips deferred calls
+	if err != nil {
 		slog.Error("worker failed", "error", err)
 		os.Exit(1)
 	}
@@ -70,7 +70,7 @@ func run(ctx context.Context) error {
 			}
 		}()
 		defer func() {
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			defer cancel()
 			_ = health.Shutdown(shutdownCtx)
 		}()

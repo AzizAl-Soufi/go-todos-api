@@ -7,13 +7,14 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit/adapters/persistence/pgstore/sqlcgen"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit/domain"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/postgres"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/ids"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Events struct{ pool *pgxpool.Pool }

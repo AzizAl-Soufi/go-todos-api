@@ -7,8 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 	"github.com/jackc/pgx/v5"
+
+	apperrors "github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 )
 
 func TestMapErr(t *testing.T) {

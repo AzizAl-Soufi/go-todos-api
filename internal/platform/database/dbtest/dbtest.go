@@ -21,13 +21,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/config"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/mongodb"
 	mongomigrations "github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/mongodb/migrations"
 	_ "github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/mongodb/migrations/versions"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/postgres"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (

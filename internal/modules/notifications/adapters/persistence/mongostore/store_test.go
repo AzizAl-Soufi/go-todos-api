@@ -3,10 +3,11 @@ package mongostore_test
 import (
 	"testing"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications/adapters/persistence/mongostore"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications/adapters/persistence/storetest"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/database/dbtest"
-	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 // Runs against a real MongoDB when TEST_MONGO_URI is set (see dbtest).

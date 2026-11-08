@@ -10,11 +10,12 @@ import (
 	"sync"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
+
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/domain"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
-	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 // ---- teams ----
