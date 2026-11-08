@@ -15,12 +15,15 @@ import (
 	identityaudit "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/auditgateway"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/firebase"
 	identitynotifications "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/notificationsgateway"
+	identityoauth "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/oauthgateway"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/passkeys"
 	identityteams "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/teamsgateway"
 	identitytodos "github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/adapters/todosgateway"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/identity/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications/adapters/fcm"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/oauth"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/oauth/adapters/cimd"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams"
 	teamsaudit "github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/adapters/auditgateway"
 	teamsmail "github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/adapters/mail"
@@ -76,6 +79,7 @@ func newApp(ctx context.Context, cfg *config.Config) (*app, error) {
 }
 
 type modules struct {
+	oauth         *oauth.Module
 	audit         *audit.Module
 	notifications *notifications.Module
 	todos         *todos.Module
@@ -93,6 +97,8 @@ type signIn struct {
 	idTokens application.IDTokenVerifier
 	firebase application.FirebaseAdmin // nil without a service account
 	passkeys application.RelyingParty
+	// clientMetadata fetches MCP clients' Client ID Metadata Documents.
+	clientMetadata oauth.ClientMetadataFetcher
 }
 
 // newSignIn connects to the Firebase project (FIREBASE_PROJECT_ID) and sets
@@ -108,7 +114,7 @@ func newSignIn(ctx context.Context, cfg *config.Config) (signIn, error) {
 	if err != nil {
 		return signIn{}, fmt.Errorf("initialize passkeys: %w", err)
 	}
-	s := signIn{idTokens: client, passkeys: rp}
+	s := signIn{idTokens: client, passkeys: rp, clientMetadata: cimd.New()}
 	if cfg.Firebase.CredentialsFile != "" {
 		s.firebase = client
 	} else {
@@ -157,6 +163,26 @@ func wireModules(store *storage, signIn signIn, push push, mailer mailers, cfg *
 		Tx:          store.tx,
 		Config:      teams.DefaultConfig(cfg.App.BaseURL),
 	})
+	// oauth is built before identity (identity revokes its connections), so
+	// it verifies Firebase ID tokens straight from the account store.
+	issuer := strings.TrimSuffix(cfg.App.BaseURL, "/")
+	oauthModule := oauth.New(oauth.Deps{
+		Clients:  store.oauth.clients,
+		Codes:    store.oauth.codes,
+		Grants:   store.oauth.grants,
+		Metadata: signIn.clientMetadata,
+		Accounts: identity.NewAuthenticator(store.users, signIn.idTokens),
+		Tx:       store.tx,
+		Config: oauth.Config{
+			Issuer:   issuer,
+			Resource: issuer + mcpPath,
+			SignIn: oauth.SignIn{
+				APIKey:     cfg.Firebase.WebAPIKey,
+				AuthDomain: cfg.Firebase.AuthDomain,
+				ProjectID:  cfg.Firebase.ProjectID,
+			},
+		},
+	})
 	identityModule := identity.New(identity.Deps{
 		Users:        store.users,
 		Passkeys:     store.passkeys,
@@ -168,10 +194,12 @@ func wireModules(store *storage, signIn signIn, push push, mailer mailers, cfg *
 		Teams:        identityteams.New(teamsModule),
 		Audit:        identityaudit.New(auditModule),
 		Devices:      identitynotifications.New(notificationsModule),
+		Connections:  identityoauth.New(oauthModule),
 		Tx:           store.tx,
 		Config:       identity.DefaultConfig(),
 	})
 	return modules{
+		oauth:         oauthModule,
 		audit:         auditModule,
 		notifications: notificationsModule,
 		todos:         todosModule,
@@ -250,11 +278,24 @@ func newRouter(cfg *config.Config, m modules) http.Handler {
 	resolve := access.Middleware(m.teams.Resolver())
 	protect := func(h http.Handler) http.Handler { return verified(resolve(h)) }
 
+	// Creating todos has one per-user budget, over REST and MCP alike.
+	todoCreates := ratelimit.New(cfg.Limits.TodoCreatesPerMinute, cfg.Limits.TodoCreateBurst)
+
 	m.identity.RegisterRoutes(mux, authenticate, limiter.Middleware)
-	m.todos.RegisterRoutes(mux, protect, perUser(cfg.Limits.TodoCreatesPerMinute, cfg.Limits.TodoCreateBurst))
+	m.todos.RegisterRoutes(mux, protect, todoCreates.MiddlewareBy(principalKey))
 	m.teams.RegisterRoutes(mux, protect, limiter.Middleware)
 	m.audit.RegisterRoutes(mux, protect)
 	m.notifications.RegisterRoutes(mux, protect)
+
+	// The MCP endpoint and the OAuth server MCP clients sign in through need
+	// the sign-in page's Firebase web configuration.
+	if cfg.Firebase.WebAPIKey != "" {
+		registrations := ratelimit.New(oauthRegistrationsPerMinute, oauthRegistrationBurst)
+		m.oauth.RegisterRoutes(mux, authenticate, limiter.Middleware, registrations.Middleware)
+		mux.Handle(mcpPath, newMCPHandler(cfg, m, resolve, todoCreates.Check))
+	} else {
+		slog.Warn("FIREBASE_WEB_API_KEY not set: the MCP endpoint and its OAuth server are disabled")
+	}
 
 	return httpx.Chain(httpx.JSONErrors(mux),
 		httpx.Recovery,
@@ -305,11 +346,17 @@ func (a *app) run(ctx context.Context) error {
 	return nil
 }
 
-// perUser rate-limits each signed-in user (it must run after
-// auth.Middleware); requests without a principal share one bucket.
-func perUser(perMinute, burst int) httpx.Middleware {
-	return ratelimit.New(perMinute, burst).MiddlewareBy(func(r *http.Request) string {
-		p, _ := auth.PrincipalFrom(r.Context())
-		return p.UserID
-	})
+// Dynamic client registration comes from MCP hosts' servers, and every
+// Claude user shares Anthropic's few addresses: a per-IP budget generous
+// enough for that, still bounding what one address can store.
+const (
+	oauthRegistrationsPerMinute = 600
+	oauthRegistrationBurst      = 100
+)
+
+// principalKey keys a per-user limit by the signed-in user (it runs after
+// authentication); requests without one share a bucket.
+func principalKey(r *http.Request) string {
+	p, _ := auth.PrincipalFrom(r.Context())
+	return p.UserID
 }

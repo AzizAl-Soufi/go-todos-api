@@ -76,7 +76,7 @@ func newTestServer(t *testing.T, mutate ...func(*config.Config)) *testServer {
 		App:      config.AppConfig{BaseURL: "http://example.test"},
 		Auth:     config.AuthConfig{RateLimitPerMinute: 1000, RateLimitBurst: 1000},
 		Limits:   config.LimitsConfig{TodoCreatesPerMinute: 1000, TodoCreateBurst: 1000},
-		Firebase: config.FirebaseConfig{ProjectID: "todos-test", CredentialsFile: "service-account.json"},
+		Firebase: config.FirebaseConfig{ProjectID: "todos-test", CredentialsFile: "service-account.json", WebAPIKey: "test-web-key"},
 	}
 	for _, m := range mutate {
 		m(cfg)
@@ -88,7 +88,7 @@ func newTestServer(t *testing.T, mutate ...func(*config.Config)) *testServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	in := signIn{idTokens: fb, passkeys: rp}
+	in := signIn{idTokens: fb, passkeys: rp, clientMetadata: metadataDocs}
 	if cfg.Firebase.CredentialsFile != "" {
 		in.firebase = fb
 	}

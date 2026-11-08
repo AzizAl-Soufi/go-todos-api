@@ -9,7 +9,7 @@
 //	application/           ports
 //	application/command/   write use cases, one handler per command
 //	application/query/     read use cases, one handler per query
-//	transport/             driving adapter (HTTP)
+//	transport/             driving adapters (HTTP, MCP)
 //	adapters/              driven adapters (persistence, mail, todos and audit gateways)
 package teams
 
@@ -18,10 +18,13 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/application/command"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/application/query"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/transport/httpapi"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/transport/mcpapi"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/httpx"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/tx"
@@ -81,6 +84,13 @@ func NewDirectory(teams application.TeamReader, members application.MemberReader
 // rate-limits the token endpoints.
 func (m *Module) RegisterRoutes(mux *http.ServeMux, protect, limit httpx.Middleware) {
 	httpapi.Register(mux, m.Commands, m.Queries, protect, limit)
+}
+
+// RegisterTools adds the teams, members and invitations MCP tools to s.
+// They run as the access.Actor that the /mcp endpoint's middleware puts in
+// the context.
+func (m *Module) RegisterTools(s *mcp.Server) {
+	mcpapi.Register(s, m.Commands, m.Queries)
 }
 
 // RemoveUser takes a deleted account out of every team (see

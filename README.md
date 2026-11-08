@@ -29,6 +29,7 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md) · Changes: [CHANGELOG.md](CHANGELOG.
     - [Invitation flow](#invitation-flow)
     - [Audit logs](#audit-logs)
   - [Push notifications](#push-notifications)
+  - [MCP server](#mcp-server)
   - [Database Schema](#database-schema)
     - [Enums](#enums)
     - [PostgreSQL tables](#postgresql-tables)
@@ -92,6 +93,7 @@ Design: [ARCHITECTURE.md](ARCHITECTURE.md) · Changes: [CHANGELOG.md](CHANGELOG.
       - [GET `/teams/{id}/audit-log`](#get-teamsidaudit-log)
       - [GET `/me/audit-log`](#get-meaudit-log)
     - [Devices](#devices)
+    - [Connected apps](#connected-apps)
       - [POST `/me/devices`](#post-medevices)
       - [GET `/me/devices`](#get-medevices)
       - [DELETE `/me/devices/{id}`](#delete-medevicesid)
@@ -142,6 +144,8 @@ All settings are environment variables (a `.env` file in the working directory i
 | `MONGO_MIGRATIONS_CONFIG`        | `./cmd/migrate/mongo.yaml` | MongoDB migrator config                                                                                           |
 | `FIREBASE_PROJECT_ID`            | –                          | Firebase project whose ID tokens the API accepts (required)                                                       |
 | `FIREBASE_CREDENTIALS_FILE`      | –                          | Service account JSON key. Enables passkey sign-in (custom tokens), push notifications (FCM) and deleting the Firebase user with the account |
+| `FIREBASE_WEB_API_KEY`           | –                          | The Firebase web app's (public) API key, for the sign-in page of the [MCP server](#mcp-server)'s OAuth flow. Without it `/mcp` and the OAuth endpoints are off |
+| `FIREBASE_AUTH_DOMAIN`           | `<project>.firebaseapp.com` | Firebase auth domain for that sign-in page                                                                       |
 | `AUTH_REQUIRE_VERIFIED_EMAIL`    | `false`                    | Block the todos API until the email is verified                                                                   |
 | `AUTH_RATE_LIMIT_PER_MINUTE`     | `20`                       | Per-IP budget for the rate-limited auth endpoints                                                                 |
 | `AUTH_RATE_LIMIT_BURST`          | `10`                       | Burst on top of that budget                                                                                       |
@@ -361,6 +365,37 @@ const { id } = await api.post("/me/devices", { token, platform: "web" });
 await api.delete(`/me/devices/${id}`);
 ```
 
+## MCP server
+
+`/mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server: Claude (claude.ai, Desktop, mobile, Claude Code) and other AI agents can work with a user's todos, projects, collections and teams. It speaks **Streamable HTTP**, stateless with JSON responses, so any instance behind a load balancer can serve any request.
+
+**Connecting.** In Claude, add a custom connector with the URL `https://<your-api>/mcp` (Settings → Connectors). In Claude Code: `claude mcp add --transport http todos https://<your-api>/mcp`. The client then sends the user to this server's sign-in page; after Google or email/password sign-in (Firebase) and an *Allow*, it's connected.
+
+**Tools.** One tool per API action, 35 in all, each running the same command or query as its REST endpoint and returning the same JSON:
+
+| Area | Tools |
+| - | - |
+| Account | `get_profile` |
+| Todos | `list_todos` (filters, sort, `limit`), `get_todo`, `create_todo`, `update_todo`, `delete_todo` |
+| Projects | `list_projects`, `get_project`, `create_project`, `update_project`, `delete_project` |
+| Collections | `list_collections`, `get_collection`, `create_collection`, `update_collection`, `delete_collection` |
+| Teams | `list_teams`, `get_team`, `create_team`, `rename_team`, `delete_team`, `change_member_role`, `remove_member`, `leave_team`, `transfer_team_ownership` |
+| Invitations | `list_invitations`, `invite_member`, `resend_invitation`, `revoke_invitation`, `accept_invitation`, `decline_invitation` |
+| Audit | `get_team_audit_log`, `get_security_log` |
+
+Every tool carries annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`, `title`), so clients run reads without asking and confirm deletions; reads and writes are separate tools. Errors come back as tool errors with the API's codes (`NOT_FOUND: todo not found`, `RATE_LIMITED: … (retry at …)`). Account-level actions are deliberately not tools: deleting the account, logging out everywhere, passkeys and devices stay REST-only. `create_todo` shares the per-user budget of `POST /todos`.
+
+**Authorization.** The API is the OAuth 2.1 authorization server for `/mcp`, as the [MCP authorization spec](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization) describes:
+
+- **Discovery**: a request without a token gets `401` with `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource", scope="todos"`. That document (RFC 9728) names this server as the authorization server, whose metadata is at `/.well-known/oauth-authorization-server` (RFC 8414).
+- **Clients**: Dynamic Client Registration at `POST /oauth/register` (RFC 7591), or a [Client ID Metadata Document](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-id-metadata-documents): an HTTPS URL as `client_id`, fetched (public addresses only, no redirects, 64 KB, 5 s, cached 5 minutes). All clients are public: no secrets, PKCE instead.
+- **Redirects** must match a registered one exactly, except loopback `http://localhost`, `127.0.0.1` and `[::1]` URIs, which match on any port (Claude Code listens on a port it picks per sign-in).
+- **Sign-in page** (`GET /oauth/authorize`): Firebase sign-in, then a consent screen naming the app and where it sends the user back. It can't be framed, runs only nonce'd scripts, and its form may only post here and to that redirect. Approving posts a fresh Firebase ID token, so there are no cookies or sessions to forge.
+- **Tokens**: the code (single use, 5 minutes, S256 PKCE required) is exchanged at `POST /oauth/token` for an access token (1 hour) and a refresh token (30 days). Both are bound to the `/mcp` URL (RFC 8707 `resource`) and stored only as hashes. Refreshing rotates both; presenting a refresh token that was already rotated revokes the connection, since it must have been copied. `POST /oauth/revoke` (RFC 7009) revokes one.
+- **Connected apps**: each approval is a connection, at most 25 per account (the least recently used goes). Users list and disconnect them with [`/me/connections`](#connected-apps). Logging out everywhere and deleting the account disconnect all of them at once.
+
+**Setup.** Set `FIREBASE_WEB_API_KEY` (and `FIREBASE_AUTH_DOMAIN` if not the default), and add the API's domain to *Authorized domains* in the Firebase console (Authentication → Settings) so the sign-in page can use Google sign-in. `APP_BASE_URL` must be the public URL clients use: it is the issuer and the `/mcp` URL tokens are bound to. Requests to `/mcp` and the OAuth endpoints are allowed from any origin (CORS); credentials are bearer tokens, never cookies.
+
 ## Database Schema
 
 Both databases hold the same data; only naming differs (`snake_case` columns in PostgreSQL, `camelCase` fields in MongoDB). Single-use tokens (passkey challenges, team invitations) are never stored, only their SHA-256 hashes.
@@ -530,6 +565,33 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │   │
     │   └── [Indexes]
     │       └── [Index] idx_devices_user_updated (user_id, updated_at)
+    │
+    ├── oauth_clients (MCP clients registered with DCR)
+    │   ├── id: uuid [PK] (the client_id)
+    │   ├── name: text
+    │   ├── redirect_uris: text[]
+    │   └── created_at: timestamptz
+    │
+    ├── oauth_codes (single-use authorization codes)
+    │   ├── code_hash: text [PK] (SHA-256)
+    │   ├── client_id, client_name, redirect_uri, challenge (PKCE S256), resource, scope: text
+    │   ├── user_id: uuid (no FK), user_name, user_email: text, email_verified: boolean
+    │   ├── expires_at, created_at: timestamptz
+    │   │
+    │   └── [Indexes]
+    │       ├── [Index] idx_oauth_codes_expires_at (expires_at)
+    │       └── [Index] idx_oauth_codes_user_id (user_id)
+    │
+    ├── oauth_grants (connected apps)
+    │   ├── id: uuid [PK] (in the tokens)
+    │   ├── client_id, client_name, scope, resource: text
+    │   ├── user_id: uuid (no FK), user_name, user_email: text, email_verified: boolean
+    │   ├── access_hash: text, access_expires_at: timestamptz (current access token)
+    │   ├── refresh_hash: text, refresh_expires_at: timestamptz (current refresh token)
+    │   ├── created_at, last_used_at: timestamptz
+    │   │
+    │   └── [Indexes]
+    │       └── [Index] idx_oauth_grants_user_used (user_id, last_used_at DESC)
     │
     ├── sessions (unused since Firebase; dropped in a later migration)
     │   ├── id: uuid [PK]
@@ -705,6 +767,34 @@ Both databases hold the same data; only naming differs (`snake_case` columns in 
     │   │
     │   └── [Indexes]
     │       └── [Index] { userId: 1, updatedAt: 1 }
+    │
+    ├── oauth_clients (MCP clients registered with DCR)
+    │   ├── _id: objectId [PK] (the client_id)
+    │   ├── name: string
+    │   ├── redirectUris: [string]
+    │   └── createdAt: ISODate
+    │
+    ├── oauth_codes (single-use authorization codes)
+    │   ├── _id: string [PK] (SHA-256 of the code)
+    │   ├── clientId, clientName, redirectUri, challenge, resource, scope: string
+    │   ├── userId: objectId, userName, userEmail: string, emailVerified: bool
+    │   ├── expiresAt, createdAt: ISODate
+    │   │
+    │   └── [Indexes]
+    │       ├── [TTL Index] { expiresAt: 1 }
+    │       └── [Index] { userId: 1 }
+    │
+    ├── oauth_grants (connected apps)
+    │   ├── _id: objectId [PK] (in the tokens)
+    │   ├── clientId, clientName, scope, resource: string
+    │   ├── userId: objectId, userName, userEmail: string, emailVerified: bool
+    │   ├── accessHash: string, accessExpiresAt: ISODate
+    │   ├── refreshHash: string, refreshExpiresAt: ISODate
+    │   ├── createdAt, lastUsedAt: ISODate
+    │   │
+    │   └── [Indexes]
+    │       ├── [Index] { userId: 1, lastUsedAt: -1 }
+    │       └── [TTL Index] { refreshExpiresAt: 1 }
     │
     ├── sessions (unused since Firebase; removed in a later migration)
     │   ├── _id: objectId [PK]
@@ -1685,6 +1775,35 @@ Unregisters one of the caller's devices (e.g. on sign-out), by the `id` from `PO
 Response `204 No Content`
 
 Errors: `DEVICE_NOT_FOUND` (404), also for another user's device.
+
+### Connected apps
+
+Apps (MCP clients) the user connected through the [MCP server](#mcp-server)'s OAuth flow. Bearer.
+
+#### GET `/me/connections`
+
+Response `200 OK`: most recently used first.
+
+```json
+[
+  {
+    "id": "672c71029e1b4d0012a7c50a",
+    "clientId": "https://claude.ai/oauth/claude-code-client-metadata",
+    "clientName": "Claude Code",
+    "scope": "todos offline_access",
+    "createdAt": "2026-11-08T09:12:44Z",
+    "lastUsedAt": "2026-11-08T10:12:51Z"
+  }
+]
+```
+
+#### DELETE `/me/connections/{id}`
+
+Disconnects the app: its access and refresh tokens stop working at once.
+
+Response `204 No Content`
+
+Errors: `CONNECTION_NOT_FOUND` (404), also for another user's connection.
 
 ## Testing
 

@@ -226,6 +226,29 @@ Authorization: Bearer {{access}}
 DELETE {{base}}/me/devices/{{devices.response.body.$[0].id}}
 Authorization: Bearer {{access}}
 
+### ---- MCP server (OAuth for MCP clients) ----
+
+### Protected resource metadata (what an MCP client reads after a 401 from /mcp)
+GET {{base}}/.well-known/oauth-protected-resource
+
+### Authorization server metadata
+GET {{base}}/.well-known/oauth-authorization-server
+
+### Without a token /mcp answers 401 with WWW-Authenticate (connect a real MCP client to sign in)
+POST {{base}}/mcp
+Content-Type: application/json
+
+{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+
+### Apps connected through MCP sign-in
+# @name connections
+GET {{base}}/me/connections
+Authorization: Bearer {{access}}
+
+### Disconnect one
+DELETE {{base}}/me/connections/{{connections.response.body.$[0].id}}
+Authorization: Bearer {{access}}
+
 ### Delete the account (and its Firebase user, with a service account configured)
 DELETE {{base}}/me
 Authorization: Bearer {{access}}

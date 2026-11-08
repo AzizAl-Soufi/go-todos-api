@@ -15,7 +15,6 @@ type RetryLaterError struct {
 
 var _ error = *new(RetryLaterError)
 
-
 // RetryAt makes err retryable from at on. now is the caller's clock, so
 // Wait stays consistent with At under a fake clock in tests.
 func RetryAt(err AppError, now, at time.Time) RetryLaterError {

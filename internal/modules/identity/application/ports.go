@@ -129,6 +129,12 @@ type Devices interface {
 	DeleteUserDevices(ctx context.Context, userID string) error
 }
 
+// Connections is how log-out-everywhere and account deletion reach the
+// oauth module: every connected app (MCP client) is disconnected.
+type Connections interface {
+	RevokeUserConnections(ctx context.Context, userID string) error
+}
+
 // TodoDeleter is how account deletion reaches the todos module.
 type TodoDeleter interface {
 	DeleteAllForUser(ctx context.Context, userID string) error

@@ -35,6 +35,12 @@ type DatabaseConfig struct {
 type FirebaseConfig struct {
 	ProjectID       string `mapstructure:"FIREBASE_PROJECT_ID"`
 	CredentialsFile string `mapstructure:"FIREBASE_CREDENTIALS_FILE"`
+	// WebAPIKey is the Firebase web app's (public) API key, for the OAuth
+	// sign-in page MCP clients send users to. Without it the MCP endpoint and
+	// its OAuth server are off.
+	WebAPIKey string `mapstructure:"FIREBASE_WEB_API_KEY"`
+	// AuthDomain defaults to <project>.firebaseapp.com.
+	AuthDomain string `mapstructure:"FIREBASE_AUTH_DOMAIN"`
 }
 
 type AuthConfig struct {

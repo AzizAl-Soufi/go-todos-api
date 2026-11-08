@@ -23,7 +23,8 @@ func Register(mux *http.ServeMux, qry query.Handlers, protect httpx.Middleware) 
 
 type handler struct{ qry query.Handlers }
 
-type eventResponse struct {
+// EventResponse is one audit event.
+type EventResponse struct {
 	ID         string            `json:"id"`
 	TeamID     *string           `json:"teamId"`
 	UserID     *string           `json:"userId"`
@@ -37,8 +38,10 @@ type eventResponse struct {
 	CreatedAt  time.Time         `json:"createdAt"`
 }
 
-type pageResponse struct {
-	Events     []eventResponse `json:"events"`
+// PageResponse is a page of events, newest first; NextCursor fetches the
+// next (older) page and is null on the last one.
+type PageResponse struct {
+	Events     []EventResponse `json:"events"`
 	NextCursor *string         `json:"nextCursor"`
 }
 
@@ -49,10 +52,11 @@ func optional(s string) *string {
 	return &s
 }
 
-func toPage(p query.Page) pageResponse {
-	out := pageResponse{Events: make([]eventResponse, 0, len(p.Events))}
+// ToPage converts a page of events into its response shape.
+func ToPage(p query.Page) PageResponse {
+	out := PageResponse{Events: make([]EventResponse, 0, len(p.Events))}
 	for _, e := range p.Events {
-		out.Events = append(out.Events, eventResponse{
+		out.Events = append(out.Events, EventResponse{
 			ID: e.ID, TeamID: optional(e.TeamID), UserID: optional(e.UserID), ActorID: optional(e.ActorID),
 			Action: e.Action, TargetType: optional(e.TargetType), TargetID: optional(e.TargetID),
 			Details: e.Details, IP: e.IP, UserAgent: e.UserAgent, CreatedAt: e.CreatedAt,
@@ -89,7 +93,7 @@ func respond(p query.Page, err error) (int, any, error) {
 	if err != nil {
 		return 0, nil, err
 	}
-	return http.StatusOK, toPage(p), nil
+	return http.StatusOK, ToPage(p), nil
 }
 
 func (h handler) teamLog(r *http.Request, a access.Actor) (int, any, error) {

@@ -14,7 +14,7 @@ import (
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/apperrors"
 )
 
-type todoResponse struct {
+type TodoResponse struct {
 	ID          string     `json:"id"`
 	UserID      string     `json:"userId"`
 	TeamID      *string    `json:"teamId"`
@@ -33,15 +33,19 @@ type todoResponse struct {
 }
 
 // toTodo renders a todo; "overdue" uses the query side's clock.
-func (h handler) toTodo(t *domain.Todo) todoResponse {
+func (h handler) toTodo(t *domain.Todo) TodoResponse { return ToTodo(t, h.qry.Now()) }
+
+// ToTodo renders a todo as the API returns it (REST and MCP); now decides
+// "overdue".
+func ToTodo(t *domain.Todo, now time.Time) TodoResponse {
 	tags := t.Tags
 	if tags == nil {
 		tags = []string{}
 	}
-	return todoResponse{
+	return TodoResponse{
 		ID: t.ID, UserID: t.UserID, TeamID: optionalID(t.TeamID), ProjectID: optionalID(t.ProjectID),
 		Title: t.Title, Notes: t.Notes, Status: string(t.Status), Priority: t.Priority.String(), Tags: tags,
-		DueAt: t.DueAt, Overdue: t.Overdue(h.qry.Now()), Completed: t.Completed(), CompletedAt: t.CompletedAt,
+		DueAt: t.DueAt, Overdue: t.Overdue(now), Completed: t.Completed(), CompletedAt: t.CompletedAt,
 		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
 	}
 }

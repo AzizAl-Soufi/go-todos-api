@@ -15,6 +15,7 @@ How the Todos API is put together and why. Read this before adding a feature, a 
   - [teams](#teams)
   - [audit](#audit)
   - [notifications](#notifications)
+  - [oauth](#oauth)
   - [Talking across modules](#talking-across-modules)
 - [Platform (shared kernel)](#platform-shared-kernel)
 - [Authorization (teams and roles)](#authorization-teams-and-roles)
@@ -74,8 +75,11 @@ internal/
 │   │                         {mail,todosgateway,auditgateway}/
 │   ├── audit/                append-only team audit log and personal security log; a leaf
 │   │                         module: nothing it depends on but platform
-│   └── notifications/        devices (FCM tokens) and push notifications; a leaf module:
-│                             team rosters come through platform/access, adapters/fcm sends
+│   ├── notifications/        devices (FCM tokens) and push notifications; a leaf module:
+│   │                         team rosters come through platform/access, adapters/fcm sends
+│   └── oauth/                the OAuth 2.1 authorization server for MCP clients: clients (DCR,
+│                             metadata documents), codes, grants (connected apps); a leaf module:
+│                             Firebase ID tokens are verified through platform/auth
 │
 └── platform/                 shared kernel: technical building blocks, no business concepts
     ├── access/               roles, the Actor (caller + team roles), Resolver and Directory ports, actor middleware
@@ -247,6 +251,16 @@ Push notifications through Firebase Cloud Messaging. A `domain.Device` is an FCM
 
 Commands: `RegisterDevice`, `UnregisterDevice`, `DeleteUserDevices`, `NotifyTodoCreated`. Queries: `ListDevices`. Notifications are side effects outside the database, so they never run inside the change's transaction: todos calls the `Notifier` port after `CreateTodo` committed, and the module's public `TodoCreated` hands the work to a dispatcher with a context that outlives the request and a 30-second timeout. In production the dispatcher runs at most 32 notifications at once (more are dropped and logged rather than queued, so adding a task never waits), recovers panics, and is drained by `Module.Close`, which `cmd/api` calls after the HTTP server stops and before the database closes; tests pass a dispatcher that runs in place. Failures are logged, never returned; tokens FCM rejects are deleted. Without an outbox a crash between commit and send loses that notification, which is acceptable for "new task" pushes.
 
+### oauth
+
+The OAuth 2.1 authorization server that MCP clients use to act for a user on `/mcp` (see the README's *MCP server*). `domain.Client` is a public client, registered through DCR (stored) or identified by the HTTPS URL of its metadata document (fetched by `adapters/cimd`, which only dials public addresses, checked after DNS resolution). `AllowsRedirect` matches exactly, except loopback URIs on any port. `domain.Code` is a single-use authorization code bound to client, redirect URI, PKCE challenge and resource. `domain.Grant` is a connected app: it stores the hashes of its current access and refresh token. Tokens are `kind.grantID.secret`, so a grant is found by ID and its hash compared in constant time, with no index on hashes.
+
+Commands: `RegisterClient`, `Approve` (the sign-in page posts a Firebase ID token, verified through `auth.Authenticator`; identity implements it, and `cmd/api` gets it from `identity.NewAuthenticator` because oauth is built first), `ExchangeCode`, `Refresh` (rotation: a conditional `Rotate` on the current refresh hash, so two refreshes can't both win; an old refresh token revokes the grant), `RevokeToken`, `RevokeConnection`, `RevokeUserConnections` (identity calls it, through its `Connections` port, in the units of work of logout-all and account deletion). Queries: `CheckAuthorization` (shared by the page and the approval: client and redirect first, never redirecting to an unchecked URI), `AuthenticateToken` (expiry, audience = the `/mcp` URL, hash), `ListConnections`, `GetClient`. The transport answers OAuth endpoints in RFC 6749's error format and serves the sign-in page with a per-response CSP nonce, `frame-ancestors 'none'` and `form-action` limited to the client's redirect origin.
+
+### MCP transport
+
+Each module that has tools has a `transport/mcpapi` next to `transport/httpapi`: a driving adapter like the HTTP one, registering tools on an `mcp.Server` (official Go SDK) and calling the same command and query handlers, returning the same response types (exported from `httpapi`). `platform/mcpx.Add` takes the caller from the context and turns `apperrors` into tool errors; its presets set the tool annotations. `cmd/api/mcp.go` builds the server (stateless Streamable HTTP, JSON responses) behind: the SDK's bearer middleware with oauth's `AuthenticateToken` as verifier (401 with `resource_metadata` without a token), `auth.WithPrincipal`, optionally `RequireVerifiedEmail`, and `access.Middleware`. So a tool runs as the same `access.Actor` a REST request would, and every rule, audit event and transaction is the same. `create_todo` takes from the same per-user `ratelimit.Limiter` as `POST /todos` (`Limiter.Check`).
+
 ### Talking across modules
 
 Modules never import each other's internals. When one needs another:
@@ -264,6 +278,8 @@ teams    ──► audit     team audit log
 todos    ──► audit     team audit log
 todos    ──► notifications   new team tasks
 identity ──► notifications   account deletion (forget devices)
+identity ──► oauth           logout-all, account deletion (revoke connected apps)
+oauth    ◄── platform/auth   ◄── identity (Authenticator: Firebase ID tokens)
 todos, audit ◄── platform/access ◄── teams (Resolver)
 notifications ◄── platform/access ◄── teams (Directory: team rosters)
 ```
@@ -314,8 +330,10 @@ main.go   run(ctx)
         ├── newSignIn(cfg)           Firebase client (FIREBASE_PROJECT_ID, optional service account) + WebAuthn relying party
         ├── newMailers(cfg)          one mail.Sender (SMTP if SMTP_HOST is set, else log) for every module
         ├── newPusher(cfg)           FCM when FIREBASE_CREDENTIALS_FILE is set, else nil (no pushes)
-        ├── wireModules(...)         in dependency order: audit → notifications → todos → teams → identity,
-        │                            gateways in between; notifications gets teams.NewDirectory, built from the team stores
+        ├── wireModules(...)         in dependency order: audit → notifications → todos → teams → oauth → identity,
+        │                            gateways in between; notifications gets teams.NewDirectory, built from the team stores,
+        │                            and oauth gets identity.NewAuthenticator, built from the account store
+        ├── newMCPHandler(...)       mcp.go: the MCP server with every module's tools, behind OAuth bearer auth
         └── newRouter(cfg, modules)
 ```
 
@@ -368,7 +386,7 @@ The tables and collections of the password sign-in from before Firebase (`sessio
 - **MongoDB**: the session context created by `WithTransaction` is passed down, and driver calls made with it join the transaction.
 - **Memory**: `tx.None` runs `fn` directly.
 
-Nested `WithinTx` calls join the outer transaction. Commands that write more than one record use one unit of work: sign-in (create or link, plus its audit event), logout-all, passkey registration and sign-in, deleting a project (with its todos), deleting a collection (detaching its projects), every team command, every audited change to a team record (the change and its event), team deletion and account deletion. Team and account deletion span modules: the gateways run inside the same transaction (teams → todos and audit; identity → teams, todos, audit and notifications), and the other modules' commands join it.
+Nested `WithinTx` calls join the outer transaction. Commands that write more than one record use one unit of work: sign-in (create or link, plus its audit event), logout-all, passkey registration and sign-in, deleting a project (with its todos), deleting a collection (detaching its projects), every team command, every audited change to a team record (the change and its event), team deletion and account deletion. Team and account deletion span modules: the gateways run inside the same transaction (teams → todos and audit; identity → teams, todos, audit, notifications and oauth), and the other modules' commands join it.
 
 MongoDB transactions need a replica set or sharded cluster. `mongodb.NewTxRunner` checks the topology at startup and falls back to `tx.None`, with a warning, on a standalone server.
 

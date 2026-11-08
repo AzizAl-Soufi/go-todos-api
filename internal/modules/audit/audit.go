@@ -13,7 +13,7 @@
 //	application/           ports
 //	application/command/   record and delete events
 //	application/query/     read a team log or a security log
-//	transport/             driving adapter (HTTP)
+//	transport/             driving adapters (HTTP, MCP)
 //	adapters/              driven adapters (persistence)
 package audit
 
@@ -22,10 +22,13 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit/application/command"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit/application/query"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit/transport/httpapi"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/audit/transport/mcpapi"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/httpx"
 )
 
@@ -53,6 +56,12 @@ func New(d Deps) *Module {
 // (access.Middleware).
 func (m *Module) RegisterRoutes(mux *http.ServeMux, protect httpx.Middleware) {
 	httpapi.Register(mux, m.Queries, protect)
+}
+
+// RegisterTools adds the audit log MCP tools to s. They run as the
+// access.Actor that the /mcp endpoint's middleware puts in the context.
+func (m *Module) RegisterTools(s *mcp.Server) {
+	mcpapi.Register(s, m.Queries)
 }
 
 // Entry is an event as other modules describe it. Exactly one of TeamID and

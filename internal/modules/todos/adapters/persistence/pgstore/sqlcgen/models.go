@@ -52,6 +52,47 @@ type EmailVerification struct {
 	CreatedAt time.Time
 }
 
+type OauthClient struct {
+	ID           uuid.UUID
+	Name         string
+	RedirectUris []string
+	CreatedAt    time.Time
+}
+
+type OauthCode struct {
+	CodeHash      string
+	ClientID      string
+	ClientName    string
+	RedirectUri   string
+	Challenge     string
+	Resource      string
+	Scope         string
+	UserID        uuid.UUID
+	UserName      string
+	UserEmail     string
+	EmailVerified bool
+	ExpiresAt     time.Time
+	CreatedAt     time.Time
+}
+
+type OauthGrant struct {
+	ID               uuid.UUID
+	ClientID         string
+	ClientName       string
+	Scope            string
+	Resource         string
+	UserID           uuid.UUID
+	UserName         string
+	UserEmail        string
+	EmailVerified    bool
+	AccessHash       string
+	AccessExpiresAt  time.Time
+	RefreshHash      string
+	RefreshExpiresAt time.Time
+	CreatedAt        time.Time
+	LastUsedAt       time.Time
+}
+
 type Passkey struct {
 	ID           uuid.UUID
 	UserID       uuid.UUID

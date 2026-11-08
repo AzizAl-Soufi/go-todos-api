@@ -20,6 +20,10 @@ import (
 	notificationsmem "github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications/adapters/persistence/memstore"
 	notificationsmongo "github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications/adapters/persistence/mongostore"
 	notificationspg "github.com/AzizAl-Soufi/go-todos-api/internal/modules/notifications/adapters/persistence/pgstore"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/oauth"
+	oauthmem "github.com/AzizAl-Soufi/go-todos-api/internal/modules/oauth/adapters/persistence/memstore"
+	oauthmongo "github.com/AzizAl-Soufi/go-todos-api/internal/modules/oauth/adapters/persistence/mongostore"
+	oauthpg "github.com/AzizAl-Soufi/go-todos-api/internal/modules/oauth/adapters/persistence/pgstore"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams"
 	teamsmem "github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/adapters/persistence/memstore"
 	teamsmongo "github.com/AzizAl-Soufi/go-todos-api/internal/modules/teams/adapters/persistence/mongostore"
@@ -37,6 +41,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// oauthStores are the oauth module's stores.
+type oauthStores struct {
+	clients oauth.ClientStore
+	codes   oauth.CodeStore
+	grants  oauth.GrantStore
+}
+
 // storage bundles every persistence adapter for one backend.
 type storage struct {
 	todos       todos.TodoStore
@@ -50,6 +61,7 @@ type storage struct {
 	invitations teams.InvitationStore
 	events      audit.EventStore
 	devices     notifications.DeviceStore
+	oauth       oauthStores
 	tx          tx.Runner
 	close       func()
 }
@@ -80,8 +92,13 @@ func newMemoryStorage() *storage {
 		invitations: teamsmem.NewInvitations(),
 		events:      auditmem.NewEvents(),
 		devices:     notificationsmem.NewDevices(),
-		tx:          tx.None{},
-		close:       func() {},
+		oauth: oauthStores{
+			clients: oauthmem.NewClients(),
+			codes:   oauthmem.NewCodes(),
+			grants:  oauthmem.NewGrants(),
+		},
+		tx:    tx.None{},
+		close: func() {},
 	}
 }
 
@@ -128,8 +145,13 @@ func mongoStorage(ctx context.Context, client mongodb.MongoDBClient) *storage {
 		invitations: teamsmongo.NewInvitations(db),
 		events:      auditmongo.NewEvents(db),
 		devices:     notificationsmongo.NewDevices(db),
-		tx:          mongodb.NewTxRunner(ctx, client),
-		close:       func() {},
+		oauth: oauthStores{
+			clients: oauthmongo.NewClients(db),
+			codes:   oauthmongo.NewCodes(db),
+			grants:  oauthmongo.NewGrants(db),
+		},
+		tx:    mongodb.NewTxRunner(ctx, client),
+		close: func() {},
 	}
 }
 
@@ -172,8 +194,13 @@ func postgresStorage(pool *pgxpool.Pool) *storage {
 		invitations: teamspg.NewInvitations(pool),
 		events:      auditpg.NewEvents(pool),
 		devices:     notificationspg.NewDevices(pool),
-		tx:          postgres.NewTxRunner(pool),
-		close:       func() {},
+		oauth: oauthStores{
+			clients: oauthpg.NewClients(pool),
+			codes:   oauthpg.NewCodes(pool),
+			grants:  oauthpg.NewGrants(pool),
+		},
+		tx:    postgres.NewTxRunner(pool),
+		close: func() {},
 	}
 }
 

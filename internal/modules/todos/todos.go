@@ -19,10 +19,13 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/application"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/application/command"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/application/query"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/transport/httpapi"
+	"github.com/AzizAl-Soufi/go-todos-api/internal/modules/todos/transport/mcpapi"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/access"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/httpx"
 	"github.com/AzizAl-Soufi/go-todos-api/internal/platform/tx"
@@ -78,6 +81,14 @@ func New(d Deps) *Module {
 // protect, so it can key on the caller.
 func (m *Module) RegisterRoutes(mux *http.ServeMux, protect, limitCreate httpx.Middleware) {
 	httpapi.Register(mux, m.Commands, m.Queries, protect, limitCreate)
+}
+
+// RegisterTools adds the todos, projects and collections MCP tools to s.
+// They run as the access.Actor that the /mcp endpoint's middleware puts in
+// the context. limitCreate takes from the same per-user budget as
+// POST /todos (nil: no limit).
+func (m *Module) RegisterTools(s *mcp.Server, limitCreate func(userID string) error) {
+	mcpapi.Register(s, m.Commands, m.Queries, limitCreate)
 }
 
 // Todo is the read model exposed to other modules.

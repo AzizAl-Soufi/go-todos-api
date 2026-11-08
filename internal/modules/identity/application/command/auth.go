@@ -121,6 +121,8 @@ func (h SignInHandler) syncVerified(ctx context.Context, user *domain.User, c ap
 // ID tokens keep their sign-in time, so they are refused too. The user's
 // push devices are forgotten as well, so a lost or stolen device stops
 // receiving notifications; apps register again after their next sign-in.
+// Connected apps (MCP clients) are disconnected: their OAuth tokens stop
+// working at once.
 type LogoutAll struct {
 	UserID string
 }
@@ -133,6 +135,9 @@ func (h LogoutAllHandler) Handle(ctx context.Context, cmd LogoutAll) error {
 			return err
 		}
 		if err := h.Devices.DeleteUserDevices(ctx, cmd.UserID); err != nil {
+			return err
+		}
+		if err := h.Connections.RevokeUserConnections(ctx, cmd.UserID); err != nil {
 			return err
 		}
 		return h.record(ctx, cmd.UserID, "session.logout_all", nil)
@@ -165,6 +170,7 @@ func (h DeleteAccountHandler) Handle(ctx context.Context, cmd DeleteAccount) err
 			func() error { return h.Passkeys.DeleteAllForUser(ctx, id) },
 			func() error { return h.Challenges.DeleteForUser(ctx, id) },
 			func() error { return h.Devices.DeleteUserDevices(ctx, id) },
+			func() error { return h.Connections.RevokeUserConnections(ctx, id) },
 			func() error { return h.Audit.DeleteUserLog(ctx, id) },
 			func() error { return h.Users.Delete(ctx, id) },
 		} {

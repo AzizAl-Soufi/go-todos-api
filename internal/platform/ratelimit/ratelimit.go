@@ -102,14 +102,24 @@ func (l *Limiter) MiddlewareBy(key func(*http.Request) string) httpx.Middleware 
 
 func (l *Limiter) limit(key func(*http.Request) string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ok, wait := l.Allow(key(r))
-		if !ok {
-			now := l.now()
-			httpx.RespondErr(w, r, apperrors.RetryAt(ErrTooManyRequests, now, now.Add(wait)))
+		if err := l.Check(key(r)); err != nil {
+			httpx.RespondErr(w, r, err)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// Check takes one request from key's budget: nil, or ErrTooManyRequests
+// retryable from when the next request fits. For limits outside HTTP
+// middleware (an MCP tool shares POST /todos's budget).
+func (l *Limiter) Check(key string) error {
+	ok, wait := l.Allow(key)
+	if ok {
+		return nil
+	}
+	now := l.now()
+	return apperrors.RetryAt(ErrTooManyRequests, now, now.Add(wait))
 }
 
 func clientIP(r *http.Request) string {
