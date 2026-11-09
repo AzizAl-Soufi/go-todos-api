@@ -105,7 +105,7 @@ func Recovery(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				if rec == http.ErrAbortHandler {
+				if rec == http.ErrAbortHandler { //nolint:errorlint // recover returns the sentinel itself, never wrapped
 					panic(rec) // let net/http abort the connection as intended
 				}
 				slog.Error("panic", "method", r.Method, "path", r.URL.Path, "panic", rec, "stack", string(debug.Stack()))

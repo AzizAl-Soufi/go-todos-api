@@ -2,6 +2,7 @@ package migrations
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
@@ -51,7 +52,7 @@ func (m *Migration) runSchemaUp() error {
 
 	// Check for the most recent applied migration
 	err := m.db.Collection("schema_versions").FindOne(ctx, bson.M{"status": "applied"}, opts).Decode(&current)
-	if err != nil && err != mongo.ErrNoDocuments {
+	if err != nil && !errors.Is(err, mongo.ErrNoDocuments) {
 		return err
 	}
 

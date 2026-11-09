@@ -374,7 +374,7 @@ func (h RevokeTokenHandler) Handle(ctx context.Context, cmd RevokeToken) error {
 	}
 	grant, err := h.Grants.Get(ctx, grantID)
 	if err != nil {
-		if invalidGrant(err) == domain.ErrInvalidGrant {
+		if errors.Is(invalidGrant(err), domain.ErrInvalidGrant) {
 			return nil
 		}
 		return err

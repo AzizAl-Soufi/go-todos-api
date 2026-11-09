@@ -53,7 +53,7 @@ func GenerateMigrationFile(config *MigrationConfig, name string) error {
 		migrationsDir = "./migrations/versions"
 	}
 
-	if err := os.MkdirAll(migrationsDir, 0755); err != nil {
+	if err := os.MkdirAll(migrationsDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create migrations directory: %w", err)
 	}
 
@@ -87,7 +87,7 @@ func GenerateMigrationFile(config *MigrationConfig, name string) error {
 func toCamelCase(s string) string {
 	parts := strings.Split(s, "_")
 	for i, p := range parts {
-		if len(p) > 0 {
+		if p != "" {
 			// Capitalize the first letter of each part
 			parts[i] = strings.ToUpper(p[:1]) + p[1:]
 		}

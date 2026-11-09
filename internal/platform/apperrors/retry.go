@@ -13,7 +13,7 @@ type RetryLaterError struct {
 	Wait time.Duration
 }
 
-var _ error = *new(RetryLaterError)
+var _ error = RetryLaterError{}
 
 // RetryAt makes err retryable from at on. now is the caller's clock, so
 // Wait stays consistent with At under a fake clock in tests.

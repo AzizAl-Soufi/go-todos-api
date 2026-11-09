@@ -26,7 +26,7 @@ func (f deliveringFCM) SendEachForMulticast(
 	_ context.Context,
 	m *messaging.MulticastMessage,
 ) (*messaging.BatchResponse, error) {
-	return &messaging.BatchResponse{Responses: f.ok[:len(m.Tokens)]}, nil
+	return &messaging.BatchResponse{Responses: f.ok[:len(m.Fids)]}, nil
 }
 
 func BenchmarkPush(b *testing.B) {

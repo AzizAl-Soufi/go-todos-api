@@ -177,7 +177,7 @@ func GenerateQueries(config *MigrationConfig) error {
 		return fmt.Errorf("gen.out directory not specified in config")
 	}
 
-	if err := os.MkdirAll(outDir, 0755); err != nil {
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
 	}
 

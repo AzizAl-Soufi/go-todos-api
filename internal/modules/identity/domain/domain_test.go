@@ -10,7 +10,7 @@ import (
 func TestNormalizeEmail(t *testing.T) {
 	valid := map[string]string{
 		"a@b.co":               "a@b.co",
-		"  Ann@Example.COM ":   "ann@example.com",
+		"  Ann@Example.COM ":   "ann@example.com", //nolint:gocritic // mapKey: the padding is the input under test
 		"first.last+tag@x.org": "first.last+tag@x.org",
 	}
 	for in, want := range valid {

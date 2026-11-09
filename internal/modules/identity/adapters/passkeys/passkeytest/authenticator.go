@@ -102,7 +102,8 @@ func (a *Authenticator) Create(t testing.TB, rawOptions []byte) (json.RawMessage
 	if err != nil {
 		t.Fatal(err)
 	}
-	attested := make([]byte, 16) // AAGUID: all zero
+	attested := make([]byte, 0, 16+2+len(c.ID)+len(cose))
+	attested = append(attested, make([]byte, 16)...) // AAGUID: all zero
 	attested = binary.BigEndian.AppendUint16(attested, uint16(len(c.ID)))
 	attested = append(append(attested, c.ID...), cose...)
 

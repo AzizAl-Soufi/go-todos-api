@@ -45,13 +45,13 @@ func (f *fakeFCM) SendEachForMulticast(
 	_ context.Context,
 	m *messaging.MulticastMessage,
 ) (*messaging.BatchResponse, error) {
-	f.calls = append(f.calls, m.Tokens)
+	f.calls = append(f.calls, m.Fids)
 	f.sent = m
 	if f.fail != nil {
 		return nil, f.fail
 	}
 	res := &messaging.BatchResponse{}
-	for _, tok := range m.Tokens {
+	for _, tok := range m.Fids {
 		r := &messaging.SendResponse{Success: true}
 		switch {
 		case strings.HasPrefix(tok, "gone"):

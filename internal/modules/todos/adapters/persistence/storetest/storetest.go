@@ -186,7 +186,7 @@ func testTodoQueries(t *testing.T, b Backend) {
 		priority domain.Priority
 		tags     []string
 		due      *time.Time
-		updated  time.Duration
+		updated  int // minutes after base + 1h
 	}
 	specs := []spec{
 		{work, "Write report", "", domain.StatusPending, domain.PriorityHigh, []string{"q1"}, at(-48 * time.Hour), 9},
@@ -208,7 +208,7 @@ func testTodoQueries(t *testing.T, b Backend) {
 		if s.project != nil {
 			todo.ProjectID = s.project.ID
 		}
-		todo.UpdatedAt = base.Add(time.Hour + s.updated*time.Minute)
+		todo.UpdatedAt = base.Add(time.Hour + time.Duration(s.updated)*time.Minute)
 		fixtures = append(fixtures, create(t, b, todo))
 	}
 	create(t, b, newTodo(other, 0)) // another user's todo never shows up

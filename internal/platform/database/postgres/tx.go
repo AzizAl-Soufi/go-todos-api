@@ -61,7 +61,7 @@ func (r TxRunner) WithinTx(ctx context.Context, fn func(ctx context.Context) err
 		}
 	}()
 
-	if err = fn(context.WithValue(ctx, txKey{}, tx)); err != nil {
+	if err = fn(context.WithValue(ctx, txKey{}, tx)); err != nil { //nolint:gocritic // sloppyReassign: the deferred rollback reads the named err
 		return err
 	}
 	if err = tx.Commit(ctx); err != nil {

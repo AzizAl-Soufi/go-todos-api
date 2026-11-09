@@ -290,8 +290,11 @@ func testPasskeyChallenges(t *testing.T, s Stores) {
 		}
 	}
 
-	s.Challenges.Save(ctx, challenge(u.ID, "mine", at, time.Minute))
-	s.Challenges.Save(ctx, challenge("", "anon", at, time.Minute))
+	for _, c := range []*domain.PasskeyChallenge{challenge(u.ID, "mine", at, time.Minute), challenge("", "anon", at, time.Minute)} {
+		if err := s.Challenges.Save(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := s.Challenges.DeleteForUser(ctx, u.ID); err != nil {
 		t.Fatal(err)
 	}
